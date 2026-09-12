@@ -1,0 +1,114 @@
+#pragma once
+#include <vector>
+
+// ============================================================================
+// Atmosphere — процедурная генерация "dark fantasy" фоновых деталей меню:
+// пилоны/факелы, руны, трещины, кровавые потёки, цепи, рёбра, обелиски,
+// ритуальные кресты, занавесы, рой угольков, шрамы, пустые глазницы, пепел
+// и т.п. Собираются в единый набор ("вариант") через DrawDarkFantasyAtmosphere().
+// Вынесено из MainMenu.h при разбиении монолита на модули.
+// ============================================================================
+
+namespace MainMenu {
+
+// Прямоугольник контента (заголовок ∪ кнопки), который уже посчитан к
+// моменту вызова DrawDarkFantasyAtmosphere — используется, чтобы фоновые
+// мотивы не перекрывали текст меню (см. AtmosphereFreeCell/SafeAtmosphereGlyph).
+struct AtmosphereBounds { int x0, y0, x1, y1; };
+
+// ---- Базовые примитивы (истёртые края, руны, трещины, факел) ----
+void DrawWornEdgeV(std::vector<unsigned char>& grid, int cols, int rows,
+                    int x, int y0, int y1, int seed, bool thin);
+void DrawWornEdgeH(std::vector<unsigned char>& grid, int cols, int rows,
+                    int y, int x0, int x1, int seed, bool thin);
+void DrawRuneCircle(std::vector<unsigned char>& grid, int cols, int rows,
+                     int cx, int cy, int radius, int seed);
+void DrawCrack(std::vector<unsigned char>& grid, int cols, int rows,
+                int startX, int startY, int dirX, int dirY,
+                int maxLen, int seed);
+void DrawTorch(std::vector<unsigned char>& grid, int cols, int rows,
+                int x, int y, int seed);
+void DrawPylonCrossbar(std::vector<unsigned char>& grid, int cols, int rows,
+                        int pylonX, int frameEdgeY, int towardCol, int seed);
+void DrawCornerTick(std::vector<unsigned char>& grid, int cols, int rows,
+                     int x, int y, int dx, int dy, int seed);
+void DrawTwinRunes(std::vector<unsigned char>& grid, int cols, int rows,
+                    int cx, int cy, int spacing, int radius, int seed);
+
+// ---- Защита от перекрытия текста меню ----
+bool AtmosphereFreeCell(int x, int y, int cols, int rows,
+                         const AtmosphereBounds& content, int pad = 2);
+void SafeAtmosphereGlyph(std::vector<unsigned char>& grid, int cols, int rows,
+                          int x, int y, unsigned char glyph,
+                          const AtmosphereBounds& content, int pad = 2);
+
+// ---- Дополнительные уникальные мотивы атмосферы ----
+void DrawBloodDrips(std::vector<unsigned char>& grid, int cols, int rows,
+                     const AtmosphereBounds& content, int seed,
+                     bool fromTop, bool fromBottom, int count);
+void DrawHangingChains(std::vector<unsigned char>& grid, int cols, int rows,
+                        const AtmosphereBounds& content, int seed,
+                        int count, bool bothSides);
+void DrawBrokenRibs(std::vector<unsigned char>& grid, int cols, int rows,
+                     const AtmosphereBounds& content, int seed,
+                     int ribCount, bool topHeavy);
+void DrawObelisks(std::vector<unsigned char>& grid, int cols, int rows,
+                   const AtmosphereBounds& content, int seed,
+                   int count, bool alternateSides);
+void DrawRitualCrosses(std::vector<unsigned char>& grid, int cols, int rows,
+                        const AtmosphereBounds& content, int seed,
+                        int count, bool onSides);
+void DrawHangingCurtain(std::vector<unsigned char>& grid, int cols, int rows,
+                         const AtmosphereBounds& content, int seed,
+                         bool leftSide, bool rightSide);
+void DrawEmberSwarm(std::vector<unsigned char>& grid, int cols, int rows,
+                     const AtmosphereBounds& content, int seed,
+                     int density, bool heavy);
+void DrawHorizontalScars(std::vector<unsigned char>& grid, int cols, int rows,
+                          const AtmosphereBounds& content, int seed,
+                          int count, bool bottomOnly);
+void DrawDeadEyes(std::vector<unsigned char>& grid, int cols, int rows,
+                   const AtmosphereBounds& content, int seed, int count);
+void DrawBloodTrail(std::vector<unsigned char>& grid, int cols, int rows,
+                     const AtmosphereBounds& content, int seed, int branches);
+void DrawAshfall(std::vector<unsigned char>& grid, int cols, int rows,
+                  const AtmosphereBounds& content, int seed, int density);
+void DrawDespairLayer(std::vector<unsigned char>& grid, int cols, int rows,
+                       const AtmosphereBounds& content, int seed,
+                       int variantIndex, int density);
+
+// ---- Именованные "варианты" атмосферы (см. GetAtmosphereVariant()) ----
+struct AtmosphereVariant {
+    bool  pylonLeft = true, pylonRight = true;
+    bool  pylonLine = true;
+    bool  pylonCrossbar = false;
+    bool  torchAtPylonTop = true, torchAtPylonBottom = false;
+    int   crackMode = 0;
+    int   runeMode = 6;          // Кольцевая сигила — редкий мотив. По умолчанию полностью выключена.
+    float runeRadiusMul = 1.0f;
+    bool  bottomTorch = true, bottomRule = true, bottomDoubleRule = false;
+    bool  cornerTicks = false;
+    float ashDensityMul = 1.0f;
+    int   motifMode = 0;
+    int   motifDensity = 0;
+    bool  motifBothSides = false;
+};
+
+constexpr int kAtmosphereVariantCount = 32;
+
+AtmosphereVariant GetAtmosphereVariant(int index);
+
+// Детерминированный (по seed/entryCounter) выбор варианта атмосферы.
+int PickAtmosphereVariant(int entryCounter, int seed);
+
+// То же, но с гарантией, что при повторном открытии одного и того же
+// меню новый вариант не совпадёт с предыдущим (см. PAUSED menu).
+int PickNextAtmosphereVariant(int previousVariant, int entryCounter, int seed);
+
+// Собирает полный фоновый набор мотивов для одного экрана меню — вызывает
+// подмножество функций выше согласно выбранному варианту (см. GetAtmosphereVariant()).
+void DrawDarkFantasyAtmosphere(std::vector<unsigned char>& grid, int cols, int rows,
+                                int seed, bool pauseMenu, const AtmosphereBounds& content,
+                                int variantIndex = 0);
+
+} // namespace MainMenu

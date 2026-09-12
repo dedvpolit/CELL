@@ -1,0 +1,141 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>
+<CodeBlocks_project_file>
+	<FileVersion major="1" minor="6" />
+	<Project>
+		<Option title="ascii_engine" />
+		<Option pch_mode="2" />
+		<Option compiler="gcc" />
+		<Build>
+			<Target title="Debug">
+				<Option output="bin/Debug/ascii_engine" prefix_auto="1" extension_auto="1" />
+				<Option working_dir="C:/Program Files/CodeBlocks/MinGW/x86_64-w64-mingw32/bin" />
+				<Option object_output="obj/Debug/" />
+				<Option type="1" />
+				<Option compiler="gcc" />
+				<Compiler>
+					<Add option="-g" />
+					<Add directory="include" />
+				</Compiler>
+				<ExtraCommands>
+					<Add after='cmd /c xcopy &quot;assets&quot; &quot;bin\Debug\assets\&quot; /E /I /Y &gt; nul' />
+					<Mode after="always" />
+				</ExtraCommands>
+			</Target>
+			<Target title="Release">
+				<Option output="bin/Release/ascii_engine" prefix_auto="1" extension_auto="1" />
+				<Option working_dir="C:/Program Files/CodeBlocks/MinGW/x86_64-w64-mingw32/bin" />
+				<Option object_output="obj/Release/" />
+				<Option type="0" />
+				<Option compiler="gcc" />
+				<Compiler>
+					<Add option="-O2" />
+					<Add directory="include" />
+				</Compiler>
+				<Linker>
+					<Add option="-s" />
+					<Add option="-static-libgcc -static-libstdc++ -static" />
+				</Linker>
+				<ExtraCommands>
+					<Add after='cmd /c xcopy &quot;assets&quot; &quot;bin\Release\assets\&quot; /E /I /Y &gt; nul' />
+					<Mode after="always" />
+				</ExtraCommands>
+			</Target>
+		</Build>
+		<Compiler>
+			<Add option="-Wall" />
+			<Add option="-std=c++17" />
+			<Add directory="C:/Program Files/CodeBlocks/MinGW/x86_64-w64-mingw32/include" />
+			<Add directory="src" />
+			<Add directory="third_party" />
+		</Compiler>
+		<Linker>
+			<Add library="glfw3" />
+			<Add library="opengl32" />
+			<Add library="glu32" />
+			<Add library="gdi32" />
+			<Add directory="C:/Program Files/CodeBlocks/MinGW/x86_64-w64-mingw32/lib" />
+		</Linker>
+		<Unit filename="src/render/AsciiEffect.cpp" />
+		<Unit filename="src/render/AsciiEffect.h" />
+		<Unit filename="src/render/AssetPath.cpp" />
+		<Unit filename="src/render/AssetPath.h" />
+		<Unit filename="src/render/ShaderLoader.cpp" />
+		<Unit filename="src/render/ShaderLoader.h" />
+		<Unit filename="src/render/ShaderProgram.cpp" />
+		<Unit filename="src/render/ShaderProgram.h" />
+		<Unit filename="src/dev/DevTools.h" />
+		<Unit filename="src/scene/DungeonScene.cpp" />
+		<Unit filename="src/scene/DungeonScene.h" />
+		<Unit filename="src/scene/WallTexture.h" />
+		<Unit filename="src/scene/WallTexture.cpp" />
+		<Unit filename="src/scene/MinimapFog.h" />
+		<Unit filename="src/scene/MinimapFog.cpp" />
+		<Unit filename="src/scene/DebugMapOverlay.h" />
+		<Unit filename="src/scene/DebugMapOverlay.cpp" />
+		<Unit filename="src/scene/Compass.h" />
+		<Unit filename="src/scene/Compass.cpp" />
+		<Unit filename="src/ui/TextRenderer.h" />
+		<Unit filename="src/ui/TextRenderer.cpp" />
+		<Unit filename="src/scene/MapGenerator.h" />
+		<Unit filename="src/scene/MapGenerator.cpp" />
+		<Unit filename="src/save/SaveSystem.h" />
+		<Unit filename="src/save/SaveSystem.cpp" />
+		<Unit filename="src/scene/Culling.h" />
+		<Unit filename="src/scene/Culling.cpp" />
+		<Unit filename="src/scene/SceneGeometry.h" />
+		<Unit filename="src/scene/SceneGeometry.cpp" />
+		<Unit filename="src/scene/WallShapes.h" />
+		<Unit filename="src/scene/WallShapes.cpp" />
+		<Unit filename="src/scene/Columns.h" />
+		<Unit filename="src/scene/Columns.cpp" />
+		<Unit filename="src/scene/Zoning.h" />
+		<Unit filename="src/scene/Zoning.cpp" />
+		<Unit filename="src/scene/CorridorWidth.h" />
+		<Unit filename="src/scene/CorridorWidth.cpp" />
+		<Unit filename="src/scene/DiagonalCorridors.h" />
+		<Unit filename="src/scene/DiagonalCorridors.cpp" />
+		<Unit filename="src/scene/Lighting.h" />
+		<Unit filename="src/scene/Lighting.cpp" />
+		<Unit filename="src/scene/LightBaking.h" />
+		<Unit filename="src/scene/LightBaking.cpp" />
+		<Unit filename="src/scene/PlayerTorchViewmodel.h" />
+		<Unit filename="src/scene/PlayerTorchViewmodel.cpp" />
+		<Unit filename="src/scene/EnemyCharacter.h" />
+		<Unit filename="src/scene/EnemyCharacter.cpp" />
+		<Unit filename="src/scene/EnemyAI.h" />
+		<Unit filename="src/scene/EnemyAI.cpp" />
+		<Unit filename="src/scene/GridPathfinding.h" />
+		<Unit filename="src/scene/GridPathfinding.cpp" />
+		<Unit filename="src/render/SkinnedModel.h" />
+		<Unit filename="src/render/SkinnedModel.cpp" />
+		<Unit filename="third_party/cgltf.h" />
+		<Unit filename="src/scene/PlayerTorchIcon.h" />
+		<Unit filename="src/scene/PlayerTorchIcon.cpp" />
+		<Unit filename="src/scene/PlayerController.h" />
+		<Unit filename="src/scene/PlayerController.cpp" />
+		<Unit filename="third_party/stb_image.h" />
+		<Unit filename="third_party/stb_truetype.h" />
+		<Unit filename="src/ui/MainMenu.h" />
+		<Unit filename="src/ui/UiGlyphs.h" />
+		<Unit filename="src/ui/TextGrid.h" />
+		<Unit filename="src/ui/TextGrid.cpp" />
+		<Unit filename="src/ui/BigFont.h" />
+		<Unit filename="src/ui/BigFont.cpp" />
+		<Unit filename="src/ui/Atmosphere.h" />
+		<Unit filename="src/ui/Atmosphere.cpp" />
+		<Unit filename="src/ui/TitleBreakup.h" />
+		<Unit filename="src/ui/TitleBreakup.cpp" />
+		<Unit filename="src/ui/MenuLayouts.h" />
+		<Unit filename="src/ui/MenuLayouts.cpp" />
+		<Unit filename="src/audio/FootstepAudio.h" />
+		<Unit filename="src/audio/EnemyAudio.h" />
+		<Unit filename="src/main.cpp" />
+		<Unit filename="src/app/WindowManager.h" />
+		<Unit filename="src/app/WindowManager.cpp" />
+		<Unit filename="src/app/Application.h" />
+		<Unit filename="src/app/Application.cpp" />
+		<Extensions>
+			<lib_finder disable_auto="1" />
+		</Extensions>
+	</Project>
+</CodeBlocks_project_file>

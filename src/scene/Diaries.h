@@ -1,0 +1,129 @@
+#pragma once
+#include <vector>
+#include <string>
+#include <random>
+#include <algorithm>
+#include <iterator>
+#include <glm/glm.hpp>
+
+// ============================================================================
+// Diaries — лор-записки, разбросанные по маленьким safe-зонам лабиринта
+// (см. MapGenerator.cpp::smallSafeZoneCenters — те же 12 карманов, что уже
+// используются для расстановки факелов). Один дневник на карман: сколько
+// карманов, столько и дневников на конкретный забег — см. kDiariesPerRun.
+//
+// Дневник остаётся лежать на месте и после того, как игрок его прочитал —
+// это не расходуемый предмет, а декорация + запись в "прочитано" (см.
+// SaveSystem-интеграцию — TODO). Взаимодействие (E рядом с моделью дневника)
+// только открывает/закрывает экран чтения, геометрию мира не меняет.
+//
+// В отличие от Zoning.h, этот модуль СОЗНАТЕЛЬНО тянет glm — pocketCenters
+// приходит прямо из MapGenerator.h (там уже std::vector<glm::ivec2>), и
+// заводить параллельный x/z-only тип ради независимости от glm здесь не
+// оправдано (Diaries не участвует в геометрии/рендере напрямую, только
+// хранит и выбирает координаты кармана).
+// ============================================================================
+namespace Diaries {
+
+// Сколько дневников физически лежит в мире за один забег — ровно по числу
+// маленьких safe-зон (см. MapGenerator.cpp: smallSafeCount). Если это число
+// когда-нибудь снова поменяют, дневники не нужно трогать: SelectForSeed()
+// сам подстраивается под фактическое количество карманов на карте (см. его
+// параметр pocketCount) — здесь это просто документирующая константа для
+// текстов выше/комментариев, не жёсткая зависимость кода.
+constexpr int kDiariesPerRun = 12;
+
+// Полный пул текстов, из которого на конкретный seed выбирается подмножество
+// (см. SelectForSeed) — так на разных запусках/сидах игрок видит разный
+// набор из общего пула, а на одном и том же сиде (см. "Продолжить") — всегда
+// один и тот же набор в одних и тех же карманах.
+//
+// Слово в тильдах (~СЛОВО~) — намеренно "испорченное" слово: при раскладке
+// на экране чтения (см. DungeonScene/AsciiEffect — TODO) каждая буква внутри
+// тильд заменяется шумовым узором из тех же "плотных" глифов, что рисуют
+// крупные ASCII-буквы заголовка меню (см. UiGlyphs.h::kDenseFillGlyphs),
+// сохраняя длину слова — как будто чернила/память уже частично стёрлись.
+// От 1 до 3 таких слов на текст, позиция (начало/середина/конец фразы)
+// специально вперемешку, без системы — см. обсуждение содержимого.
+constexpr const char* kPool[] = {
+    "THE ~TORCHES~ KEEP IT BACK. NOT AWAY - BACK. THERE'S A ~DIFFERENCE~, AND I ONLY LEARNED IT ONCE. WHEN ONE GOES OUT, IT DOESN'T RUSH IN. IT WAITS TO SEE IF I'LL RELIGHT IT MYSELF. I ALWAYS DO. I DON'T KNOW WHY THAT FEELS LIKE ~LOSING~.",
+    "SOMEONE CARVED LINES INTO THIS WALL BEFORE ME. TWELVE OF ~THEM~. I HAVE STARTED MY OWN COUNT BESIDE THEIRS. MINE IS LONGER NOW, AND I DON'T REMEMBER MAKING HALF OF THEM. THE OLDEST LINES ARE DEEPER THAN THE STONE SHOULD ALLOW. I STOPPED CARVING TWO DAYS AGO. THE COUNT KEEPS ~GROWING~ ANYWAY.",
+    "IT DOES NOT RUN. IT NEVER NEEDS TO. WE ARE THE ONES WHO KEEP ~MOVING~. I TESTED THIS ONCE, STANDING STILL IN A DEAD-END HALL, COUNTING MY OWN BREATH. IT TOOK EIGHT MINUTES TO REACH ME. I HAVEN'T TESTED IT ~AGAIN~. SOME QUESTIONS ANSWER THEMSELVES ONLY ONCE.",
+    "I FOUND MY ~OWN~ BOOT PRINT IN THE DUST AHEAD OF ME. I HAVE NOT WALKED THAT ~WAY~ YET. THE TREAD MATCHES MINE EXACTLY, DOWN TO THE CRACK IN THE LEFT HEEL. I CHECKED MY BOOTS TWICE TO BE SURE. I AM STARTING TO WONDER IF SOMEONE ELSE IS WEARING ~MINE~, SOMEWHERE AHEAD OF ME IN TIME RATHER THAN SPACE.",
+    "THE DOOR AT THE FAR END OPENS BOTH WAYS, THEY SAID. NOBODY WHO ~REACHED~ IT CAME BACK TO SAY IF THAT WAS ~TRUE~. I ASKED WHO 'THEY' WERE AND NO ONE COULD ANSWER ME DIRECTLY. THE STORY JUST EXISTS HERE, PASSED HAND TO HAND LIKE A COIN NOBODY WANTS TO SPEND. I HOLD ONTO IT ANYWAY. IT'S EASIER THAN HOLDING NOTHING.",
+    "~NAMES~ STOP MATTERING AFTER THE SECOND WRONG TURN. MINE DID. I DO NOT REMEMBER WRITING MY ~NAME~ AT THE TOP OF THIS ~PAGE~. THE HANDWRITING LOOKS LIKE MINE, BUT SLOWER, LIKE SOMEONE COPYING IT FROM MEMORY RATHER THAN WRITING IT FRESH. I'VE TRIED TO CROSS IT OUT THREE TIMES. IT COMES BACK BY MORNING.",
+    "~IT~ WEARS WHAT IT TAKES FROM US. CLOTH FIRST. THEN SOMETHING ELSE. I SAW IT IN MY OWN COAT LAST WEEK, FROM BEHIND, WALKING THE WAY I WALK. I DIDN'T CALL OUT. I DON'T KNOW WHAT WOULD HAVE ANSWERED IF I ~HAD~.",
+    "THE WALLS ARE NOT STONE ALL THE WAY THROUGH. PRESS YOUR EAR ~CLOSE~ ON A QUIET NIGHT AND YOU WILL WISH YOU HAD ~NOT~. WHAT'S BEHIND THEM BREATHES ON A SLOW COUNT, LIKE SOMETHING SLEEPING RATHER THAN SOMETHING BUILT. I MARKED THE SPOT WHERE I HEARD IT LOUDEST. I HAVEN'T GONE BACK TO CHECK IF THE MARK IS STILL ~THERE~.",
+    "SIX OF US CAME IN TOGETHER. I AM THE ONLY ONE STILL ~WRITING~. ONE LEFT HIS BAG BY THE THIRD TORCH AND NEVER CAME BACK FOR IT. I CHECKED INSIDE. THERE WAS NOTHING PERSONAL IN IT, LIKE HE'D PACKED FOR SOMEONE ELSE'S TRIP. I DON'T TOUCH IT WHEN I PASS THAT ~TORCH~ NOW.",
+    "~THERE~ IS A LIGHT AT THE CENTER THEY CALL THE ~WAY~ OUT. I HAVE SEEN IT TWICE, FROM TWO DIFFERENT DIRECTIONS. BOTH TIMES IT WAS CLOSER THAN THE MAP IN MY HEAD SAID IT SHOULD BE. I'M STARTING TO THINK THE CENTER MOVES TO MEET WHOEVER IS LOOKING FOR IT. THAT SHOULD BE A COMFORT. IT ~ISN'T~.",
+    "I STOPPED COUNTING CORNERS AFTER THE MAZE ~CORRECTED~ ITSELF FOR THE THIRD TIME. THE FIRST TIME I THOUGHT I'D MISCOUNTED. THE SECOND TIME I WATCHED IT HAPPEN, A WALL SLIDING SHUT BEHIND ME SO SLOWLY I ALMOST DIDN'T NOTICE. THE THIRD TIME I JUST WROTE IT DOWN AND KEPT ~WALKING~.",
+    "IF YOU FOUND THIS, YOU ARE ~STILL~ WALKING. DO NOT STOP TO READ THE ~OTHERS~. I KNOW THAT'S EASY TO SAY AND HARD TO DO - I DIDN'T LISTEN EITHER. JUST KNOW THAT EVERY PAGE YOU SIT DOWN TO READ IS A PAGE YOU'RE NOT ~MOVING~. WHOEVER WROTE THESE BEFORE ME HAD THE SAME PROBLEM.",
+
+    "I MARKED THE ~DOOR~ WITH CHALK BEFORE I LEFT IT. WHEN I CAME BACK, THE MARK WAS ON THE INSIDE. I STOOD THERE A LONG TIME WORKING OUT HOW THAT COULD HAPPEN WITHOUT THE DOOR EVER OPENING WHILE I WATCHED IT. I DON'T HAVE AN ANSWER I CAN LIVE WITH. I STARTED CARRYING TWO PIECES OF CHALK AFTER THAT, IN CASE ONE OF THEM ~DISAGREES~.",
+    "IT HUMS WHEN IT'S CLOSE. NOT LOUD. LIKE SOMETHING REMEMBERING A ~SONG~ IT FORGOT THE ~WORDS~ TO. I CAUGHT MYSELF HUMMING THE SAME TUNE THIS MORNING BEFORE I'D EVEN HEARD IT. I STOPPED THE MOMENT I NOTICED. I DON'T THINK STOPPING ~HELPED~.",
+    "WE DREW STRAWS FOR WHO KEPT WATCH. ~NOBODY~ REMEMBERS WHO LOST. THERE WERE FIVE STRAWS AND FIVE OF US, AND SOMEHOW EVERYONE REMEMBERS DRAWING A LONG ONE. I'VE STOPPED BRINGING IT UP AROUND THE OTHERS. IT MAKES THEM QUIET IN A WAY I DON'T LIKE, LIKE THEY'RE COUNTING SOMETHING THEY'D RATHER ~NOT~.",
+    "THE ~COMPASS~ SPINS TWICE NEAR THE CENTER ROOM. TWICE, THEN IT DECIDES. I USED TO TRUST WHATEVER DIRECTION IT SETTLED ON. NOW I WAIT FOR THE THIRD SPIN THAT NEVER COMES AND GO THE OPPOSITE WAY INSTEAD. IT'S GOTTEN ME OUT OF THAT ROOM TWICE. I DON'T KNOW WHAT IT'LL COST ME THE ~THIRD~.",
+    "I STOPPED TRUSTING MY OWN FOOTSTEPS SOMEWHERE AROUND THE ~NINTH~ TURN. THEY SOUND RIGHT BEHIND ME NOW EVEN WHEN I STAND PERFECTLY STILL, LIKE THE ECHO IS RUNNING LATE. I TRIED HOLDING MY BREATH TO CATCH IT OUT. THE FOOTSTEPS HELD THEIRS ~TOO~.",
+    "THERE WERE SEVEN NAMES ON THE WALL WHEN I GOT HERE. THERE ARE ~EIGHT~ NOW, AND NONE OF THEM ARE ~MINE~. THE NEW ONE IS WRITTEN IN THE SAME HAND AS THE FIRST SEVEN, THOUGH THE FIRST SEVEN WERE CLEARLY WRITTEN BY SEVEN DIFFERENT PEOPLE. I'VE CHECKED THAT WALL EVERY DAY SINCE. SO FAR IT HASN'T ADDED A ~NINTH~.",
+    "THE TORCH WENT OUT ON ITS OWN. NO ~WIND~ REACHES THIS FAR IN. I RELIT IT AND WATCHED IT FOR AN HOUR, JUST TO SEE IF IT WOULD DO IT AGAIN WHILE I WAS LOOKING. IT DIDN'T. IT WAITED UNTIL I ~BLINKED~.",
+    "I HEARD SOMEONE SINGING THE TUNE MY MOTHER USED TO HUM. I HAVE NEVER TOLD ANYONE THAT ~TUNE~. I FOLLOWED IT FOR THREE TURNS BEFORE I REALIZED I WAS HUMMING ALONG WITHOUT MEANING TO. WHOEVER WAS SINGING STOPPED THE MOMENT I JOINED IN. I HAVEN'T HEARD IT ~SINCE~, AND I DON'T KNOW IF THAT'S BETTER.",
+    "~THE~ MAZE REMEMBERS WHERE YOU'VE BEEN. I DON'T KNOW IF IT REMEMBERS ~KINDLY~. THE HALLWAYS I'VE WALKED MOST OFTEN HAVE STARTED TO FEEL WORN, LIKE A PATH THROUGH GRASS, EVEN THOUGH THE STONE NEVER CHANGES. THE ONES I'VE NEVER WALKED FEEL LIKE THEY'RE WAITING. I TRY NOT TO GIVE THEM THE ~SATISFACTION~.",
+    "THREE OF US TURNED BACK AT THE FIRST POCKET. I NEVER SAW THEM AGAIN, NOT EVEN AS ~BONES~. I WENT LOOKING ONCE, FOLLOWING THE ROUTE WE'D COME IN BY. THE ROUTE WAS THERE. THE POCKET WASN'T. I DON'T ASK THE OTHERS IF THEY REMEMBER IT ~DIFFERENTLY~.",
+    "IT DOESN'T ~CHASE~. IT WAITS UNTIL YOU'VE ALREADY CHOSEN THE WRONG HALLWAY. I'VE STARTED CHOOSING WRONG ON PURPOSE, JUST TO SEE WHERE IT'S WAITING THIS TIME. IT'S NEVER IN THE SAME PLACE TWICE. THAT MEANS IT'S LEARNING FROM ME AS MUCH AS I'M LEARNING FROM ~IT~.",
+    "THE LAST PAGE OF THE LAST DIARY I FOUND WAS ~BLANK~. I AM STARTING TO UNDERSTAND ~WHY~. THERE'S A POINT WHERE WRITING IT DOWN STOPS FEELING LIKE RECORDING AND STARTS FEELING LIKE SUMMONING. I DON'T KNOW WHERE THAT LINE IS EXACTLY. I THINK I MIGHT BE GETTING CLOSE TO ~IT~.",
+    "I COUNTED THE STONES IN THIS WALL TWICE. THE ~NUMBER~ CHANGED THE SECOND TIME. NOT BY MUCH - ONE MORE THAN BEFORE, TUCKED INTO A CORNER I WAS SURE I'D ALREADY COUNTED. I COUNTED A THIRD TIME TO SETTLE IT. I STOPPED BEFORE I FINISHED. SOME ANSWERS AREN'T WORTH ~KNOWING~.",
+    "SOMEONE LEFT FOOD HERE, UNTOUCHED, YEARS AGO BY THE DUST ON IT. I DIDN'T EAT IT ~EITHER~. IT LOOKS FRESHER TODAY THAN IT DID WHEN I FIRST FOUND IT, WHICH IS THE WRONG DIRECTION FOR FOOD TO AGE. I'VE STARTED WALKING A DIFFERENT WAY TO AVOID PASSING IT. I DON'T LIKE HOW MUCH IT LOOKS LIKE IT'S ~WAITING~.",
+    "THE EXIT ISN'T A PLACE. I THINK IT'S A NUMBER OF ~STEPS~, AND I THINK I ~MISCOUNTED~ ONCE. I'VE BEEN RECOUNTING FROM THE START EVER SINCE, WHICH MEANS STARTING FROM A POINT I CAN NO LONGER PROVE WAS THE ACTUAL START. I DON'T TELL THE OTHERS THIS. IT WOULDN'T HELP THEM, AND IT WOULD COST ME THE ONLY PLAN I HAVE ~LEFT~.",
+    "IT WORE THE CLOTH OF THE ONE WHO CAME BEFORE ME. I RECOGNIZED THE ~STITCHING~. MY MOTHER TAUGHT ME THAT STITCH BEFORE I EVER CAME DOWN HERE, AND I'D KNOW IT ANYWHERE. I DIDN'T ASK HOW IT CAME TO BE WEARING SOMETHING THAT SPECIFIC. SOME QUESTIONS ANSWER THEMSELVES IF YOU JUST STAND THERE ~LONG~ ENOUGH, AND I DIDN'T WANT TO.",
+    "I ~DREAMED~ OF THIS CORRIDOR BEFORE I EVER WALKED IT. I HAVEN'T TOLD THE OTHERS THAT PART. IN THE DREAM THERE WAS A DOOR WHERE THE THIRD TORCH IS NOW, AND I KEEP EXPECTING IT TO BE THERE WHEN I ROUND THE CORNER. IT NEVER IS. I DON'T KNOW IF THAT MEANS THE DREAM WAS WRONG OR JUST ~EARLY~.",
+    "THE WALLS CLOSE IN SLOWLY ENOUGH THAT YOU DOUBT YOURSELF BEFORE YOU DOUBT ~THEM~. I STARTED MARKING THE WIDTH OF THIS HALLWAY WITH MY OUTSTRETCHED ARMS, EVERY TIME I PASS THROUGH IT. THE MARKS DON'T LINE UP ANYMORE. I'VE DECIDED NOT TO MEASURE AGAIN - NOT BECAUSE I TRUST THE WALLS, BUT BECAUSE I'VE STOPPED TRUSTING MY OWN ~ARMS~.",
+    "I FOUND THE SAME MATCH BURNED TWICE, ONE WEEK APART, ~SAME~ SCORCH MARK EXACTLY. I KEPT THE FIRST ONE IN MY POCKET THE WHOLE WEEK, SO I KNOW IT WASN'T LEFT BEHIND OR SWAPPED. I STRUCK IT AGAIN JUST TO SEE WHAT WOULD HAPPEN. IT LIT THE SAME WAY IT ALWAYS ~HAD~, AS IF THE FIRST BURN HAD NEVER TAKEN ANYTHING FROM IT.",
+    "IF THE TORCHES EVER ALL GO OUT AT ONCE, THAT'S NOT A ~WARNING~. THAT'S AN ~ANSWER~. I DON'T KNOW WHAT THE QUESTION WAS, ONLY THAT SOMEONE HERE HAS BEEN ASKING IT FOR A LONG TIME. I HOPE I'M NOT AROUND TO HEAR WHAT COMES AFTER THE DARK. I HOPE, IF I AM, I DON'T RECOGNIZE MY OWN ~VOICE~ IN IT.",
+};
+constexpr int kPoolCount = sizeof(kPool) / sizeof(kPool[0]);
+
+// Один выбранный на этот забег дневник: сырой текст из kPool (с тильдами,
+// ещё не размеченный на строки/испорченные буквы — этим займётся раскладка
+// экрана чтения) + позиция кармана, в котором он лежит (см. вызывающий код:
+// MapGenerator::Generate()::result.smallSafeZoneCenters[i]).
+struct PlacedDiary {
+    int poolIndex = -1;      // индекс в kPool — стабильный id для SaveSystem
+    std::string text;        // == kPool[poolIndex], скопировано для удобства
+    int pocketCellX = 0;     // мировая клетка кармана (см. RegionCenter в Zoning.h
+    int pocketCellZ = 0;     // для аналогии — тут просто int, Diaries.h тоже не тянет glm)
+};
+
+// Выбирает pocketCount разных (без повторов) записей из kPool тем же rng,
+// что строит остальной лабиринт (тот же seed => тот же набор при
+// "Продолжить"), и раскладывает их по carmанам pocketCenters 1:1 — один
+// дневник на карман, без дополнительного отбора подмножества карманов.
+//
+// Explicitly random-WITHOUT-REPLACEMENT pick (std::sample), а не "перемешать
+// весь пул и взять срез" — тот же результат по факту (равномерный случайный
+// набор без дублей), но так это читается в коде однозначно как "выбрать N
+// разных", а не как побочный эффект среза после шафла.
+template <typename Rng>
+std::vector<PlacedDiary> SelectForSeed(const std::vector<glm::ivec2>& pocketCenters, Rng& rng) {
+    std::vector<PlacedDiary> result;
+    result.reserve(pocketCenters.size());
+
+    std::vector<int> indices(kPoolCount);
+    for (int i = 0; i < kPoolCount; ++i) indices[i] = i;
+
+    std::vector<int> chosen;
+    chosen.reserve(pocketCenters.size());
+    std::sample(indices.begin(), indices.end(), std::back_inserter(chosen),
+                std::min(pocketCenters.size(), (size_t)kPoolCount), rng);
+
+    for (size_t i = 0; i < chosen.size() && i < pocketCenters.size(); ++i) {
+        PlacedDiary d;
+        d.poolIndex = chosen[i];
+        d.text = kPool[chosen[i]];
+        d.pocketCellX = pocketCenters[i].x;
+        d.pocketCellZ = pocketCenters[i].y;
+        result.push_back(std::move(d));
+    }
+    return result;
+}
+
+} // namespace Diaries
