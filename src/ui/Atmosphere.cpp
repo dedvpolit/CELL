@@ -10,7 +10,7 @@ void DrawWornEdgeV(std::vector<unsigned char>& grid, int cols, int rows,
                            int x, int y0, int y1, int seed, bool thin) {
     for (int y = y0; y <= y1; ++y) {
         const unsigned int h = Hash(y, seed);
-        const unsigned int skipMod = thin ? 3u : 6u; // thin пропускает чаще — реже видна
+        const unsigned int skipMod = thin ? 3u : 6u; // thin skips more often — less frequently visible
         if (h % skipMod == 0u) continue;
         unsigned char g = GLYPH_VLINE;
         if (h % 13u == 0u)      g = GLYPH_DRIP_BIG;
@@ -32,13 +32,9 @@ void DrawWornEdgeH(std::vector<unsigned char>& grid, int cols, int rows,
     }
 }
 
-// Рисует кольцо-сигилу из структурных глифов (не текст, не '#') —
-// приближённая окружность по алгоритму Брезенхэма, где каждая точка
-// получает HLINE/VLINE/CORNER в зависимости от локального наклона дуги
-// (плоские участки сверху/снизу — HLINE, слева/справа — VLINE, углы дуги —
-// CORNER), плюс несколько "лучей"-засечек наружу и GLYPH_CIRCLE в центре.
-// Не идеальная окружность — часть точек кольца случайно пропускается
-// (рваный обод), а не все 8 лучей рисуются — асимметричный "потухший" знак.
+// Ring sigil from structural glyphs: a Bresenham circle whose points take HLINE/VLINE/CORNER by
+// local slope, with a few outward ray ticks and GLYPH_CIRCLE at the center. Deliberately imperfect
+// (skipped rim points and rays) so it reads as asymmetric and dimmed.
 void DrawRuneCircle(std::vector<unsigned char>& grid, int cols, int rows,
                             int cx, int cy, int radius, int seed) {
     int x = radius, y = 0, err = 0;
@@ -51,7 +47,7 @@ void DrawRuneCircle(std::vector<unsigned char>& grid, int cols, int rows,
         };
         for (int i = 0; i < 8; ++i) {
             const unsigned int h = Hash(pts[i][0] * 61 + pts[i][1] * 37, seed);
-            if (h % 6u == 0u) continue; // рваный обод — не все точки на месте
+            if (h % 6u == 0u) continue; // a ragged rim — not every point lands
             const int ddx = pts[i][0] - cx;
             const int ddy = pts[i][1] - cy;
             unsigned char g;
@@ -64,10 +60,9 @@ void DrawRuneCircle(std::vector<unsigned char>& grid, int cols, int rows,
         if (err > 0)  { --x; err -= 2 * x + 1; }
     }
 
-    // Лучи наружу — максимум 4 из 4 кардинальных направлений, вразнобой.
     const int dirs[4][2] = { {0,-1}, {0,1}, {-1,0}, {1,0} };
     for (int i = 0; i < 4; ++i) {
-        if (Hash(seed + i * 271, 909) % 3u == 0u) continue; // часть лучей отсутствует
+        if (Hash(seed + i * 271, 909) % 3u == 0u) continue; // some rays are missing
         const int rx = cx + dirs[i][0] * (radius + 2);
         const int ry = cy + dirs[i][1] * (radius + 2);
         PutGlyph(grid, cols, rows, rx, ry,
@@ -77,12 +72,8 @@ void DrawRuneCircle(std::vector<unsigned char>& grid, int cols, int rows,
     PutGlyph(grid, cols, rows, cx, cy, GLYPH_CIRCLE);
 }
 
-// Рваная трещина, идущая от угла экрана внутрь по диагонали. Не прямая
-// линия — на каждом шаге с некоторой вероятностью "виляет" на соседнюю
-// клетку (влево/вправо от основного направления), как настоящая трещина
-// в камне. dirX/dirY — куда идёт трещина (обычно от угла к центру,
-// например dirX=1,dirY=1 — из левого верхнего угла). maxLen ограничивает
-// её длину, чтобы она не доходила до кнопок/заголовка.
+// A ragged diagonal crack from a screen corner (dirX/dirY = direction), wobbling sideways like
+// stone; maxLen keeps it away from the buttons and title.
 void DrawCrack(std::vector<unsigned char>& grid, int cols, int rows,
                        int startX, int startY, int dirX, int dirY,
                        int maxLen, int seed) {
@@ -90,9 +81,8 @@ void DrawCrack(std::vector<unsigned char>& grid, int cols, int rows,
     int wobble = 0;
     for (int i = 0; i < maxLen; ++i) {
         const unsigned int h = Hash(i * 97, seed);
-        // Основной шаг — по диагонали; раз в несколько шагов добавляем
-        // "виляние" на 1 клетку вбок, накопительно (wobble), чтобы
-        // трещина плавно уходила в сторону, а не дрожала туда-сюда.
+        // The main step is diagonal; every few steps a 1-cell sideways wobble accumulates, so the
+        // crack drifts smoothly to one side instead of jittering back and forth.
         if (h % 4u == 0u) wobble += ((h >> 3) & 1u) ? 1 : -1;
         wobble = std::clamp(wobble, -3, 3);
 
@@ -106,33 +96,31 @@ void DrawCrack(std::vector<unsigned char>& grid, int cols, int rows,
                          : GLYPH_HLINE;
         PutGlyph(grid, cols, rows, gx, gy, g);
 
-        // Трещина "затухает" ближе к концу — не все клетки последней
-        // трети рисуются, острие получается неровным, а не обрубленным.
+        // The crack fades out toward the end: not every cell of the last third is drawn, which
+        // gives a ragged tip instead of a blunt one.
         if (i > maxLen * 2 / 3 && h % 3u == 0u) continue;
     }
 }
 
 
-// угольков-осколков (GLYPH_CIRCLE/DRIP_SMALL) вокруг него, вразнобой,
-// не симметрично — деталь для sconce/канделябра на стене.
+// A wall torch (GLYPH_TORCH) with a few ember/spark fragments (GLYPH_CIRCLE/DRIP_SMALL) scattered
+// asymmetrically around it: a detail for a wall sconce or candelabra.
 void DrawTorch(std::vector<unsigned char>& grid, int cols, int rows,
                        int x, int y, int seed) {
     PutGlyph(grid, cols, rows, x, y, GLYPH_TORCH);
     for (int i = 0; i < 3; ++i) {
         const unsigned int h = Hash(seed + i * 17, x * 53 + y * 91);
-        if (h % 5u == 0u) continue; // не всегда все три — иначе выглядит штампом
+        if (h % 5u == 0u) continue; // not always all three — otherwise it looks stamped out
         const int dx = (int)(h % 3u) - 1;      // -1,0,1
-        const int dy = 1 + (int)((h >> 4) % 2u); // капает вниз, не вверх
+        const int dy = 1 + (int)((h >> 4) % 2u); // drips down, not up
         PutGlyph(grid, cols, rows, x + dx, y + dy,
                  (h & 1u) ? GLYPH_DRIP_SMALL : GLYPH_CIRCLE);
     }
 }
 
-// ---- Вариации композиции и уникальные dark-fantasy мотивы ----
-// Рисует короткую горизонтальную "перемычку" между верхом пилона и
-// внешней рамкой — используется вариантами с pylonCrossbar=true, чтобы
-// пилон визуально не "висел в воздухе", а был частью общей конструкции.
-// Рисуется той же истёртой линией (DrawWornEdgeH), просто короче.
+// Draws a short horizontal "crossbar" between a pylon's top and the outer frame (variants with
+// pylonCrossbar = true), so the pylon does not look like it floats. It uses the same worn line
+// (DrawWornEdgeH), just shorter.
 void DrawPylonCrossbar(std::vector<unsigned char>& grid, int cols, int rows,
                                int pylonX, int frameEdgeY, int towardCol, int seed) {
     const int x0 = std::min(pylonX, towardCol);
@@ -141,19 +129,18 @@ void DrawPylonCrossbar(std::vector<unsigned char>& grid, int cols, int rows,
     DrawWornEdgeH(grid, cols, rows, frameEdgeY, x0, x1, seed, true);
 }
 
-// Мелкий диагональный штрих у угла — альтернатива/дополнение к
-// cornerOrGap() внутри DrawDarkFantasyAtmosphere: пара засечек, идущих
-// внутрь от самого угла рамки, вместо (или вместе с) обвалившегося
-// GLYPH_CORNER. dx/dy — направление внутрь экрана (+1/-1).
+// A small diagonal tick at a corner: an alternative or addition to cornerOrGap() in
+// DrawDarkFantasyAtmosphere, a pair of ticks running inward from the frame's corner instead of (or
+// alongside) a collapsed GLYPH_CORNER. dx/dy is the inward screen direction (+1/-1).
 void DrawCornerTick(std::vector<unsigned char>& grid, int cols, int rows,
                             int x, int y, int dx, int dy, int seed) {
-    if (Hash(x * 13 + y * 7, seed) % 4u == 0u) return; // не всегда — асимметрия
+    if (Hash(x * 13 + y * 7, seed) % 4u == 0u) return; // not always — asymmetry
     PutGlyph(grid, cols, rows, x + dx, y, GLYPH_HLINE);
     PutGlyph(grid, cols, rows, x, y + dy, GLYPH_VLINE);
 }
 
-// Две малые руны, симметрично по бокам верхнего зазора (вместо одной
-// центральной) — используется runeMode=4. cx/cy — центр между ними.
+// Two small runes, symmetric on either side of the top gap (instead of one centered rune), used by
+// runeMode = 4. cx/cy is the center between them.
 void DrawTwinRunes(std::vector<unsigned char>& grid, int cols, int rows,
                            int cx, int cy, int spacing, int radius, int seed) {
     DrawRuneCircle(grid, cols, rows, cx - spacing, cy, radius, seed);
@@ -161,13 +148,9 @@ void DrawTwinRunes(std::vector<unsigned char>& grid, int cols, int rows,
 }
 
 
-// ---------------------------------------------------------------------------
-// Дополнительные уникальные мотивы атмосферы.
-// ВАЖНО: все эти функции работают ТОЛЬКО за пределами content-bbox.
-// Они не заменяют guard-логику существующей композиции, а добавляют
-// независимые декоративные слои. Благодаря этому новый дизайн не способен
-// залезть на CELL/START/EXIT/RESUME/MENU даже на тесном разрешении.
-// ---------------------------------------------------------------------------
+// Additional atmosphere motifs. All of them operate only outside the content bbox. They do not
+// replace the guard logic of the existing composition, they add independent decorative layers, so a
+// new design cannot encroach on the menu text even at a tight resolution.
 bool AtmosphereFreeCell(int x, int y, int cols, int rows,
                                const AtmosphereBounds& content, int pad) {
     if (x < 0 || x >= cols || y < 0 || y >= rows) return false;
@@ -183,8 +166,8 @@ void SafeAtmosphereGlyph(std::vector<unsigned char>& grid, int cols, int rows,
     }
 }
 
-// Вертикальные "кровавые" потёки: в монохромном ASCII кровь передаётся
-// не цветом, а характерными тяжёлыми каплями и редкими сгустками-кружками.
+// Vertical "blood" streaks: in monochrome ASCII, blood is conveyed by characteristic heavy drips
+// and occasional clot circles, not by color.
 void DrawBloodDrips(std::vector<unsigned char>& grid, int cols, int rows,
                            const AtmosphereBounds& content, int seed,
                            bool fromTop, bool fromBottom, int count) {
@@ -227,8 +210,8 @@ void DrawBloodDrips(std::vector<unsigned char>& grid, int cols, int rows,
     }
 }
 
-// Цепи: перемежение | + O + |. Хорошо читается как подвесы/канделябры,
-// но не повторяет существующие прямые пилоны.
+// Chains: an interleaving of | + O + |. They read well as hangers/candelabras without duplicating
+// the straight pylons.
 void DrawHangingChains(std::vector<unsigned char>& grid, int cols, int rows,
                               const AtmosphereBounds& content, int seed,
                               int count, bool bothSides) {
@@ -261,8 +244,8 @@ void DrawHangingChains(std::vector<unsigned char>& grid, int cols, int rows,
     }
 }
 
-// Битые "ребра" вокруг пустого поля — костяная/обрушенная архитектура.
-// Это намеренно не замкнутый прямоугольник, чтобы не превращаться ещё в одну рамку.
+// Broken "ribs" around the empty field: bony, collapsed architecture. Deliberately not a closed
+// rectangle, so it does not become yet another frame.
 void DrawBrokenRibs(std::vector<unsigned char>& grid, int cols, int rows,
                            const AtmosphereBounds& content, int seed,
                            int ribCount, bool topHeavy) {
@@ -310,7 +293,6 @@ void DrawBrokenRibs(std::vector<unsigned char>& grid, int cols, int rows,
     }
 }
 
-// Вертикальные "шпили/надгробия" в пустом боковом пространстве.
 void DrawObelisks(std::vector<unsigned char>& grid, int cols, int rows,
                          const AtmosphereBounds& content, int seed,
                          int count, bool alternateSides) {
@@ -339,8 +321,8 @@ void DrawObelisks(std::vector<unsigned char>& grid, int cols, int rows,
     }
 }
 
-// Ритуальные кресты без окружности: характерный знак можно получить только
-// из +, | и =, поэтому здесь deliberately нет GLYPH_CIRCLE.
+// Ritual crosses without a circle: the distinctive mark can be built purely from +, | and =, so
+// GLYPH_CIRCLE is deliberately absent.
 void DrawRitualCrosses(std::vector<unsigned char>& grid, int cols, int rows,
                               const AtmosphereBounds& content, int seed,
                               int count, bool onSides) {
@@ -370,8 +352,8 @@ void DrawRitualCrosses(std::vector<unsigned char>& grid, int cols, int rows,
     }
 }
 
-// Рваная "занавесь" из потёков/цепей. В отличие от пилонов не привязана
-// к одной вертикальной линии и создаёт плотный силуэт по краям кадра.
+// A ragged "curtain" of streaks/chains. Unlike pylons it is not tied to one vertical line and
+// creates a dense silhouette along the frame's edges.
 void DrawHangingCurtain(std::vector<unsigned char>& grid, int cols, int rows,
                                const AtmosphereBounds& content, int seed,
                                bool leftSide, bool rightSide) {
@@ -396,8 +378,8 @@ void DrawHangingCurtain(std::vector<unsigned char>& grid, int cols, int rows,
     if (rightSide) side(false, 911);
 }
 
-// Разбросанный "рой" пепла/искр: больше свободных частиц, меньше архитектуры.
-// Работает как отдельный рисунок и не влияет на пепельную виньетку.
+// A scattered swarm of ash/sparks: looser particles, less architecture. It works standalone and
+// does not affect the ash vignette.
 void DrawEmberSwarm(std::vector<unsigned char>& grid, int cols, int rows,
                            const AtmosphereBounds& content, int seed,
                            int density, bool heavy) {
@@ -418,8 +400,8 @@ void DrawEmberSwarm(std::vector<unsigned char>& grid, int cols, int rows,
     }
 }
 
-// Многоярусные "шрамы" — горизонтальные разломы в верхнем/нижнем поле.
-// Выглядят совершенно иначе, чем обычные диагональные DrawCrack().
+// Multi-tier "scars": horizontal fractures in the top/bottom field, unlike the usual diagonal
+// DrawCrack().
 void DrawHorizontalScars(std::vector<unsigned char>& grid, int cols, int rows,
                                 const AtmosphereBounds& content, int seed,
                                 int count, bool bottomOnly) {
@@ -456,17 +438,9 @@ void DrawHorizontalScars(std::vector<unsigned char>& grid, int cols, int rows,
 }
 
 
-// ---------------------------------------------------------------------------
-// Общий слой БЕЗНАДЁЖНОСТИ.
-//
-// Это не одна и та же декорация во всех рецептах: каждый вариант получает
-// собственную "угрозу" поверх своего базового мотива. Идея — не сделать
-// меню просто "красивым dark fantasy", а создать ощущение места, откуда
-// уже нечему возвращаться: кровь, наблюдающие пустые глаза, пепельный дождь,
-// сломанные ритуальные знаки и редкие следы чьего-то присутствия.
-// Все клетки по-прежнему проходят AtmosphereFreeCell(), поэтому слой не
-// способен залезть на реальный content-bbox меню.
-// ---------------------------------------------------------------------------
+// A shared layer of dread on top of each variant's motif: blood, empty eyes, ash rain, broken
+// ritual marks. Every cell still passes through AtmosphereFreeCell(), so it cannot encroach on the
+// content bbox.
 void DrawDeadEyes(std::vector<unsigned char>& grid, int cols, int rows,
                          const AtmosphereBounds& content, int seed, int count) {
     const int edge = 2;
@@ -487,8 +461,8 @@ void DrawDeadEyes(std::vector<unsigned char>& grid, int cols, int rows,
 
         SafeAtmosphereGlyph(grid, cols, rows, x, y, GLYPH_CIRCLE, content, 3);
         SafeAtmosphereGlyph(grid, cols, rows, x + (left ? 2 : -2), y, GLYPH_CIRCLE, content, 3);
-        // Редкая "слеза" под глазами — чтобы они не выглядели декоративным
-        // узором, а напоминали наблюдающее, мёртвое существо.
+        // A rare "tear" under the eyes, so they do not read as a decorative pattern but resemble a
+        // watching, dead creature.
         if ((h & 7u) == 0u) {
             SafeAtmosphereGlyph(grid, cols, rows, x + (left ? 1 : -1), y + 1,
                                 GLYPH_DRIP_SMALL, content, 3);
@@ -553,35 +527,35 @@ void DrawDespairLayer(std::vector<unsigned char>& grid, int cols, int rows,
     const int d = std::clamp(density, 2, 12);
 
     switch (mode) {
-        case 0: // Кровь сверху + пустые глаза.
+        case 0: // Blood above + empty eyes.
             DrawBloodTrail(grid, cols, rows, content, seed + 8010, 2 + d / 5);
             DrawDeadEyes(grid, cols, rows, content, seed + 8020, 1 + d / 6);
             break;
-        case 1: // Пепельный дождь + цепь/одиночный крест.
+        case 1: // Ash rain + a chain/single cross.
             DrawAshfall(grid, cols, rows, content, seed + 8110, 8 + d * 2);
             DrawHangingChains(grid, cols, rows, content, seed + 8120, 1 + d / 5, false);
             break;
-        case 2: // Два наблюдателя и рваные знаки.
+        case 2: // Two watchers and ragged marks.
             DrawDeadEyes(grid, cols, rows, content, seed + 8210, 2 + d / 6);
             DrawRitualCrosses(grid, cols, rows, content, seed + 8220, 1 + d / 6, true);
             break;
-        case 3: // След распоротой стены.
+        case 3: // A trace of a torn-open wall.
             DrawHorizontalScars(grid, cols, rows, content, seed + 8310, 2 + d / 4, false);
             DrawBloodDrips(grid, cols, rows, content, seed + 8320, true, false, 2 + d / 5);
             break;
-        case 4: // Поле могил/обелисков и пепел.
+        case 4: // A field of graves/obelisks and ash.
             DrawObelisks(grid, cols, rows, content, seed + 8410, 1 + d / 4, true);
             DrawAshfall(grid, cols, rows, content, seed + 8420, 5 + d);
             break;
-        case 5: // Повешенные цепи и кровь снизу.
+        case 5: // Hanging chains and blood below.
             DrawHangingChains(grid, cols, rows, content, seed + 8510, 2 + d / 5, true);
             DrawBloodDrips(grid, cols, rows, content, seed + 8520, false, true, 2 + d / 5);
             break;
-        case 6: // Ритуал, который уже никто не завершит.
+        case 6: // A ritual no one will ever finish.
             DrawRitualCrosses(grid, cols, rows, content, seed + 8610, 2 + d / 4, false);
             DrawAshfall(grid, cols, rows, content, seed + 8620, 7 + d);
             break;
-        case 7: // Почти пустой кадр с редкими следами присутствия.
+        case 7: // A nearly empty frame with rare traces of presence.
             DrawDeadEyes(grid, cols, rows, content, seed + 8710, 1);
             DrawBloodTrail(grid, cols, rows, content, seed + 8720, 1);
             DrawAshfall(grid, cols, rows, content, seed + 8730, 3 + d / 2);
@@ -589,66 +563,59 @@ void DrawDespairLayer(std::vector<unsigned char>& grid, int cols, int rows,
     }
 }
 
-// Рецепт композиции — ЧТО рисовать и с какими параметрами. Все элементы
-// по-прежнему проходят через ту же guard-логику (hasSideRoom/topGap/
-// bottomGap/расстояние до content), рецепт лишь решает, что ПЫТАТЬСЯ
-// нарисовать, а не отменяет проверки безопасности.
+// The composition recipe: what to draw and with what parameters. Every element still goes through
+// the same guard logic (hasSideRoom/topGap/bottomGap/distance to content); the recipe only decides
+// what to attempt to draw and does not bypass the safety checks.
 AtmosphereVariant GetAtmosphereVariant(int index) {
     static const AtmosphereVariant table[kAtmosphereVariantCount] = {
-        /*00 Икона*/ { true, true, true, false, true, false, 0, 0, 0.90f, true, true, false, false, 1.00f, 0, 0, false },
-        /*01 Окровавленный камень*/ { true, false, false, false, true, false, 5, 6, 1.00f, false, false, false, false, 1.00f, 1, 7, false },
-        /*02 Цепная капелла*/ { false, false, false, false, false, false, 3, 6, 1.00f, false, true, false, true, 0.90f, 2, 4, true },
-        /*03 Костяная арка*/ { false, false, false, false, false, false, 3, 6, 1.00f, false, false, false, true, 1.00f, 3, 5, false },
-        /*04 Пожарный алтарь*/ { true, true, true, true, true, true, 1, 6, 1.00f, false, true, true, false, 1.00f, 4, 3, false },
-        /*05 Разорванная завеса*/ { false, false, false, false, false, false, 4, 6, 1.00f, false, false, false, false, 1.35f, 5, 1, true },
-        /*06 Пустая часовня*/ { false, false, false, false, false, false, 2, 6, 1.00f, false, false, false, false, 1.00f, 6, 4, true },
-        /*07 Кладбищенская линия*/ { false, true, false, false, true, false, 3, 6, 1.00f, false, false, false, false, 1.00f, 7, 5, false },
-        /*08 Боковая печать*/ { true, false, true, false, true, false, 5, 3, 0.65f, true, true, false, false, 1.00f, 8, 5, false },
-        /*09 Искрящийся прах*/ { false, false, false, false, false, false, 3, 6, 1.00f, false, false, false, false, 1.55f, 9, 95, false },
-        /*10 Плиты-подземелье*/ { false, false, false, false, false, false, 0, 6, 1.00f, false, false, false, true, 1.00f, 10, 3, false },
-        /*11 Палач*/ { true, false, true, false, true, false, 5, 6, 1.00f, false, true, false, false, 1.00f, 11, 8, false },
-        /*12 Кованые врата*/ { true, true, true, true, false, false, 3, 6, 1.00f, false, false, false, false, 1.00f, 12, 1, false },
-        /*13 Шрам на камне*/ { false, false, false, false, false, false, 3, 6, 1.00f, false, false, false, false, 1.25f, 13, 5, false },
-        /*14 Праховые канделябры*/ { false, false, false, false, false, false, 4, 6, 1.00f, false, false, false, false, 1.00f, 14, 3, true },
-        /*15 Чумной коридор*/ { false, false, false, false, false, false, 3, 6, 1.00f, false, false, false, false, 0.75f, 15, 1, true },
-        /*16 Разломанная часовня*/ { false, false, false, false, false, false, 1, 6, 1.00f, false, true, false, true, 1.75f, 9, 55, false },
-        /*17 Нижняя печать*/ { true, true, false, false, true, false, 3, 5, 0.72f, false, false, false, false, 1.00f, 17, 3, false },
-        /*18 Нижние рёбра*/ { false, false, false, false, false, false, 5, 6, 1.00f, false, false, false, false, 1.00f, 18, 6, false },
-        /*19 Стальные когти*/ { true, false, false, false, true, false, 4, 6, 1.00f, false, true, false, false, 1.00f, 19, 3, true },
-        /*20 Пепельный шквал*/ { false, false, false, false, false, false, 2, 6, 1.00f, false, false, false, false, 2.20f, 9, 150, false },
-        /*21 Тёмный алтарь*/ { true, true, true, false, false, true, 4, 6, 1.00f, false, true, false, false, 1.00f, 7, 7, true },
-        /*22 Капающий свод*/ { false, false, false, false, false, false, 3, 6, 1.00f, false, false, false, false, 1.00f, 22, 10, false },
-        /*23 Сломанные ворота*/ { true, true, true, true, false, false, 5, 6, 1.00f, false, false, false, false, 1.00f, 12, 3, false },
-        /*24 Костяное поле*/ { false, false, false, false, false, false, 3, 6, 1.00f, false, false, false, false, 1.60f, 24, 7, false },
-        /*25 Затхлая шахта*/ { false, false, false, false, false, false, 4, 6, 1.00f, false, true, false, false, 1.00f, 2, 6, true },
-        /*26 Разорванный периметр*/ { false, true, false, false, false, false, 3, 6, 1.00f, false, false, false, false, 1.00f, 26, 4, true },
-        /*27 Пепельные занавесы*/ { false, false, false, false, false, false, 0, 6, 1.00f, false, false, false, false, 1.90f, 15, 1, true },
-        /*28 Кровавый перекрёсток*/ { false, false, false, false, false, false, 1, 6, 1.00f, false, false, false, false, 1.00f, 28, 7, false },
-        /*29 Последний дозор*/ { false, true, true, false, true, false, 3, 6, 1.00f, false, false, false, false, 1.00f, 29, 1, false },
-        /*30 Осаждённая крепь*/ { true, true, false, false, true, false, 3, 6, 1.00f, false, true, false, false, 0.70f, 13, 9, false },
-        /*31 Погасшее святилище*/ { false, false, false, false, false, false, 3, 6, 1.00f, false, false, false, false, 1.40f, 31, 5, false },
+        /*00 Icon*/ { true, true, true, false, true, false, 0, 0, 0.90f, true, true, false, false, 1.00f, 0, 0, false },
+        /*01 Bloodstained Stone*/ { true, false, false, false, true, false, 5, 6, 1.00f, false, false, false, false, 1.00f, 1, 7, false },
+        /*02 Chained Chapel*/ { false, false, false, false, false, false, 3, 6, 1.00f, false, true, false, true, 0.90f, 2, 4, true },
+        /*03 Bone Arch*/ { false, false, false, false, false, false, 3, 6, 1.00f, false, false, false, true, 1.00f, 3, 5, false },
+        /*04 Fire Altar*/ { true, true, true, true, true, true, 1, 6, 1.00f, false, true, true, false, 1.00f, 4, 3, false },
+        /*05 Torn Veil*/ { false, false, false, false, false, false, 4, 6, 1.00f, false, false, false, false, 1.35f, 5, 1, true },
+        /*06 Empty Chapel*/ { false, false, false, false, false, false, 2, 6, 1.00f, false, false, false, false, 1.00f, 6, 4, true },
+        /*07 Graveyard Line*/ { false, true, false, false, true, false, 3, 6, 1.00f, false, false, false, false, 1.00f, 7, 5, false },
+        /*08 Side Seal*/ { true, false, true, false, true, false, 5, 3, 0.65f, true, true, false, false, 1.00f, 8, 5, false },
+        /*09 Sparking Ash*/ { false, false, false, false, false, false, 3, 6, 1.00f, false, false, false, false, 1.55f, 9, 95, false },
+        /*10 Dungeon Slabs*/ { false, false, false, false, false, false, 0, 6, 1.00f, false, false, false, true, 1.00f, 10, 3, false },
+        /*11 Executioner*/ { true, false, true, false, true, false, 5, 6, 1.00f, false, true, false, false, 1.00f, 11, 8, false },
+        /*12 Wrought Gate*/ { true, true, true, true, false, false, 3, 6, 1.00f, false, false, false, false, 1.00f, 12, 1, false },
+        /*13 Scar on Stone*/ { false, false, false, false, false, false, 3, 6, 1.00f, false, false, false, false, 1.25f, 13, 5, false },
+        /*14 Ash Candelabras*/ { false, false, false, false, false, false, 4, 6, 1.00f, false, false, false, false, 1.00f, 14, 3, true },
+        /*15 Plague Corridor*/ { false, false, false, false, false, false, 3, 6, 1.00f, false, false, false, false, 0.75f, 15, 1, true },
+        /*16 Broken Chapel*/ { false, false, false, false, false, false, 1, 6, 1.00f, false, true, false, true, 1.75f, 9, 55, false },
+        /*17 Lower Seal*/ { true, true, false, false, true, false, 3, 5, 0.72f, false, false, false, false, 1.00f, 17, 3, false },
+        /*18 Lower Ribs*/ { false, false, false, false, false, false, 5, 6, 1.00f, false, false, false, false, 1.00f, 18, 6, false },
+        /*19 Steel Claws*/ { true, false, false, false, true, false, 4, 6, 1.00f, false, true, false, false, 1.00f, 19, 3, true },
+        /*20 Ash Squall*/ { false, false, false, false, false, false, 2, 6, 1.00f, false, false, false, false, 2.20f, 9, 150, false },
+        /*21 Dark Altar*/ { true, true, true, false, false, true, 4, 6, 1.00f, false, true, false, false, 1.00f, 7, 7, true },
+        /*22 Dripping Vault*/ { false, false, false, false, false, false, 3, 6, 1.00f, false, false, false, false, 1.00f, 22, 10, false },
+        /*23 Broken Gate*/ { true, true, true, true, false, false, 5, 6, 1.00f, false, false, false, false, 1.00f, 12, 3, false },
+        /*24 Bone Field*/ { false, false, false, false, false, false, 3, 6, 1.00f, false, false, false, false, 1.60f, 24, 7, false },
+        /*25 Stale Shaft*/ { false, false, false, false, false, false, 4, 6, 1.00f, false, true, false, false, 1.00f, 2, 6, true },
+        /*26 Torn Perimeter*/ { false, true, false, false, false, false, 3, 6, 1.00f, false, false, false, false, 1.00f, 26, 4, true },
+        /*27 Ash Curtains*/ { false, false, false, false, false, false, 0, 6, 1.00f, false, false, false, false, 1.90f, 15, 1, true },
+        /*28 Bloody Crossroads*/ { false, false, false, false, false, false, 1, 6, 1.00f, false, false, false, false, 1.00f, 28, 7, false },
+        /*29 Last Watch*/ { false, true, true, false, true, false, 3, 6, 1.00f, false, false, false, false, 1.00f, 29, 1, false },
+        /*30 Besieged Stronghold*/ { true, true, false, false, true, false, 3, 6, 1.00f, false, true, false, false, 0.70f, 13, 9, false },
+        /*31 Extinguished Sanctuary*/ { false, false, false, false, false, false, 3, 6, 1.00f, false, false, false, false, 1.40f, 31, 5, false },
     };
     index = ((index % kAtmosphereVariantCount) + kAtmosphereVariantCount) % kAtmosphereVariantCount;
     return table[index];
 }
 
-// Псевдослучайный (но детерминированный по паре чисел) выбор индекса
-// варианта — вызывается ОДИН РАЗ в момент входа в MENU/PAUSED (см.
-// main.cpp: menuOpenCount/pauseOpenCount), а НЕ каждый кадр/hover —
-// иначе композиция "плавала" бы внутри одного открытия меню. seed —
-// menuSeed (фиксирован на сессию), entryCounter — счётчик входов в
-// состояние, инкрементируемый в main.cpp при каждом переходе в
-// MENU/PAUSED. Использует тот же Hash(), что и остальной dark-fantasy
-// узор, просто с другими множителями, чтобы не коррелировать с ним.
+// Deterministic variant pick from (seed, entryCounter), called once on entering MENU/PAUSED so the
+// composition does not drift within a visit. seed is the per-session menuSeed; it hashes with
+// different multipliers than the pattern to avoid correlation.
 int PickAtmosphereVariant(int entryCounter, int seed) {
     const unsigned int h = Hash(entryCounter * 104729 + 7, seed + 31337);
     return (int)(h % (unsigned int)kAtmosphereVariantCount);
 }
 
-// То же псевдослучайное распределение, но с гарантией, что при повторном
-// открытии одного и того же меню новый вариант не совпадёт с предыдущим.
-// Это особенно важно для PAUSED: если hash случайно выдаст тот же индекс,
-// игрок визуально решит, что декорации паузы больше не меняются.
+// The same distribution, but guarantees a fresh variant differs from the previous one when the same
+// menu is reopened. Important for PAUSED: if the hash returned the same index, the player would
+// think the pause decorations stopped changing.
 int PickNextAtmosphereVariant(int previousVariant, int entryCounter, int seed) {
     int next = PickAtmosphereVariant(entryCounter, seed);
     if (kAtmosphereVariantCount <= 1) return 0;
@@ -673,19 +640,9 @@ void DrawDarkFantasyAtmosphere(std::vector<unsigned char>& grid, int cols, int r
 
     const int edge = 2;
 
-    // Внешняя рамка: та же "истёртая линия", что и у кнопок (DrawBox),
-    // а не свой отдельный узор — визуально одна школа на весь экран.
-    //
-    // На очень тесных по вертикали разрешениях (напр. 1280x720 с крупным
-    // заголовком) content-зона может начинаться почти у самого верха
-    // экрана — тогда fixed-row внешняя рамка (row=edge) горизонтально
-    // пересекается с ОТСТУПОМ рамки заголовка (зона между её собственной
-    // рамкой DrawBox и текстом CELL, которую НИЧЕМ не перекрывают позже —
-    // ни border заголовка, ни сами буквы). contentPadFrame — тот же
-    // отступ, что и у пепельной виньетки ниже: если строка/столбец рамки
-    // попадает в этот запас — сегмент, пересекающийся с content по
-    // горизонтали/вертикали, просто не рисуется (рамка "разрывается"
-    // ровно на ширину content-зоны), а не наезжает на неё.
+    // Outer frame: the same worn line as the buttons. On cramped windows the content can start near
+    // the top, so frame segments that fall within contentPadFrame (the ash vignette margin) are not
+    // drawn instead of overlapping the content.
     const int contentPadFrame = 2;
     const bool topEdgeNearContent    = edge >= content.y0 - contentPadFrame && edge <= content.y1 + contentPadFrame;
     const bool bottomEdgeNearContent = (rows - edge - 1) >= content.y0 - contentPadFrame &&
@@ -722,11 +679,9 @@ void DrawDarkFantasyAtmosphere(std::vector<unsigned char>& grid, int cols, int r
     drawVEdgeAvoidingContent(edge, 73);
     drawVEdgeAvoidingContent(cols - edge - 1, 89);
 
-    // Углы рамки — с шансом пропуска (обвалившийся угол), а не все четыре
-    // гарантированно целые. Асимметрия важнее аккуратности. Если у
-    // варианта включены cornerTicks — добавляем мелкие штрихи внутрь
-    // экрана у каждого угла (см. DrawCornerTick), независимо от того,
-    // "выжил" сам угловой глиф или нет.
+    // Frame corners may be skipped (a collapsed corner) instead of all four being guaranteed:
+    // asymmetry matters more than tidiness. If the variant has cornerTicks, small inward ticks are
+    // added at each corner whether or not the corner glyph survived.
     auto cornerOrGap = [&](int x, int y, int cornerSeed, int dx, int dy) {
         if (Hash(cornerSeed, seed) % 5u != 0u) {
             PutGlyph(grid, cols, rows, x, y, GLYPH_CORNER);
@@ -740,12 +695,8 @@ void DrawDarkFantasyAtmosphere(std::vector<unsigned char>& grid, int cols, int r
     cornerOrGap(edge, rows - edge - 1, 103, 1, -1);
     cornerOrGap(cols - edge - 1, rows - edge - 1, 104, -1, -1);
 
-    // Пепел виньеткой: гуще у краёв кадра, почти исчезает к центру.
-    // Дополнительно НЕ рисуется поверх content-зоны (даже с отступом) —
-    // не потому что это визуально сломало бы что-то (текст/кнопки всё
-    // равно рисуются позже поверх), а чтобы не тратить проходы на клетки,
-    // которые гарантированно будут перезаписаны. ashDensityMul варианта
-    // уменьшает делитель (== гуще пепел), а не сам порог напрямую.
+    // Ash vignette: denser toward the edges, skipped over the content zone to save passes on cells
+    // that get overwritten. ashDensityMul shrinks the divisor (denser), not the threshold.
     const int contentPad = 2;
     for (int y = edge + 1; y <= rows - edge - 2; ++y) {
         if (y >= content.y0 - contentPad && y <= content.y1 + contentPad) continue;
@@ -760,11 +711,9 @@ void DrawDarkFantasyAtmosphere(std::vector<unsigned char>& grid, int cols, int r
         }
     }
 
-    // Диагональные трещины — режим зависит от варианта (v.crackMode), но
-    // длина КАЖДОЙ трещины из ЛЮБОГО угла по-прежнему считается от
-    // реального расстояния до content-зоны с того же угла (тот же принцип,
-    // что был раньше только для TL/BR) — гарантированно не доходит до
-    // текста/кнопок ни в одном режиме.
+    // Diagonal cracks: the mode depends on the variant (v.crackMode), but every crack's length from
+    // any corner is computed from the real distance to the content zone from that corner, so in any
+    // mode it cannot reach text or buttons.
     const int distToContentTL = std::max(2, std::min(content.x0 - edge, content.y0 - edge) - 3);
     const int distToContentTR = std::max(2, std::min((cols - edge - 1) - content.x1, content.y0 - edge) - 3);
     const int distToContentBL = std::max(2, std::min(content.x0 - edge, (rows - edge - 1) - content.y1) - 3);
@@ -774,13 +723,13 @@ void DrawDarkFantasyAtmosphere(std::vector<unsigned char>& grid, int cols, int r
     const int longMax  = std::min(cols, rows) / 2;
 
     switch (v.crackMode) {
-        case 0: // классика: из TL и BR
+        case 0: // classic: from TL and BR
             DrawCrack(grid, cols, rows, edge + 2, edge + 2, 1, 1,
                        std::min(shortMax, distToContentTL), seed + 1201);
             DrawCrack(grid, cols, rows, cols - edge - 3, rows - edge - 3, -1, -1,
                        std::min(shortMax, distToContentBR), seed + 1213);
             break;
-        case 1: // все четыре угла, каждая покороче
+        case 1: // all four corners, each shorter
             DrawCrack(grid, cols, rows, edge + 2, edge + 2, 1, 1,
                        std::min(shortMax * 2 / 3, distToContentTL), seed + 1201);
             DrawCrack(grid, cols, rows, cols - edge - 3, edge + 2, -1, 1,
@@ -790,7 +739,7 @@ void DrawDarkFantasyAtmosphere(std::vector<unsigned char>& grid, int cols, int r
             DrawCrack(grid, cols, rows, cols - edge - 3, rows - edge - 3, -1, -1,
                        std::min(shortMax * 2 / 3, distToContentBR), seed + 1213);
             break;
-        case 2: { // одна длинная трещина из случайного угла
+        case 2: { // one long crack from a random corner
             const unsigned int pick = Hash(seed, 4242) % 4u;
             if (pick == 0u)
                 DrawCrack(grid, cols, rows, edge + 2, edge + 2, 1, 1,
@@ -806,24 +755,20 @@ void DrawDarkFantasyAtmosphere(std::vector<unsigned char>& grid, int cols, int r
                            std::min(longMax, distToContentBR), seed + 1213);
             break;
         }
-        case 3: // без трещин — сдержанный вариант
+        case 3: // no cracks — a restrained variant
             break;
-        case 4: // только из TL
+        case 4: // only from TL
             DrawCrack(grid, cols, rows, edge + 2, edge + 2, 1, 1,
                        std::min(shortMax, distToContentTL), seed + 1201);
             break;
-        case 5: // только из BR
+        case 5: // only from BR
             DrawCrack(grid, cols, rows, cols - edge - 3, rows - edge - 3, -1, -1,
                        std::min(shortMax, distToContentBR), seed + 1213);
             break;
     }
 
-    // ---- Боковые пилоны/стойки — СНАРУЖИ content-зоны с гарантированным
-    // зазором, а не по угаданным midX/midY координатам. Если места сбоку
-    // не хватает (узкое окно) — стойки просто не рисуются. У каждой
-    // стороны своя проверка места (hasLeftRoom/hasRightRoom), поэтому
-    // асимметричные варианты (только один пилон) остаются безопасными и
-    // на узких экранах, где раньше пропадали бы оба разом.
+    // Side pylons sit outside the content zone with a guaranteed gap; each side has its own room
+    // check and a post is skipped when there is not enough room (narrow windows).
     const int sideGap = 3;
     const int wingLeft = content.x0 - sideGap;
     const int wingRight = content.x1 + sideGap;
@@ -852,32 +797,17 @@ void DrawDarkFantasyAtmosphere(std::vector<unsigned char>& grid, int cols, int r
         if (v.pylonCrossbar)      DrawPylonCrossbar(grid, cols, rows, wingRight, wingTop + 2, cols - edge - 1, seed + 347);
     }
 
-    // ---- Руна-сигила. Кольцо теперь намеренно редкое: его используют только
-    // варианты 0, 8 и 17. Все остальные рецепты имеют runeMode=6 и получают
-    // уникальный небуквенный мотив вместо очередного кольца.
-    // Экран игры широкий (16:9), а не высокий — на
-    // реальном разрешении (напр. 1280x720) заголовок CELL часто занимает
-    // почти весь запас по вертикали, и topGapAvailable оказывается близко
-    // к нулю, а вот по бокам от content-зоны обычно остаётся много места
-    // (десятки колонок). Поэтому базовый режим сначала пробует разместить
-    // руну сверху, и ТОЛЬКО если там тесно — переносит в свободное боковое
-    // поле (снаружи от пилона), по вертикали выровняв на середину
-    // content-зоны. bottomGapAvailable вычисляется здесь же (раньше, чем
-    // в оригинале), т.к. он нужен и режиму runeMode=5, и разделу
-    // "основание" ниже — переиспользуем одно и то же значение.
+    // Rune sigil: rare (variants 0, 8, 17 use the ring). On 16:9 the title often leaves no room
+    // above, so it tries above first and otherwise moves to free side space. bottomGapAvailable is
+    // computed here because runeMode 5 and the base section need it.
     const int topGapAvailable = content.y0 - (edge + 1);
     const int bottomGapAvailable = (rows - edge - 2) - content.y1;
 
-    // DrawRuneCircle рисует не только сам круг радиуса r, но и лучи-засечки
-    // ещё на 2 клетки дальше (см. DrawRuneCircle: "радиус+2"). Поэтому
-    // безопасный радиус считается от ПОЛОВИНЫ доступного пространства
-    // (руна стоит по центру доступной полосы) с запасом в 1 клетку сверх
-    // луча — иначе луч мог провалиться прямо в content-зону (ровно так
-    // раньше и происходило на 1920x1080: радиус брался от topGapAvailable
-    // без учёта +2 на луч). Возвращает 0, если руна совсем не помещается.
+    // DrawRuneCircle also draws ray ticks 2 cells beyond the radius, so the safe radius is half the
+    // available strip minus a 1-cell margin; returns 0 if it does not fit.
     auto safeRuneRadius = [](int availableSpan, float mul) -> int {
         const int half = availableSpan / 2;
-        const int maxRadius = half - 3; // -2 на луч, -1 клетка запаса
+        const int maxRadius = half - 3; // -2 for the ray, -1 cell margin
         if (maxRadius < 2) return 0;
         return std::clamp((int)std::lround(maxRadius * mul), 2, maxRadius);
     };
@@ -915,22 +845,22 @@ void DrawDarkFantasyAtmosphere(std::vector<unsigned char>& grid, int cols, int r
 
     bool runePlaced = false;
     switch (v.runeMode) {
-        case 0: // сверху-центр (тот же лёгкий сдвиг для главного меню, что и раньше), фолбэк вбок
+        case 0: // top-center (same slight shift for the main menu as before), fallback to the side
             runePlaced = tryTopRune(pauseMenu ? 0 : 6);
             if (!runePlaced) runePlaced = trySideRune();
             break;
-        case 1: // сверху-влево
+        case 1: // top-left
             runePlaced = tryTopRune(-std::max(4, (content.x1 - content.x0) / 6));
             if (!runePlaced) runePlaced = trySideRune();
             break;
-        case 2: // сверху-вправо
+        case 2: // top-right
             runePlaced = tryTopRune(std::max(4, (content.x1 - content.x0) / 6));
             if (!runePlaced) runePlaced = trySideRune();
             break;
-        case 3: // принудительно сбоку (без попытки сверху)
+        case 3: // forced to the side (no attempt above)
             runePlaced = trySideRune();
             break;
-        case 4: { // две малые руны по бокам верхней зоны
+        case 4: { // two small runes flanking the top zone
             const int runeRadius = safeRuneRadius(topGapAvailable, v.runeRadiusMul);
             if (runeRadius > 0) {
                 const int spacing = std::max(runeRadius * 2 + 3, (content.x1 - content.x0) / 5);
@@ -943,18 +873,17 @@ void DrawDarkFantasyAtmosphere(std::vector<unsigned char>& grid, int cols, int r
             if (!runePlaced) runePlaced = trySideRune();
             break;
         }
-        case 5: // снизу (если есть место под content-зоной), иначе как режим 0
+        case 5: // below (if there's room under the content zone), otherwise same as mode 0
             runePlaced = tryBottomRune();
             if (!runePlaced) runePlaced = tryTopRune(pauseMenu ? 0 : 6);
             if (!runePlaced) runePlaced = trySideRune();
             break;
-        case 6: // без руны
+        case 6: // no rune
             break;
     }
 
-    // ---- Уникальный мотив текущего рецепта ----------------------------
-    // Эти мотивы не создают кольцевых сигил. Кольцо остаётся только в
-    // вариантах 0, 8 и 17 — всего три рецепта на весь пул.
+    // The current recipe's unique motif. These motifs do not create ring sigils; the ring is kept
+    // only in variants 0, 8 and 17.
     switch (v.motifMode) {
         case 1:
             DrawBloodDrips(grid, cols, rows, content, seed + 5000, true, true,
@@ -1074,20 +1003,15 @@ void DrawDarkFantasyAtmosphere(std::vector<unsigned char>& grid, int cols, int r
             break;
     }
 
-    // ---- Финальный слой безысходности: каждый рецепт получает отдельный
-    // характер угрозы поверх своей основной архитектуры. Он намеренно
-    // вызывается ПОСЛЕ основного мотива, но перед основанием, чтобы мелкие
-    // следы могли "переехать" крупные декоративные штрихи и чувствоваться
-    // как органическая грязь, а не как аккуратный UI-орнамент.
+    // Final layer of hopelessness: each recipe gets its own threat over its base architecture. It
+    // is called after the main motif but before the base, so small traces can run over larger
+    // decorative strokes and feel like organic grime rather than tidy UI ornamentation.
     DrawDespairLayer(grid, cols, rows, content, seed + 9000, variantIndex,
                      std::max(3, v.motifDensity));
 
-    // ---- Основание — рваная черта под content-зоной, только если снизу
-    // реально есть место под полноценную линию. Одиночный факел (без линии)
-    // требует куда меньше места и ставится отдельно, только для главного
-    // меню (пауза внизу не украшается факелом, см. !pauseMenu — так было и
-    // раньше). bottomDoubleRule добавляет вторую, более тонкую полосу чуть
-    // ниже первой — только если места хватает на обе.
+    // Base: a ragged line under the content zone only if there is room for a full line. A single
+    // bottom torch needs less room and is main-menu only. bottomDoubleRule adds a thinner second
+    // band if there is room for both.
     if (!pauseMenu && v.bottomTorch && bottomGapAvailable >= 2) {
         const int torchX = (content.x0 + content.x1) / 2 - std::min(20, (content.x1 - content.x0) / 3);
         DrawTorch(grid, cols, rows, torchX, content.y1 + 1, seed + 15);

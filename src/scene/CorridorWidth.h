@@ -2,57 +2,20 @@
 #include <vector>
 #include <functional>
 
-// ============================================================================
-// CorridorWidth — "дешёвый" вариант разной ширины коридоров (см. второй
-// документ ТЗ, пункт 2): остаёмся в grid-модели MapGenerator (1 клетка =
-// 1 юнит), НЕ переходим на sector-граф с полигонами комнат (это отдельный,
-// намного более дорогой шаг, сознательно не делается).
-//
-// Идея: после того как MapGenerator уже построил лабиринт (DFS/recursive
-// backtracker на сетке "1 шаг = 2 клетки"), между КАЖДОЙ парой соседних
-// комнат-клеток по конструкции генератора стоит клетка-"стена-перегородка"
-// (см. MapGenerator.cpp: cellAt()/wallCell) — она либо уже стала полом
-// (если DFS прошёл именно через это ребро), либо осталась стеной (ребро
-// не вошло в остовное дерево). Отдельным проходом ПОСЛЕ генерации мы
-// иногда сносим ещё и такие "оставшиеся" стены-перегородки — если у
-// стены открыто с ОБЕИХ противоположных сторон (не с соседних, как у
-// среза угла WallShapes — там ортогональные соседи, здесь именно
-// противоположные), значит по обе стороны от неё уже коридор/комната, и
-// снос сливает их в более широкий проход. Сам DFS-обход и структура
-// лабиринта (какие комнаты вообще связаны) не меняются — это ровно та же
-// логика, что превращает "идеальный" лабиринт (одно решение) в "плетёный"
-// (с петлями/более широкими развязками), только применённая выборочно.
-//
-// Как и WallShapes/Columns — отдельный проход НАД готовым гридом,
-// MapGenerator не трогается. Порядок вызовов в DungeonScene::generateMap():
-// ApplyWidening() должен идти ПЕРВЫМ (до Columns::BuildColumns и
-// WallShapes::BuildCornerCuts) — оба читают финальный грид, и открывшиеся
-// после расширения грани должны быть им уже видны (та же причина, по
-// которой Columns идёт до WallShapes, см. Columns.h).
-// ============================================================================
+// Variable corridor width within the grid model: the maze's "partition walls" (walls with floor on
+// both opposite sides) are knocked down at random, merging neighboring corridors into wider
+// passages and adding loops (a "braided" maze). A separate pass over the finished grid; in
+// generateMap() it runs first, before Columns and BuildCornerCuts, which must see the opened faces.
 namespace CorridorWidth {
 
-// Доля eligible-кандидатов (см. ApplyWidening), которые реально сносятся,
-// если не задан widenProbabilityAt (единая вероятность на всю карту —
-// как и было до зонирования, см. тот же принцип в WallShapes::
-// kChamferProbability/Columns). Небольшая по умолчанию — цель ощутимое
-// "иногда шире", а не превратить весь лабиринт в одну комнату.
+// Fraction of candidates actually knocked down when widenProbabilityAt is not given. Small by
+// default: the goal is a noticeable "sometimes wider", not merging the whole maze into one room.
 constexpr float kWidenProbability = 0.12f;
 
-// Мутирует map: некоторые "стены-перегородки" между двумя
-// противоположно открытыми клетками становятся полом. Возвращает битовую
-// маску размера mapW*mapH (0/1) — какие именно клетки стали полом ИМЕННО
-// в этом проходе (не были полом ни от MapGenerator, ни от Columns) — она
-// нужна только для отладочной визуализации (см. DebugMapOverlay:
-// показать, где ширина реально расширилась, а не только "стало ли
-// шире" по общему ощущению).
-//
-// seed — тот же seed, что и у MapGenerator::Generate() — детерминированное
-// "Продолжить" (тот же принцип, что и везде в этом слое правок).
-//
-// widenProbabilityAt — опционально: вероятность конкретно для этой
-// клетки (см. Zoning.h — там же типичная реализация через сектор). Если
-// не передан — единая kWidenProbability на всю карту.
+// Mutates map, turning some "partition walls" into floor. Returns a bit mask of the cells that
+// became floor in this pass specifically (needed only for debug visualization, DebugMapOverlay).
+// seed: the same seed as MapGenerator::Generate(), for a deterministic result. widenProbabilityAt:
+// optional per-cell probability (see Zoning.h); falls back to the flat kWidenProbability if empty.
 std::vector<unsigned char> ApplyWidening(
     int mapW, int mapH,
     std::vector<int>& map,

@@ -4,12 +4,9 @@
 #include "SkinnedModel.h"
 #include "AssetPath.h"
 
-// glm::slerp для кватернионов (используется при смешивании поз, см.
-// sampleAnimationBlended()) объявлен только в gtx/quaternion.hpp —
-// experimental-части GLM, а не в стабильной gtc/quaternion.hpp. Без
-// этого define компилятор (проверено на MinGW) выдаёт #error вместо
-// предупреждения — GLM намеренно требует явного согласия на
-// experimental-заголовки.
+// glm::slerp is only declared in the experimental gtx/quaternion.hpp, not the stable gtc header.
+// Without this define MinGW errors instead of warning: GLM requires an explicit opt-in for
+// experimental headers.
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
@@ -20,8 +17,6 @@
 #include <cmath>
 #include <algorithm>
 
-// stb_image: implementation-блок уже собран ровно один раз в
-// WallTexture.cpp — здесь только объявления.
 #include "stb_image.h"
 
 namespace {
@@ -131,13 +126,9 @@ bool SkinnedModel::load(const std::string& path, bool loadDiffuseTexture)
         {
             case cgltf_attribute_type_position: posAcc = attr.data; break;
             case cgltf_attribute_type_normal:   normAcc = attr.data; break;
-            // ПО ПРОСЬБЕ ВОЗВРАЩЕНО: раньше здесь стоял фикс "брать
-            // именно COLOR_0/TEXCOORD_0 по attr.index==0" — но результат
-            // без него (берётся просто ПОСЛЕДНИЙ попавшийся COLOR-
-            // атрибут — у THE WRAPPED их два, значит уже НЕ обязательно
-            // COLOR_0) визуально понравился больше (см. скриншот
-            // render_Attack_Lunge.png — характерные разноцветные потёки),
-            // поэтому фикс сознательно откатывается для ЭТОЙ модели.
+            // Taking the last COLOR attribute encountered (THE WRAPPED has two, not necessarily
+            // COLOR_0) looked better than strictly COLOR_0; deliberately left this way for this
+            // model.
             case cgltf_attribute_type_color:
                 colorAcc = attr.data;
                 break;
@@ -187,9 +178,6 @@ bool SkinnedModel::load(const std::string& path, bool loadDiffuseTexture)
         }
         else
         {
-            // Нет вершинного цвета вообще — белый (1.0 = не искажает
-            // текстуру при умножении, если она есть; если нет ни того,
-            // ни другого — тогда честно белый, редкий крайний случай).
             verts[i].color = glm::vec3(1.0f);
         }
 
@@ -233,7 +221,6 @@ bool SkinnedModel::load(const std::string& path, bool loadDiffuseTexture)
             indices[i] = (GLuint)i;
     }
 
-    // ---- Скелет ----
     const cgltf_skin& skin = data->skins[0];
     m_joints.resize(skin.joints_count);
 
@@ -247,9 +234,9 @@ bool SkinnedModel::load(const std::string& path, bool loadDiffuseTexture)
         Joint& joint = m_joints[i];
         joint.name = node->name ? node->name : ("joint_" + std::to_string(i));
 
-        // Ищем ближайшего ПРЕДКА, который тоже входит в этот скин — у
-        // арматуры бывают промежуточные узлы (сам объект Armature, доп.
-        // группы), не являющиеся суставами сами по себе.
+        // Look for the nearest ancestor that is also part of this skin: armatures often have
+        // intermediate nodes (the Armature object itself, extra groups) that are not joints
+        // themselves.
         joint.parentIndex = -1;
         for (const cgltf_node* p = node->parent; p != nullptr; p = p->parent)
         {
@@ -276,10 +263,6 @@ bool SkinnedModel::load(const std::string& path, bool loadDiffuseTexture)
         }
     }
 
-    // ---- Анимации ----
-    // Сохраняем ВСЕ клипы, что есть в файле, под их именами — см.
-    // SkinnedModel.h за пояснением, зачем (ничего не выбрасывается при
-    // загрузке, даже если сейчас используется только один клип).
     m_clips.resize(data->animations_count);
     for (cgltf_size a = 0; a < data->animations_count; ++a)
     {
@@ -292,7 +275,7 @@ bool SkinnedModel::load(const std::string& path, bool loadDiffuseTexture)
             const cgltf_animation_channel& channel = anim.channels[c];
             auto it = nodeToJoint.find(channel.target_node);
             if (it == nodeToJoint.end())
-                continue; // канал анимирует узел, не являющийся суставом этого скина
+                continue; // channel animates a node that isn't a joint of this skin
 
             int jointIndex = it->second;
             const cgltf_animation_sampler* sampler = channel.sampler;
@@ -333,11 +316,8 @@ bool SkinnedModel::load(const std::string& path, bool loadDiffuseTexture)
         }
     }
 
-    // ---- Диффузная текстура (см. SkinnedModel.h::hasDiffuseTexture()) ----
-    // loadDiffuseTexture=false по умолчанию (см. большой комментарий у
-    // объявления в SkinnedModel.h) — ПРОПУСКАЕМ decode+заливку в VRAM
-    // целиком, если вызывающий код заранее знает, что текстура рисоваться
-    // не будет (сейчас так у врага — см. DungeonScene.cpp).
+    // loadDiffuseTexture = false skips the decode and VRAM upload entirely when the caller already
+    // knows the texture will not be drawn (currently the case for the enemy, see DungeonScene.cpp).
     if (loadDiffuseTexture &&
         prim.material &&
         prim.material->has_pbr_metallic_roughness &&
@@ -351,10 +331,6 @@ bool SkinnedModel::load(const std::string& path, bool loadDiffuseTexture)
 
         if (image->buffer_view)
         {
-            // Встроено прямо в .glb (типичный случай для glTF Binary
-            // экспорта из Blender, как у THE WRAPPED) — читаем байты
-            // напрямую из уже загруженного буфера, никакого отдельного
-            // файла на диске искать не нужно.
             const cgltf_buffer_view* bv = image->buffer_view;
             pngData = (const unsigned char*)bv->buffer->data + bv->offset;
             pngSize = bv->size;
@@ -370,9 +346,6 @@ bool SkinnedModel::load(const std::string& path, bool loadDiffuseTexture)
                 glBindTexture(GL_TEXTURE_2D, m_diffuseTexture);
                 glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
                 glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, texW, texH, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
-                // Тот же режим фильтрации, что и у текстур стен (см.
-                // WallTexture.cpp) — NEAREST, под общую пиксельную
-                // эстетику игры, не мыльный LINEAR.
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST_MIPMAP_NEAREST);
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -401,8 +374,6 @@ bool SkinnedModel::load(const std::string& path, bool loadDiffuseTexture)
 
     cgltf_free(data);
 
-    // ---- Заливка в GPU (один раз, статично — топология не меняется,
-    // меняются только boneMatrices, см. sampleAnimation()) ----
     glGenVertexArrays(1, &m_vao);
     glGenBuffers(1, &m_vbo);
     glGenBuffers(1, &m_ebo);
@@ -466,10 +437,9 @@ glm::mat4 SkinnedModel::localJointTransform(const AnimationClip& clip, int joint
 void SkinnedModel::computeGlobalTransforms(const AnimationClip& clip, float time, std::vector<glm::mat4>& outGlobal) const
 {
     outGlobal.resize(m_joints.size());
-    // ВАЖНО: предполагается порядок "родитель раньше ребёнка" в
-    // m_joints — так строит joints[] сам экспортёр glTF (обход
-    // иерархии сверху вниз), поэтому один линейный проход без
-    // рекурсии корректен.
+    // Assumes "parent before child" order in m_joints: this is how the glTF exporter builds
+    // joints[] (top-down hierarchy traversal), so a single linear pass without recursion is
+    // correct.
     for (size_t i = 0; i < m_joints.size(); ++i)
     {
         glm::mat4 local = localJointTransform(clip, (int)i, time);
@@ -488,19 +458,6 @@ void SkinnedModel::sampleAnimation(int clipIndex, float timeSeconds, std::vector
     float t = clip.duration > 0.0f ? std::fmod(timeSeconds, clip.duration) : 0.0f;
     if (t < 0.0f) t += clip.duration;
 
-    // ОПТИМИЗАЦИЯ ("лишняя аллокация каждый кадр на каждого врага") —
-    // раньше здесь стоял локальный std::vector<glm::mat4> global,
-    // выделяемый заново на КАЖДЫЙ вызов — а вызывается это раз за кадр
-    // на КАЖДОГО загруженного врага (см. EnemyCharacter::update()), то
-    // есть до 8 аллокаций/кадр только на это. m_globalTransformScratch —
-    // переиспользуемый scratch-буфер (см. .h) вместо этого: тот же
-    // приём "zero-allocation", что уже применяется в остальном движке
-    // (см. DungeonScene.h::reserveRenderScratchBuffers()). mutable —
-    // это ЧИСТО рабочая память метода, не часть логического состояния
-    // модели, поэтому не нарушает const (важно: SkinnedModel теперь
-    // ОБЩАЯ на всех врагов, см. DungeonScene::m_enemySharedModel, каждый
-    // вызывает эти const-методы по очереди в одном потоке — переиспользование
-    // безопасно, т.к. вызовы никогда не пересекаются/не рекурсируют).
     computeGlobalTransforms(clip, t, m_globalTransformScratch);
 
     for (size_t i = 0; i < m_joints.size(); ++i)
@@ -540,15 +497,9 @@ void SkinnedModel::sampleAnimationBlended(
     float tB = clipB.duration > 0.0f ? std::fmod(timeB, clipB.duration) : 0.0f;
     if (tB < 0.0f) tB += clipB.duration;
 
-    // Блендим T/R/S КАЖДОГО сустава отдельно в обеих позах (не сами
-    // матрицы — интерполировать матрицы напрямую некорректно, вращение
-    // "поплывёт"), потом уже собираем в матрицы — обычный, стандартный
-    // способ смешивания скелетных поз.
-    //
-    // ОПТИМИЗАЦИЯ — тот же переиспользуемый m_globalTransformScratch,
-    // что и в sampleAnimation() выше (см. большой комментарий там),
-    // вместо локального std::vector, аллоцируемого заново каждый кадр
-    // на каждого врага.
+    // Blend each joint's T/R/S separately across both poses (not the matrices: interpolating those
+    // directly is wrong, the rotation would swim), then assemble into matrices: the standard way to
+    // blend skeletal poses. It reuses m_globalTransformScratch, like sampleAnimation() above.
     m_globalTransformScratch.resize(m_joints.size());
     std::vector<glm::mat4>& globalBlended = m_globalTransformScratch;
 

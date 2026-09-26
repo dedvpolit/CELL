@@ -1,29 +1,18 @@
 #pragma once
 #include <glm/glm.hpp>
 
-// ============================================================================
-// Culling — чистая математика фрустум-куллинга, без побочных эффектов и без
-// обращений к состоянию сцены (никакого OpenGL, никаких полей DungeonScene).
-// Вынесено из DungeonScene при разбиении монолита на модули.
-//
-// Используется в DungeonScene::render() каждый кадр: ExtractFrustumPlanes()
-// строит 6 плоскостей текущей view-projection матрицы, AabbInFrustum()
-// проверяет по ним каждый чанк геометрии (см. DungeonScene::m_chunks) —
-// невидимые чанки пропускаются при построении списка отрисовки.
-// ============================================================================
+// Pure frustum-culling math (no OpenGL, no scene state), pulled out of DungeonScene::render():
+// ExtractFrustumPlanes() builds 6 planes from the view-projection matrix, AabbInFrustum() rejects
+// invisible geometry chunks against them (see SceneGeometry::chunks()).
 namespace Culling {
 
-// Строки vp (glm хранит матрицы по столбцам, поэтому строки собираются
-// из столбцов) дают 6 плоскостей фрустума в порядке
-// left/right/bottom/top/near/far, каждая нормализована.
+// Rows of vp give the planes in left/right/bottom/top/near/far order (glm stores matrices
+// column-major, so rows are built from columns).
 void ExtractFrustumPlanes(const glm::mat4& vp, glm::vec4 outPlanes[6]);
 
-// Консервативный тест AABB-против-фрustuma: для каждой плоскости берём
-// угол AABB, наиболее выступающий по нормали плоскости ("positive
-// vertex") — если даже он снаружи, весь бокс снаружи. Возможны редкие
-// ложные срабатывания "видимо" у самых краёв фрустума (бокс считается
-// видимым, когда снаружи только его угол) — это то, что нужно для
-// куллинга: он никогда не скрывает то, что реально видно на экране.
+// Conservative test: for each plane take the AABB corner furthest along its normal (the "positive
+// vertex"); if that corner is outside, the whole box is outside. An occasional false "visible" at
+// frustum edges is fine: the test must never hide something actually on screen.
 bool AabbInFrustum(const glm::vec3& mn, const glm::vec3& mx, const glm::vec4 planes[6]);
 
 } // namespace Culling

@@ -3,123 +3,66 @@
 #include <functional>
 #include "CorridorWidth.h"
 
-// ============================================================================
-// Zoning — Шаг "разные зоны внутри одного лабиринта" (см. второй документ
-// ТЗ). Делит готовый грид на органичные blob-области (Voronoi-подобно: N
-// случайных центров, клетка принадлежит ближайшему) и даёт каждой свой
-// "профиль стиля" (вероятность среза угла / колонны / ширины коридора) —
-// САМ MapGenerator не меняется вообще, зонирование это ещё один отдельный
-// проход поверх готового грида, ровно как WallShapes/Columns уже устроены.
-//
-// Было: прямоугольные сектора фиксированного размера (см. историю правок).
-// Blob-области — вторая половина исходной формулировки ТЗ ("грубо
-// прямоугольные сектора ИЛИ blob-области по seed") — заменяют прямоугольную
-// сетку на органичную форму региона, не меняя ничего в том, ЧТО регион
-// делает (тот же ZoneStyle, тот же StyleAt() интерфейс) — только форму
-// границы между регионами.
-//
-// Важно: зонирование НЕ решает, какие клетки eligible (это по-прежнему
-// WallShapes::BuildCornerCuts / Columns::BuildColumns — топология угла/
-// изоляции клетки не зависит от региона), оно только МЕНЯЕТ ВЕРОЯТНОСТЬ,
-// с которой eligible-кандидат конкретно в этом регионе реализуется. Так
-// один и тот же код путей генерации остаётся единственным источником
-// истины про "что вообще можно срезать/во что можно превратить" — регион
-// лишь крутит вероятностные ручки поверх него (см. ТЗ, пункт 1: "Меняется
-// только то, что конкретная клетка... берёт вероятность из профиля своего
-// региона, а не из одного глобального параметра").
-// ============================================================================
+// Divides the finished grid into organic Voronoi-like regions (N random centers) and gives each a
+// style profile (chamfer / column / corridor-width probability). A separate pass over the grid like
+// WallShapes/Columns: it does not decide which cells are eligible (topology stays with those
+// modules), it only sets the probability that an eligible candidate fires.
 namespace Zoning {
 
-// Профиль стиля одного региона.
 struct ZoneStyle {
-    // Заменяет собой WallShapes::kChamferProbability для клеток внутри
-    // этого региона. Диапазон см. kChamferProbabilityRange ниже.
     float chamferProbability = 0.45f;
 
-    // Вероятность, с которой eligible-кандидат в колонну (см.
-    // Columns::BuildColumns — клетка с 4 открытыми ортогональными
-    // соседями) в ЭТОМ регионе реально становится колонной. Раньше
-    // (до зонирования) все такие кандидаты становились колоннами
-    // безусловно — это ровно случай columnProbability=1.0 везде,
-    // так что старое поведение — частный случай нового.
     float columnProbability = 1.0f;
 
-    // Вероятность, с которой eligible "стена-перегородка" (см.
-    // CorridorWidth.h) в этом регионе реально сносится, расширяя
-    // коридор. Разные регионы с разной widenProbability — это и есть
-    // "где-то шире, где-то классический узкий коридор" из ТЗ.
     float widenProbability = CorridorWidth::kWidenProbability;
 
-    // Индекс цветовой палитры стен/пола (см. kPaletteCount ниже, реальные
-    // цвета — в SceneGeometry.cpp::GetZonePalette, т.к. Zoning.h
-    // сознательно не тянет glm). Дискретный набор преднастроенных пар
-    // цветов, а не непрерывный множитель по каждому каналу RGB — так
-    // гарантированно художественно осмысленный результат (не мутные
-    // рандомные оттенки от независимого множителя R/G/B, см. ТЗ:
-    // "возможно текстуры/палитра" в списке параметров профиля региона).
+    // Wall/floor palette index (kPaletteCount; the colors live in SceneGeometry.cpp::GetZonePalette
+    // so Zoning.h stays glm-free). A discrete set of tuned pairs avoids the muddy tints of
+    // independent per-channel multipliers.
     int paletteIndex = 0;
 };
 
-// Число преднастроенных палитр (реальные цвета — SceneGeometry.cpp).
 constexpr int kPaletteCount = 5;
 
-// Диапазоны, из которых зонирование выбирает профиль региона (см.
-// BuildZoneGrid) — специально широкие, чтобы соседние регионы могли
-// ощущаться заметно по-разному: где-то почти всегда прямой угол
-// ("классический" коридор), где-то — почти всегда срезан ("рваный").
+// Ranges a region's profile is picked from (see BuildZoneGrid): deliberately wide, so neighboring
+// regions can feel noticeably different: somewhere almost always a right angle (a "classic"
+// corridor), somewhere almost always chamfered ("ragged").
 constexpr float kChamferProbabilityMin = 0.05f;
 constexpr float kChamferProbabilityMax = 0.75f;
 constexpr float kColumnProbabilityMin = 0.0f;
 constexpr float kColumnProbabilityMax = 1.0f;
-// Разброс шире, чем дефолтная CorridorWidth::kWidenProbability (0.12) в
-// обе стороны — часть регионов почти всегда узкие "классические"
-// коридоры, часть — заметно шире/просторнее.
+// A wider spread than the default CorridorWidth::kWidenProbability in both directions: some regions
+// stay almost always narrow "classic" corridors, others are noticeably wider/roomier.
 constexpr float kWidenProbabilityMin = 0.0f;
 constexpr float kWidenProbabilityMax = 0.35f;
 
-// Целевая площадь одного региона в клетках (число регионов = площадь
-// карты / это число, минимум 1) — держит примерно ту же "зернистость",
-// что и раньше у прямоугольных секторов 32x32, но теперь как ПЛОЩАДЬ
-// Voronoi-ячейки, а не сторона квадрата.
 constexpr int kTargetRegionArea = 32 * 32;
 
-// Ширина (в клетках) полосы сглаживания цвета вокруг границы двух
-// соседних регионов (см. DungeonScene.cpp: BlendedZoneColor()) — баг:
-// раньше StyleAt() отдавал цвет ТОЛЬКО ближайшего региона, поэтому ровно
-// на Voronoi-границе цвет стены/пола мгновенно (за 1 клетку) скакал с
-// палитры одного региона на палитру другого, без всякого перехода.
-// Внутри этой полосы (по обе стороны от границы) цвет — смесь палитр
-// обоих соседних регионов; дальше — чистый цвет региона, как и раньше.
-// ~4 клетки — заметный, но не съедающий весь регион переход (типичный
-// регион ~32x32, радиус ~18 клеток).
+// Width in cells of the color blend around region borders (DungeonScene.cpp: BlendedZoneColor()).
+// StyleAt() returns only the nearest region, so without blending the color would jump at the
+// border.
 constexpr float kPaletteBlendWidth = 4.0f;
 
-// Центр региона в мировых координатах клетки (не glm::vec2 — Zoning
-// сознательно не тянет glm как зависимость, ей тут не нужна вся его
-// арифметика, только x/z и разница координат).
+// A region's center in cell-world coordinates. Not glm::vec2: Zoning deliberately does not depend
+// on glm, it needs only x/z and coordinate differences.
 struct RegionCenter {
     float x = 0.0f;
     float z = 0.0f;
 };
 
-// Результат зонирования: список центров регионов + профиль стиля каждого
-// (тот же индекс). StyleAt() ищет ближайший центр (Voronoi) — не хранит
-// сам map (он не нужен зонированию — оно решает по КООРДИНАТАМ клетки,
-// какой регион её содержит, а не по содержимому клетки).
+// Zoning result: a list of region centers plus each one's style profile (same index). StyleAt()
+// looks up the nearest center (Voronoi). The map itself is not stored: zoning decides a cell's
+// region from coordinates, not from cell content.
 struct ZoneGrid {
     std::vector<RegionCenter> centers;
-    std::vector<ZoneStyle> styles; // тот же индекс, что и centers
+    std::vector<ZoneStyle> styles; // same index as centers
 };
 
-// Разбрасывает kTargetRegionArea-пропорциональное число центров регионов
-// по карте (детерминированно по seed) и назначает каждому свой профиль
-// стиля (см. ZoneStyle) — тот же seed, что и у MapGenerator::Generate()/
-// WallShapes::BuildCornerCuts(), для консистентного "Продолжить".
+// Scatters a number of region centers proportional to kTargetRegionArea across the map
+// (deterministic from the seed) and assigns each its own style profile. Same seed as
+// MapGenerator::Generate()/WallShapes::BuildCornerCuts(), for a consistent CONTINUE.
 ZoneGrid BuildZoneGrid(int mapW, int mapH, unsigned int seed);
 
-// Профиль стиля региона, содержащего клетку (cellX,cellZ) — региона с
-// БЛИЖАЙШИМ центром (Voronoi). За пределами грида/при пустом ZoneGrid —
-// безопасно возвращает ZoneStyle{} по умолчанию, а не мусор/UB.
 const ZoneStyle& StyleAt(const ZoneGrid& grid, int cellX, int cellZ);
 
 } // namespace Zoning

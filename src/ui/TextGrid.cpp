@@ -4,9 +4,8 @@
 namespace MainMenu {
 
 unsigned char CharToGlyph(char c) {
-    // Буквы приходят как есть из английского текста дневников (см.
-    // Diaries.h) — приводим к верхнему регистру, т.к. в атласе только
-    // заглавные буквы (один общий блочный 8x8-шрифт на все нужды UI).
+    // Letters arrive as they are (e.g. from diary text) and are uppercased, since the atlas has
+    // only capital letters (one shared block 8x8 font for all UI needs).
     if (c >= 'a' && c <= 'z') c = (char)(c - 'a' + 'A');
 
     switch (c) {
@@ -53,13 +52,10 @@ unsigned char CharToGlyph(char c) {
         case ':': return GLYPH_COLON;
         case '?': return GLYPH_QMARK;
         case '!': return GLYPH_BANG;
-        default:  return GLYPH_SPACE; // пробел и всё незнакомое — пусто
+        default:  return GLYPH_SPACE; // space and anything unknown — empty
     }
 }
 
-// Пишет один глиф в grid(col,row) с encoding +1, см. AsciiEffect::setUIOverlay().
-// Тихо игнорирует координаты за пределами сетки, чтобы раскладке текста не
-// нужно было самой проверять границы на каждый символ/пиксель.
 void PutGlyph(std::vector<unsigned char>& grid, int cols, int rows,
                       int col, int row, unsigned char glyphIndex) {
     if (col < 0 || col >= cols || row < 0 || row >= rows) return;
@@ -69,20 +65,19 @@ void PutGlyph(std::vector<unsigned char>& grid, int cols, int rows,
 void PutText(std::vector<unsigned char>& grid, int cols, int rows,
                      int col, int row, const std::string& text) {
     for (size_t i = 0; i < text.size(); ++i) {
-        if (text[i] == ' ') continue; // пробел = не трогать клетку (фон/рамка снизу останутся)
+        if (text[i] == ' ') continue; // space = leave the cell untouched (background/frame below stays)
         PutGlyph(grid, cols, rows, col + (int)i, row, CharToGlyph(text[i]));
     }
 }
 
 unsigned char PickHoverAccentChance(int t) {
-    return (t == 0) ? 5u : 9u; // ~2/5 (40%) у внутреннего слоя, ~2/9 (22%) у внешних
+    return (t == 0) ? 5u : 9u; // ~2/5 (40%) for the inner layer, ~2/9 (22%) for outer ones
 }
 
 void DrawBox(std::vector<unsigned char>& grid, int cols, int rows,
                      int x0, int y0, int x1, int y1, int thickness, bool filled, int seed) {
     thickness = std::max(1, thickness);
 
-    // Верх/низ — полоса высотой thickness с каждой стороны.
     for (int t = 0; t < thickness; ++t) {
         const int yTop = y0 + t;
         const int yBot = y1 - t;
@@ -91,11 +86,11 @@ void DrawBox(std::vector<unsigned char>& grid, int cols, int rows,
                 const int y = (side == 0) ? yTop : yBot;
                 unsigned char g;
                 if (x == x0 || x == x1) {
-                    g = (t == 0) ? GLYPH_CORNER : GLYPH_VLINE; // внутренние слои угла — вертикальная "стойка"
+                    g = (t == 0) ? GLYPH_CORNER : GLYPH_VLINE; // inner corner layers — a vertical "post"
                 } else {
                     unsigned int h = Hash(x + side * 977 + t * 131, seed);
                     if (filled && (h % PickHoverAccentChance(t)) < 2u) {
-                        g = PickDenseGlyph(x, y, seed + 500); // редкий "тлеющий" акцент поверх обычной рамки
+                        g = PickDenseGlyph(x, y, seed + 500); // a rare "smoldering" accent over the regular frame
                     } else if (h % 11 == 0)      g = GLYPH_DRIP_BIG;
                     else if (h % 11 == 1) g = GLYPH_DRIP_SMALL;
                     else                   g = GLYPH_HLINE;
@@ -105,8 +100,6 @@ void DrawBox(std::vector<unsigned char>& grid, int cols, int rows,
         }
     }
 
-    // Левая/правая стороны — полоса шириной thickness, без уже
-    // нарисованных выше углов (верх/низ на всю толщину).
     for (int t = 0; t < thickness; ++t) {
         const int xLeft = x0 + t;
         const int xRight = x1 - t;

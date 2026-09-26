@@ -7,12 +7,10 @@ namespace Zoning {
 
 namespace {
 
-// Тот же hash-приём, что и в WallShapes.cpp (splitmix64-подобное
-// перемешивание битов) — здесь по (seed, regionIndex, salt): salt
-// разводит несколько независимых "случайных" чисел для ОДНОГО и того же
-// региона (позиция центра, chamferProbability, columnProbability,
-// widenProbability), чтобы они не были жёстко скоррелированы друг с
-// другом.
+// Same hashing trick as WallShapes.cpp (splitmix64-style bit mixing), keyed by (seed, regionIndex,
+// salt): the salt separates several independent random numbers for the same region (center
+// position, chamferProbability, columnProbability, widenProbability) so they are not tightly
+// correlated.
 float HashUnitFloat(unsigned int seed, int regionIndex, uint32_t salt) {
     uint64_t h = (uint64_t)seed * 0x9E3779B97F4A7C15ull;
     h ^= (uint64_t)(uint32_t)regionIndex * 0xBF58476D1CE4E5B9ull;
@@ -35,36 +33,26 @@ ZoneGrid BuildZoneGrid(int mapW, int mapH, unsigned int seed) {
         return grid;
     }
 
-    // Число регионов — площадь карты / целевая площадь региона, минимум
-    // 1 (совсем маленькие карты — один регион на всю карту, разумное
-    // вырожденное поведение вместо кучи микро-blob'ов).
+    // Region count is map area / target region area, minimum 1: a very small map gets one region
+    // for the whole map instead of a pile of micro-blobs.
     const int numRegions = std::max(1, (mapW * mapH) / kTargetRegionArea);
 
     grid.centers.resize((size_t)numRegions);
     grid.styles.resize((size_t)numRegions);
 
-    // Минимальное расстояние между центрами регионов — без него при
-    // чисто случайном разбросе иногда выпадают два центра почти впритык
-    // друг к другу (см. историю правок — реальный скриншот показал явно
-    // наложившиеся друг на друга debug-маркеры соседних регионов около
-    // одной точки). Порог — доля от "типичного" радиуса региона при
-    // равномерном покрытии; ниже него регион был бы неотличимо тонкой
-    // полоской, а не осмысленным blob'ом.
+    // Minimum distance between region centers: without it, purely random scattering occasionally
+    // drops two centers almost on top of each other. The threshold is a fraction of the typical
+    // region radius under even coverage; below it a region would be an indistinguishably thin
+    // sliver, not a meaningful blob.
     const float typicalRegionRadius = std::sqrt((float)kTargetRegionArea / 3.14159265f);
     const float minCenterDistance = typicalRegionRadius * 0.8f;
     const int kMaxRejectionAttempts = 40;
 
     for (int i = 0; i < numRegions; ++i) {
-        // Позиция центра региона — равномерно по всей карте (два
-        // независимых хэша под salt 10/11), НЕ привязана к какой-либо
-        // сетке — отсюда и органичная (Voronoi) форма итоговых регионов,
-        // в отличие от прежних прямоугольных секторов фиксированного
-        // размера. Rejection sampling (доп. salt 20 на попытку) отбрасывает
-        // позицию, если она слишком близко к уже размещённому центру —
-        // см. minCenterDistance выше. После kMaxRejectionAttempts неудач
-        // просто берём последнюю попытку как есть (не зацикливаемся
-        // навечно на очень плотных картах, где столько несовместимых
-        // друг с другом регионов физически не помещается).
+        // Region centers are uniform over the map (two hashes, salts 10/11) for an organic Voronoi
+        // shape. Rejection sampling drops a position too close to an existing center
+        // (minCenterDistance); after kMaxRejectionAttempts the last attempt is accepted to avoid
+        // looping forever on dense maps.
         float px = 0.0f, pz = 0.0f;
         for (int attempt = 0; attempt < kMaxRejectionAttempts; ++attempt) {
             px = HashUnitFloat(seed, i, 10u + (uint32_t)attempt * 100u) * (float)mapW;
@@ -103,11 +91,9 @@ const ZoneStyle& StyleAt(const ZoneGrid& grid, int cellX, int cellZ) {
     static const ZoneStyle kDefaultStyle{};
     if (grid.centers.empty()) return kDefaultStyle;
 
-    // Voronoi: ближайший центр региона по квадрату расстояния (корень
-    // не нужен — порядок сравнения тот же). Линейный проход по всем
-    // центрам — при типичном числе регионов (единицы-десятки на карту,
-    // см. kTargetRegionArea) это дёшево и вызывается редко (только при
-    // построении карты, не каждый кадр).
+    // Voronoi: the nearest region center by squared distance (no square root needed, the comparison
+    // order is the same). A linear scan over all centers is cheap at the typical region count, and
+    // it runs only at map build time, not every frame.
     const float fx = (float)cellX, fz = (float)cellZ;
     size_t best = 0;
     float bestDistSq = 1e30f;

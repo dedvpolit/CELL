@@ -7,25 +7,18 @@
 #include <cmath>
 #include <cstddef>
 
-// Высота стен во всём файле — было разбросано как повторяющийся магический
-// литерал 30.0f в нескольких местах (BuildFloorAndWallsGreedy, AABB чанков);
-// вынесено в одну константу, т.к. с добавлением колонн (тоже высотой во всю
-// стену) число мест дублирования увеличилось бы дальше.
 static constexpr float kWallHeight = 30.0f;
 
-// Палитра по зоне (см. Zoning::ZoneStyle::paletteIndex) — дискретный набор
-// преднастроенных пар цветов стена/пол, а не непрерывный множитель по
-// каждому каналу (чтобы гарантированно избежать мутных случайных
-// оттенков — см. комментарий в Zoning.h). Индекс 0 — тот же цвет, что был
-// в движке ДО зонирования (тёплый коричневый камень), остальные —
-// заметно другие "темы" региона.
+// Per-zone palette: a discrete set of pre-tuned wall/floor pairs instead of a continuous
+// per-channel multiplier, which avoids muddy random tints. Index 0 is the engine's original warm
+// brown stone; the others are clearly different region themes.
 void SceneGeometry::GetZonePalette(int paletteIndex, glm::vec3& outWallColor, glm::vec3& outFloorColor) {
     static const glm::vec3 kPresets[Zoning::kPaletteCount][2] = {
-        { glm::vec3(0.55f, 0.35f, 0.25f), glm::vec3(0.18f, 0.16f, 0.13f) }, // 0: тёплый коричневый (исходный)
-        { glm::vec3(0.30f, 0.33f, 0.38f), glm::vec3(0.10f, 0.11f, 0.14f) }, // 1: холодный сине-серый камень
-        { glm::vec3(0.28f, 0.38f, 0.24f), glm::vec3(0.10f, 0.14f, 0.10f) }, // 2: замшелый (приглушённый) зелёный
-        { glm::vec3(0.42f, 0.40f, 0.38f), glm::vec3(0.15f, 0.14f, 0.13f) }, // 3: пепельно-серый
-        { glm::vec3(0.50f, 0.28f, 0.22f), glm::vec3(0.17f, 0.12f, 0.10f) }, // 4: красноватая глина
+        { glm::vec3(0.55f, 0.35f, 0.25f), glm::vec3(0.18f, 0.16f, 0.13f) }, // 0: warm brown (original)
+        { glm::vec3(0.30f, 0.33f, 0.38f), glm::vec3(0.10f, 0.11f, 0.14f) }, // 1: cold blue-gray stone
+        { glm::vec3(0.28f, 0.38f, 0.24f), glm::vec3(0.10f, 0.14f, 0.10f) }, // 2: mossy (muted) green
+        { glm::vec3(0.42f, 0.40f, 0.38f), glm::vec3(0.15f, 0.14f, 0.13f) }, // 3: ashen gray
+        { glm::vec3(0.50f, 0.28f, 0.22f), glm::vec3(0.17f, 0.12f, 0.10f) }, // 4: reddish clay
     };
     const int idx = ((paletteIndex % Zoning::kPaletteCount) + Zoning::kPaletteCount) % Zoning::kPaletteCount;
     outWallColor = kPresets[idx][0];
@@ -35,8 +28,6 @@ void SceneGeometry::GetZonePalette(int paletteIndex, glm::vec3& outWallColor, gl
 static void AddQuad(std::vector<Vertex>& verts, std::vector<GLuint>& indices,
                             glm::vec3 a, glm::vec3 b, glm::vec3 c, glm::vec3 d,
                             glm::vec3 normal, glm::vec3 color, float matId = 0.0f) {
-    // 4 unique corner vertices + 6 indices (two triangles) instead of the
-    // old 6 duplicated vertices — same two triangles, a third less data.
     GLuint base = (GLuint)verts.size();
     verts.push_back({a, normal, color, matId});
     verts.push_back({b, normal, color, matId});
@@ -71,19 +62,13 @@ void AddCylinder(std::vector<Vertex>& verts, std::vector<GLuint>& indices, glm::
         glm::vec3 rt0 = tip  + dir0 * radiusTip;
         glm::vec3 rt1 = tip  + dir1 * radiusTip;
 
-        // rb0/rb1 have different normals (dir0/dir1) from rt0/rt1's
-        // matching pair, so unlike a flat quad we can't share all 4
-        // corners between the two triangles of this segment (rb0 is used
-        // with normal dir0 in one triangle only). We still dedup the two
-        // vertices that ARE shared between the segment's two triangles
-        // (rb0+dir0 and rt1+dir1), which is as far as this can go without
-        // splitting normals across triangles (i.e. without per-vertex
-        // smooth normals, which would change the look of the mesh).
+        // rb0/rb1 have different normals than rt0/rt1, so only rb0+dir0 and rt1+dir1 can be shared
+        // between the two triangles; more would need smooth normals and change the look.
         GLuint base0 = (GLuint)verts.size();
-        verts.push_back({rb0, dir0, color, matId}); // base0 + 0
-        verts.push_back({rb1, dir1, color, matId}); // base0 + 1
-        verts.push_back({rt1, dir1, color, matId}); // base0 + 2
-        verts.push_back({rt0, dir0, color, matId}); // base0 + 3
+        verts.push_back({rb0, dir0, color, matId});
+        verts.push_back({rb1, dir1, color, matId});
+        verts.push_back({rt1, dir1, color, matId});
+        verts.push_back({rt0, dir0, color, matId});
 
         indices.push_back(base0 + 0);
         indices.push_back(base0 + 1);
@@ -110,15 +95,14 @@ void AddSphere(std::vector<Vertex>& verts, std::vector<GLuint>& indices, glm::ve
             glm::vec3 p00 = sphPoint(u0, v0), p10 = sphPoint(u1, v0);
             glm::vec3 p01 = sphPoint(u0, v1), p11 = sphPoint(u1, v1);
 
-            // Sphere normals are per-vertex-position (p00/p10/p01/p11 are
-            // each used as both position and normal direction), so all 4
-            // corners of this quad-shaped patch ARE fully shareable
-            // between its two triangles — same dedup as addQuad.
+            // Sphere normals equal the vertex directions (p00/p10/p01/p11 serve as both position
+            // and normal), so all 4 corners of a patch can be shared between its two triangles, as
+            // in AddQuad.
             GLuint base0 = (GLuint)verts.size();
-            verts.push_back({center + p00 * radius, p00, color, matId}); // 0
-            verts.push_back({center + p10 * radius, p10, color, matId}); // 1
-            verts.push_back({center + p11 * radius, p11, color, matId}); // 2
-            verts.push_back({center + p01 * radius, p01, color, matId}); // 3
+            verts.push_back({center + p00 * radius, p00, color, matId});
+            verts.push_back({center + p10 * radius, p10, color, matId});
+            verts.push_back({center + p11 * radius, p11, color, matId});
+            verts.push_back({center + p01 * radius, p01, color, matId});
 
             indices.push_back(base0 + 0);
             indices.push_back(base0 + 1);
@@ -135,21 +119,12 @@ static void AddTorchMesh(
     std::vector<GLuint>& indices,
     glm::vec3 wallBase,
     glm::vec3 normal,
-    int torchIndex)
+    int torchIndex,
+    bool isGuideTorch)
 {
-    // --------------------------------------------------
-    // Ручка факела
-    // --------------------------------------------------
-    // Высота и вылет от стены ЗДЕСЬ должны совпадать с расчётом flamePos
-    // в tryAddTorch() выше (см. комментарий там же про баг "факел висит
-    // в воздухе") — иначе пламя (сфера ниже) и источник света/частицы
-    // (используют flamePos) окажутся в разных местах.
-    //
-    // Вылет ОТРИЦАТЕЛЬНЫЙ (-0.05) — низ держателя намеренно уходит ЗА
-    // лицевую поверхность стены, вглубь её тела, где его перекрывает
-    // собственно меш стены. Это и даёт эффект "рукоять растёт прямо из
-    // камня", а не висит перед стеной в воздухе (положительное смещение
-    // здесь давало именно такой "висящий" эффект, см. историю правок).
+    // Torch handle: height and offset must match flamePos in tryAddTorch(), or the flame and the
+    // light/particle source diverge. The negative offset (-0.05) buries the base in the wall so the
+    // handle grows out of the stone.
 
     glm::vec3 base =
         wallBase
@@ -160,16 +135,8 @@ static void AddTorchMesh(
             0.0f
         );
 
-    // --------------------------------------------------
-    // Верхушка факела
-    // --------------------------------------------------
-    // Вылет отсюда должен быть ЗАМЕТНО больше радиуса сферы пламени
-    // (0.065, см. addSphere ниже) — иначе центр сферы окажется ближе к
-    // стене, чем её собственный радиус, и ближняя половина огонька будет
-    // физически "утоплена" в стене (визуально — пламя касается/врастает
-    // в камень). 0.14 даёт сфере ~0.075 чистого зазора от поверхности
-    // стены — держатель по-прежнему прижат к стене (см. base выше), а
-    // пламя аккуратно "висит" перед ней, не проваливаясь внутрь.
+    // Torch tip: the offset must exceed the flame sphere radius (0.065) or half the flame would
+    // sink into the wall.
     glm::vec3 tip =
         wallBase
         + normal * 0.14f
@@ -185,16 +152,21 @@ static void AddTorchMesh(
         0.16f
     );
 
-    glm::vec3 flameColor(
-        1.0f,
-        0.60f,
-        0.15f
-    );
+    // Landmark torches (firstGuideTorchIndex): the shader reads vColor.r only as flicker
+    // brightness, so g/b are free. The signal (1, 0, 1), which a regular torch never has, selects
+    // the blue flame gradient.
+    glm::vec3 flameColor = isGuideTorch
+        ? glm::vec3(1.0f, 0.0f, 1.0f)    // signal "blue flame" for the shader
+        : glm::vec3(1.0f, 0.60f, 0.15f);
 
-    // Держатель сужен и укорочен (радиус 0.055->0.038 у основания,
-    // 0.035->0.022 у верха) — раньше на тонкой "спичке" сидел непропорц
-    // ионально крупный шар пламени (см. addSphere ниже, радиус там тоже
-    // уменьшен), из-за чего факел выглядел как воздушный шарик на палочке.
+    // The handle carries its torch index in matId (1.0..<1.25, below the vMatId > 1.5 flame branch)
+    // so pickupWallTorch() can hide exactly this handle.
+    const float HANDLE_ID_SCALE = 4096.0f;
+    const float handleMatId =
+        1.0f
+        + static_cast<float>(torchIndex)
+          / HANDLE_ID_SCALE;
+
     AddCylinder(
         verts,
         indices,
@@ -202,30 +174,14 @@ static void AddTorchMesh(
         tip,
         0.038f,
         0.022f,
-        8,
+        isGuideTorch ? 4 : 8, // fewer segments for landmark torches (saves RAM); they are decorative
         handleColor,
-        1.0f
+        handleMatId
     );
 
-    // --------------------------------------------------
-    // Пламя
-    //
-    // ID цвета для шейдера:
-    //     2.0 + torchIndex / 100
-    //
-    // Само шейдер использует ID пламени.
-    // --------------------------------------------------
+    // Flame. matId is 2.0 .. <2.25, so even at MAX_TORCHES = 1024 it stays below the 2.5 material
+    // boundary.
 
-    // --------------------------------------------------
-    // Вычисление ID пламени.
-    //
-    // Итоговое значение 2.0 .. <2.25,
-    // чтобы даже при MAX_TORCHES = 1024
-    // не залезать за границу материала 2.5.
-    // --------------------------------------------------
-
-
-    // addTorchMesh
     const float FLAME_ID_SCALE = 4096.0f;
 
     float flameMatId =
@@ -233,10 +189,8 @@ static void AddTorchMesh(
         + static_cast<float>(torchIndex)
           / FLAME_ID_SCALE;
 
-    // Сфера пламени уменьшена (0.10 -> 0.065) и опущена ближе к верхушке
-    // держателя (0.06 -> 0.045), чтобы пропорции факела читались как
-    // единое целое — тонкий держатель с компактным огоньком, а не
-    // маленькая палка с непропорционально огромным шаром сверху.
+    // The flame sphere is small (radius 0.065) and sits close to the handle tip, so the torch reads
+    // as one object: a thin handle with a compact flame.
     AddSphere(
         verts,
         indices,
@@ -247,100 +201,36 @@ static void AddTorchMesh(
             0.0f
         ),
         0.065f,
-        8,
-        5,
+        isGuideTorch ? 5 : 8, // fewer segments, same reason as the handle
+        isGuideTorch ? 3 : 5,
         flameColor,
         flameMatId
     );
 }
 
-// [comment corrupted in source file - original text lost/unrecoverable]
-//
-// [comment corrupted in source file - original text lost/unrecoverable]
-// [comment corrupted in source file - original text lost/unrecoverable]
-// [comment corrupted in source file - original text lost/unrecoverable]
-// [comment corrupted in source file - original text lost/unrecoverable]
-static void AddWinButtonMesh(std::vector<Vertex>& verts, std::vector<GLuint>& indices,
-                              const glm::vec3& winButtonPos)
-{
-    const glm::vec3 base = winButtonPos;
-
-    const glm::vec3 pedestalColor(0.55f, 0.42f, 0.12f);  // [comment corrupted in source file - original text lost/unrecoverable]
-    const glm::vec3 capColor(0.25f, 0.95f, 0.35f);  // [comment corrupted in source file - original text lost/unrecoverable]
-
-    // [comment corrupted in source file - original text lost/unrecoverable]
-    AddCylinder(
-        verts,
-        indices,
-        base,
-        base + glm::vec3(0.0f, 0.9f, 0.0f),
-        0.35f,
-        0.30f,
-        16,
-        pedestalColor,
-        0.0f
-    );
-
-    // [comment corrupted in source file - original text lost/unrecoverable]
-    AddCylinder(
-        verts,
-        indices,
-        base + glm::vec3(0.0f, 0.9f, 0.0f),
-        base + glm::vec3(0.0f, 1.05f, 0.0f),
-        0.30f,
-        0.22f,
-        16,
-        pedestalColor,
-        0.0f
-    );
-
-    // [comment corrupted in source file - original text lost/unrecoverable]
-    AddSphere(
-        verts,
-        indices,
-        base + glm::vec3(0.0f, 1.18f, 0.0f),
-        0.16f,
-        14,
-        10,
-        capColor,
-        0.0f
-    );
-}
-
-// Простой пропс "раскрытый дневник" на полу кармана (см. Diaries.h) —
-// плоская обложка + две "страницы" по бокам от корешка, всё на floor-
-// высоте (небольшой y-оффсет от 0, чтобы не z-fight'ить с полом). Не
-// текстурировано — плоские цвета, как и весь остальной меш в этом файле
-// (matId=0.0f — обычная непрозрачная геометрия, без спецэффекта).
-// Игрок не поднимает и не убирает эту геометрию — она печётся один раз в
-// build() и остаётся в мире и после того, как дневник прочитан (см.
-// DungeonScene::m_diariesRead — это только UI-флаг, не геометрия).
-// Маленький самостоятельный бокс (верх + 4 борта, низ не нужен — всё
-// стоит на полу либо зажато другими частями книги, см. AddDiaryMesh()
-// ниже) с одним цветом на все грани. Та же вершинная развёртка
-// (лево-право-право-лево по каждой грани), что и у стен/срезов в
-// остальном файле (см. AddChamferedWallCorner выше).
+// A small box with a top and 4 sides (no bottom: it sits on the floor or is covered by other parts
+// of the book), one color per face. Building block of the diary prop below.
 static void AddBoxNoBottom(std::vector<Vertex>& verts, std::vector<GLuint>& indices,
                             float x0, float x1, float y0, float y1, float z0, float z1,
                             const glm::vec3& color)
 {
-    AddQuad(verts, indices, // верх
+    AddQuad(verts, indices,
             glm::vec3(x0, y1, z0), glm::vec3(x1, y1, z0),
             glm::vec3(x1, y1, z1), glm::vec3(x0, y1, z1),
             glm::vec3(0, 1, 0), color, 0.0f);
-    AddQuad(verts, indices, // юг
+    AddQuad(verts, indices,
             glm::vec3(x0, y0, z0), glm::vec3(x1, y0, z0),
             glm::vec3(x1, y1, z0), glm::vec3(x0, y1, z0),
             glm::vec3(0, 0, -1), color, 0.0f);
-    AddQuad(verts, indices, // север
+    AddQuad(verts, indices,
             glm::vec3(x0, y0, z1), glm::vec3(x1, y0, z1),
             glm::vec3(x1, y1, z1), glm::vec3(x0, y1, z1),
             glm::vec3(0, 0, 1), color, 0.0f);
-    AddQuad(verts, indices, // запад
+    AddQuad(verts, indices,
             glm::vec3(x0, y0, z0), glm::vec3(x0, y0, z1),
             glm::vec3(x0, y1, z1), glm::vec3(x0, y1, z0),
             glm::vec3(-1, 0, 0), color, 0.0f);
-    AddQuad(verts, indices, // восток
+    AddQuad(verts, indices,
             glm::vec3(x1, y0, z0), glm::vec3(x1, y0, z1),
             glm::vec3(x1, y1, z1), glm::vec3(x1, y1, z0),
             glm::vec3(1, 0, 0), color, 0.0f);
@@ -349,46 +239,22 @@ static void AddBoxNoBottom(std::vector<Vertex>& verts, std::vector<GLuint>& indi
 static void AddDiaryMesh(std::vector<Vertex>& verts, std::vector<GLuint>& indices,
                           const glm::vec3& diaryPos)
 {
-    // БАГФИКС 2 ("модель — просто кирпич, нет читаемого силуэта обложки/
-    // корешка") — прошлая версия была одним сплошным боксом одного
-    // размера: цвет менялся по граням, но геометрически это был ровный
-    // параллелепипед, никакого настоящего перепада силуэта. Теперь —
-    // три РАЗНЫХ по размеру объёма, как у настоящей книги:
-    //   - корешок — сплошной, во всю высоту, вдоль западного края;
-    //   - обложка — верхняя и нижняя "крышки" переплёта, БОЛЬШИЕ (во всю
-    //     ширину/глубину книги, кроме корешка), нависают над листами;
-    //   - листы — блок МЕНЬШЕ обложки (утоплен внутрь на 3 стороны, не
-    //     со стороны корешка), зажат между крышками по высоте.
-    // Разница размеров между обложкой и утопленными листами и даёт
-    // настоящий видимый перепад силуэта — не просто смену цвета на
-    // плоской грани, как раньше.
-    //
-    // Размер общего объёма — на ~15% меньше предыдущей версии (по
-    // отзыву: "уменьшить модельку на 10-20%"; было halfW=0.17/halfD=
-    // 0.12/thickness=0.09).
-    const float halfW = 0.145f;        // половина ширины книги вдоль X (включая корешок)
-    const float halfD = 0.10f;         // половина глубины вдоль Z
+    // Diary prop: a small book on the pocket floor, flat colors (matId 0.0), baked once; it stays
+    // after reading (m_diariesRead is only a UI flag). Three volumes give the silhouette: solid
+    // spine, top/bottom cover plates, and an inset page block between them.
+    const float halfW = 0.145f;        // half the book's width along X (including the spine)
+    const float halfD = 0.10f;         // half the depth along Z
     const float totalThickness = 0.075f;
-    const float coverPlate = 0.010f;   // толщина каждой "крышки" переплёта (верх/низ)
-    const float spineWidth = 0.022f;   // ширина корешка вдоль X
-    const float pageInset = 0.016f;    // насколько листы утоплены от края обложки (E/S/N — не со стороны корешка)
+    const float coverPlate = 0.010f;   // thickness of each binding "plate" (top/bottom)
+    const float spineWidth = 0.022f;   // spine width along X
+    const float pageInset = 0.016f;    // how far the pages are inset from the cover edge (not the spine side)
 
-    // БАГФИКС 4 ("выглядит как альбом первоклассника, а не книга") —
-    // раньше корешок шёл вдоль КОРОТКОЙ стороны (halfD=0.10, глубина
-    // 0.20), а книга "раскрывалась" вдоль ДЛИННОЙ (halfW=0.145, ширина
-    // 0.29) — у настоящей книги наоборот: корешок идёт вдоль ДЛИННОЙ
-    // грани страницы, а раскрытие — вдоль короткой. С перепутанными
-    // осями силуэт читался как landscape-блокнот/альбом, а не книга.
-    // Переставил корешок на грань Z (вдоль длинной X-стороны).
-    //
-    // Плюс раньше корешок был ТЕМ ЖЕ цветом, что и обложка — сверху (а
-    // игрок чаще всего смотрит на книгу именно сверху-сбоку) это давало
-    // один сплошной прямоугольник без единой контрастной детали,
-    // усиливая впечатление "просто цветной блокнот". Теперь у корешка
-    // отдельный, заметно более тёмный оттенок — видимая полоса-акцент.
-    const glm::vec3 coverColor(0.58f, 0.22f, 0.14f); // обложка — выцветший бордовый
-    const glm::vec3 spineColor(0.28f, 0.08f, 0.05f); // корешок — заметно темнее, отдельная деталь
-    const glm::vec3 pageColor(0.82f, 0.75f, 0.58f);  // утопленный срез листов
+    // The spine runs along the long X side (as in a real book: the spine along the page's long
+    // edge, the opening along the short one) and has its own, noticeably darker color, so from
+    // above there is a contrasting accent stripe instead of one solid rectangle.
+    const glm::vec3 coverColor(0.58f, 0.22f, 0.14f); // cover — faded maroon
+    const glm::vec3 spineColor(0.28f, 0.08f, 0.05f); // spine — noticeably darker, a separate accent
+    const glm::vec3 pageColor(0.82f, 0.75f, 0.58f);  // inset page edge
 
     const float xOuter0 = diaryPos.x - halfW;
     const float xOuter1 = diaryPos.x + halfW;
@@ -397,16 +263,13 @@ static void AddDiaryMesh(std::vector<Vertex>& verts, std::vector<GLuint>& indice
     const float yBase   = diaryPos.y;
     const float yTop    = yBase + totalThickness;
 
-    // Корешок — сплошной, во всю высоту книги, вдоль южной грани (по
-    // ДЛИННОЙ X-стороне — см. комментарий выше).
     AddBoxNoBottom(verts, indices,
                     xOuter0, xOuter1, yBase, yTop, zOuter0, zOuter0 + spineWidth,
                     spineColor);
 
-    // Обложка: верхняя и нижняя "крышки" переплёта — во всю ширину, по
-    // оставшейся глубине (корешок уже занял свою полосу выше), накрывают
-    // блок листов и нависают над ним по трём открытым сторонам — именно
-    // этот нависающий край и читается как силуэт закрытой книги.
+    // Cover: top and bottom binding plates over the full width and the remaining depth (the spine
+    // claimed its strip above), covering the pages and overhanging them on the three open sides;
+    // that overhang reads as a closed book's silhouette.
     AddBoxNoBottom(verts, indices,
                     xOuter0, xOuter1, yTop - coverPlate, yTop, zOuter0 + spineWidth, zOuter1,
                     coverColor);
@@ -414,9 +277,9 @@ static void AddDiaryMesh(std::vector<Vertex>& verts, std::vector<GLuint>& indice
                     xOuter0, xOuter1, yBase, yBase + coverPlate, zOuter0 + spineWidth, zOuter1,
                     coverColor);
 
-    // Листы — утоплены внутрь от обложки на 3 стороны (запад/восток и
-    // северный "обрез"; со стороны корешка утапливать нечего — там
-    // сплошной клеевой блок), зажаты между крышками ровно по высоте.
+    // Pages are inset from the cover on 3 sides (west/east and the north trim); the spine side has
+    // nothing to inset, since it is a solid glued block. They are clamped exactly between the
+    // plates in height.
     AddBoxNoBottom(verts, indices,
                     xOuter0 + pageInset, xOuter1 - pageInset,
                     yBase + coverPlate, yTop - coverPlate,
@@ -424,31 +287,10 @@ static void AddDiaryMesh(std::vector<Vertex>& verts, std::vector<GLuint>& indice
                     pageColor);
 }
 
-
-// ---------------- Шаг 1: срезанные углы стен (см. WallShapes.h) ----------------
-//
-// Одна клетка со срезанным углом — НЕ часть greedy-меша (её грани не
-// одной длины со всей "простынёй" соседних клеток), поэтому она строится
-// целиком отдельно, до/вместо основных 4 проходов ниже. Greedy-проходы
-// просто пропускают такие клетки (см. cornerCuts[...] != None в условиях
-// runов ниже) — эта функция уже эмитит все их грани сама.
-//
-// Эмитятся ровно те же 4 боковые грани, что построил бы обычный
-// прямоугольный код (с той же проверкой открытости соседа), только две из
-// них (примыкающие к срезанному углу) укорочены до точки среза, плюс
-// одна новая диагональная грань клина — она всегда экспонирована, т.к.
-// BuildCornerCuts() гарантирует, что оба ортогональных соседа угла — пол
-// (см. комментарий в WallShapes.h про eligibility).
-//
-// ВАЖНО (найдено визуальной проверкой рендера против аналитической
-// коллизии — см. историю правок): сам клин, вырезанный из клетки стены,
-// не покрыт floor-геометрией — floor-проход ниже строится ЧИСТО по
-// map[]==2 клеткам и ничего не знает про срезы. Без явного патча игрок
-// мог физически зайти в клин (коллизия это разрешает), но увидел бы под
-// ногами дыру без пола. Поэтому здесь же, вместе со стеновыми гранями
-// клетки, добавляется и floor-треугольник самого клина (pFrom-pTo-угол),
-// на y=0, тем же floorColor — держим "рендер по клетке" целиком в одном
-// месте, а не размазываем полы срезанных клеток по отдельному проходу.
+// Chamfered corners (WallShapes.h): such a cell is built separately and skipped by the greedy
+// passes. It emits the regular side faces (two shortened to the chamfer points) plus the diagonal
+// wedge face, and a floor triangle over the wedge, which the floor pass (map[] == 2 cells) does not
+// cover; otherwise the player would see a hole.
 static void AddChamferedWallCell(
     std::vector<Vertex>& verts, std::vector<GLuint>& indices,
     int x, int z, WallShapes::CornerCut cut, float chamferSize,
@@ -459,18 +301,16 @@ static void AddChamferedWallCell(
 
     WallShapes::ChamferPoints cp;
     if (!WallShapes::GetChamferPoints(cut, chamferSize, cp)) {
-        return; // cut == None не должно сюда попадать (см. вызывающий код)
+        return; // cut == None shouldn't reach here (see the caller)
     }
 
     const float xf = (float)x, zf = (float)z, z1 = zf + 1.0f, x1 = xf + 1.0f;
 
-    // Точки среза в мировых координатах (см. комментарии в WallShapes.h:
-    // onEdgeCcwFrom/onEdgeCcwTo — какая точка на какой исходной грани
-    // лежит для каждого cut, разобрано там же).
+    // Chamfer points in world coordinates (see WallShapes.h for onEdgeCcwFrom/onEdgeCcwTo: which
+    // point lies on which original edge for each cut).
     const glm::vec3 pFrom(xf + cp.onEdgeCcwFrom.x, 0.0f, zf + cp.onEdgeCcwFrom.y);
     const glm::vec3 pTo(xf + cp.onEdgeCcwTo.x,   0.0f, zf + cp.onEdgeCcwTo.y);
 
-    // -------- Южная грань (z = zf), укорочена для SW/SE --------
     if (isWall(x, z) && !isWall(x, z - 1)) {
         const float xStart = (cut == CornerCut::SW) ? pTo.x   : xf;
         const float xEnd   = (cut == CornerCut::SE) ? pFrom.x : x1;
@@ -481,7 +321,6 @@ static void AddChamferedWallCell(
                 glm::vec3(0, 0, -1), wallColor);
         }
     }
-    // -------- Северная грань (z = zf+1), укорочена для NW/NE --------
     if (isWall(x, z) && !isWall(x, z + 1)) {
         const float xStart = (cut == CornerCut::NW) ? pFrom.x : xf;
         const float xEnd   = (cut == CornerCut::NE) ? pTo.x   : x1;
@@ -492,7 +331,6 @@ static void AddChamferedWallCell(
                 glm::vec3(0, 0, 1), wallColor);
         }
     }
-    // -------- Западная грань (x = xf), укорочена для SW/NW --------
     if (isWall(x, z) && !isWall(x - 1, z)) {
         const float zStart = (cut == CornerCut::SW) ? pFrom.z : zf;
         const float zEnd   = (cut == CornerCut::NW) ? pTo.z   : z1;
@@ -503,7 +341,6 @@ static void AddChamferedWallCell(
                 glm::vec3(-1, 0, 0), wallColor);
         }
     }
-    // -------- Восточная грань (x = xf+1), укорочена для SE/NE --------
     if (isWall(x, z) && !isWall(x + 1, z)) {
         const float zStart = (cut == CornerCut::SE) ? pTo.z   : zf;
         const float zEnd   = (cut == CornerCut::NE) ? pFrom.z : z1;
@@ -515,7 +352,6 @@ static void AddChamferedWallCell(
         }
     }
 
-    // -------- Диагональная грань среза — всегда есть (см. шапку функции) --------
     glm::vec3 diagNormal(0.0f);
     switch (cut) {
         case CornerCut::SW: diagNormal = glm::vec3(-1, 0, -1); break;
@@ -531,14 +367,8 @@ static void AddChamferedWallCell(
         glm::vec3(pTo.x, y1, pTo.z), glm::vec3(pFrom.x, y1, pFrom.z),
         diagNormal, wallColor);
 
-    // -------- Floor-патч клина (см. комментарий в шапке функции) --------
-    // Треугольник pFrom-pTo-corner, y=0, лицом вверх — тот самый кусок
-    // площади, что WallShapes::IsLocalPointSolid() считает открытым для
-    // этой клетки. AddQuad() эмитит квад из двух треугольников; повторяя
-    // corner дважды (3-я и 4-я вершины совпадают), второй треугольник
-    // вырождается в нулевую площадь и ничего не рисует — простой способ
-    // получить ровно один треугольник, не заводя отдельную функцию
-    // AddTriangle() ради одного места использования.
+    // Floor patch for the wedge: the corner is repeated as the 3rd and 4th vertex so AddQuad()
+    // degenerates to a single triangle.
     glm::vec3 corner(0.0f);
     switch (cut) {
         case CornerCut::SW: corner = glm::vec3(xf, 0.0f, zf);       break;
@@ -552,14 +382,9 @@ static void AddChamferedWallCell(
         glm::vec3(0, 1, 0), floorColor);
 }
 
-// ---------------- Шаг 2: свободностоящие колонны (см. Columns.h) ----------------
-//
-// Простой цилиндр (AddCylinder уже используется для ручки факела/
-// пьедестала кнопки, см. выше) — тут radiusBase==radiusTip (прямая
-// колонна, не сужающаяся кверху). Клетка колонны к этому моменту УЖЕ
-// пол в map[] (см. Columns::BuildColumns — мутирует грид ДО вызова
-// build()), поэтому обычный floor-проход ниже сам построит пол под
-// колонной — здесь эмитится только сам цилиндр.
+// Free-standing columns (see Columns.h): a plain cylinder with radiusBase == radiusTip (straight,
+// not tapering). A column cell is already floor in map[] by this point, so the regular floor pass
+// builds the floor under it; only the cylinder is emitted here.
 static void AddColumnMesh(
     std::vector<Vertex>& verts, std::vector<GLuint>& indices,
     const glm::vec2& centerXZ, const glm::vec3& wallColor,
@@ -584,11 +409,9 @@ static void BuildFloorAndWallsGreedy(
     std::vector<std::vector<GLuint>>& chunkMainIndices,
     int chunksX)
 {
-    // Цвет стены/пола ПОКЛЕТОЧНО, уже готовый (см. build()/.h — вызывающий
-    // код смешивает соседние зоны сам, здесь просто читаем результат) — на
-    // клетку без данных (массив пуст/не хватает размера) используется
-    // палитра 0 (исходный тёплый коричневый), т.е. поведение без
-    // зонирования не меняется вообще.
+    // Per-cell wall/floor color, already computed by the caller (which blends neighboring zones). A
+    // cell with no data (empty or too short array) falls back to palette 0, so behavior without
+    // zoning is unchanged.
     glm::vec3 fallbackWallColor, fallbackFloorColor;
     SceneGeometry::GetZonePalette(0, fallbackWallColor, fallbackFloorColor);
     auto wallColorAt = [&](int x, int z) {
@@ -603,16 +426,7 @@ static void BuildFloorAndWallsGreedy(
         return (cz / SceneGeometry::kChunkSize) * chunksX + (cx / SceneGeometry::kChunkSize);
     };
 
-    // Item 6 (review): reserve() each per-chunk bucket up front using a
-    // rough upper-bound estimate (cells-per-chunk * a few verts/indices
-    // per quad face), instead of letting these vectors grow one push_back()
-    // at a time while quads are appended below. This runs once at load
-    // time (not per frame), so it's a startup-time win, not a runtime one
-    // — but it's the same reasoning that made Quake's Hunk allocator
-    // linear/non-copying: avoiding repeated reallocation+copy while
-    // building level geometry. The estimate only needs to be a reasonable
-    // upper bound, not exact — worst case a chunk still grows past it and
-    // reallocates once or twice, same as before this change.
+    // Reserve each per-chunk bucket up front (a rough upper bound); a load-time startup win only.
     {
         const size_t cellsPerChunk = (size_t)SceneGeometry::kChunkSize * (size_t)SceneGeometry::kChunkSize;
         const size_t estVertsPerChunk = cellsPerChunk * 4;   // ~4 verts/quad face, upper bound
@@ -626,9 +440,8 @@ static void BuildFloorAndWallsGreedy(
     const float y0 = 0.0f;
     const float y1 = kWallHeight;
 
-    // -------- Срезанные углы (WallShapes) — отдельная целиковая клетка --------
-    // Идёт ДО greedy run-проходов ниже, т.к. те читают cornerCuts[...] чтобы
-    // пропустить эти клетки (см. условия runов в 4 циклах ниже).
+    // Chamfered corners (WallShapes): a separate whole-cell pass. It runs before the greedy passes
+    // below, which read cornerCuts[...] to skip these cells.
     for (int z = 0; z < mapH; z++) {
         for (int x = 0; x < mapW; x++) {
             const WallShapes::CornerCut cut = cornerCuts[(size_t)z * mapW + x];
@@ -645,7 +458,6 @@ static void BuildFloorAndWallsGreedy(
         }
     }
 
-    // -------- Floor: merge runs of cell==2 along x, per row z --------
     for (int z = 0; z < mapH; z++) {
         int x = 0;
         while (x < mapW) {
@@ -660,7 +472,7 @@ static void BuildFloorAndWallsGreedy(
                    (x / SceneGeometry::kChunkSize) == curChunkX) {
                 x++;
             }
-            const int runEnd = x; // exclusive
+            const int runEnd = x;
 
             const int idx = chunkIdx(runStart, z);
             AddQuad(
@@ -675,13 +487,11 @@ static void BuildFloorAndWallsGreedy(
         }
     }
 
-    // -------- South-facing walls (normal 0,0,-1): merge along x, per row z --------
     for (int z = 0; z < mapH; z++) {
         int x = 0;
         while (x < mapW) {
-            // Срезанные клетки уже полностью построены в отдельном проходе
-            // выше (AddChamferedWallCell) — здесь они просто "разрывают"
-            // run, не попадая ни в него, ни получая собственный квад.
+            // Chamfered cells were built in the separate pass above; here they only break a run,
+            // neither joining it nor getting their own quad.
             if (!(isWall(x, z) && !isWall(x, z - 1)) ||
                 cornerCuts[(size_t)z * mapW + x] != WallShapes::CornerCut::None) {
                 x++; continue;
@@ -712,7 +522,6 @@ static void BuildFloorAndWallsGreedy(
         }
     }
 
-    // -------- North-facing walls (normal 0,0,1): merge along x, per row z --------
     for (int z = 0; z < mapH; z++) {
         int x = 0;
         while (x < mapW) {
@@ -747,7 +556,6 @@ static void BuildFloorAndWallsGreedy(
         }
     }
 
-    // -------- West-facing walls (normal -1,0,0): merge along z, per column x --------
     for (int x = 0; x < mapW; x++) {
         int z = 0;
         while (z < mapH) {
@@ -782,7 +590,6 @@ static void BuildFloorAndWallsGreedy(
         }
     }
 
-    // -------- East-facing walls (normal 1,0,0): merge along z, per column x --------
     for (int x = 0; x < mapW; x++) {
         int z = 0;
         while (z < mapH) {
@@ -818,7 +625,6 @@ static void BuildFloorAndWallsGreedy(
     }
 }
 
-
 void SceneGeometry::build(int mapW, int mapH, const std::vector<int>& map,
                           const glm::vec3& winButtonPos,
                           const std::vector<glm::vec3>& torchWallBase,
@@ -829,7 +635,8 @@ void SceneGeometry::build(int mapW, int mapH, const std::vector<int>& map,
                           const std::vector<float>& chamferSizes,
                           const std::vector<glm::vec3>& wallColors,
                           const std::vector<glm::vec3>& floorColors,
-                          const std::vector<glm::vec3>& diaryPositions)
+                          const std::vector<glm::vec3>& diaryPositions,
+                          int firstGuideTorchIndex)
 {
     auto isWall = [&](int x, int z) {
         if (x < 0 || x >= mapW || z < 0 || z >= mapH) return true;
@@ -840,21 +647,12 @@ void SceneGeometry::build(int mapW, int mapH, const std::vector<int>& map,
         return map[z * mapW + x] == 2;
     };
 
-    // ==================================================
-    // Chunked geometry (see DungeonScene.h: m_chunks, kChunkSize)
-    // ==================================================
-    // Geometry is bucketed per-chunk while being generated, instead of
-    // going straight into one flat vector, so that render() can later
-    // skip whole chunks that are outside the camera frustum / render
-    // distance. The final GPU buffers still contain ALL chunks laid out
-    // contiguously (one static upload, same as before) — only which
-    // *ranges* get drawn each frame changes.
+    // Chunked geometry: bucketed per chunk while generated so render() can skip chunks outside the
+    // frustum/render distance; the GPU buffers still hold all chunks contiguously.
     const int chunksX = (mapW + kChunkSize - 1) / kChunkSize;
     const int chunksZ = (mapH + kChunkSize - 1) / kChunkSize;
     const int numChunks = chunksX * chunksZ;
 
-    // Cached for buildChunkPVS() and render()'s PVS lookup (turning the
-    // camera's current cell into a chunk index) — see DungeonScene.h.
     m_chunksX = chunksX;
 
     auto chunkIndexForCell = [&](int cx, int cz) {
@@ -867,33 +665,16 @@ void SceneGeometry::build(int mapW, int mapH, const std::vector<int>& map,
     std::vector<std::vector<GLuint>> chunkMainIndices(numChunks);
     std::vector<std::vector<Vertex>> chunkParticleVerts(numChunks);
 
-    // ==================================================
-    // [comment corrupted in source file - original text lost/unrecoverable]
-    // ==================================================
-
     BuildFloorAndWallsGreedy(mapW, mapH, map, isWall, isFloor, cornerCuts, chamferSizes, wallColors, floorColors, chunkMainVerts, chunkMainIndices, chunksX);
-
-    // ==================================================
-    // [comment corrupted in source file - original text lost/unrecoverable]
-    // ==================================================
 
     for (size_t i = 0;
          i < torchWallBase.size();
          ++i)
     {
-        // Torch mesh (handle + flame) and its flicker particles belong
-        // to the chunk that contains the torch's wall position.
-        //
-        // ВАЖНО: torchWallBase[i] лежит РОВНО на границе клетки стены и
-        // соседней клетки пола (см. tryAddTorch()), поэтому floor(x)/
-        // floor(z) от неё напрямую даёт правильную клетку стены только
-        // для половины направлений (см. тот же баг, что был исправлен в
-        // buildTorchCellLookup() выше по файлу). Если взять "не ту"
-        // клетку, факел может попасть в чанк, отличный от чанка стены,
-        // на которой он висит — и тогда при фрустум-куллинге по чанкам
-        // факел иногда будет пропадать из вида, хотя камера смотрит
-        // прямо на его стену. Откатываем обратно на normal*0.5, чтобы
-        // получить исходную клетку стены (x, z) однозначно.
+        // The torch mesh and particles belong to the chunk of the torch's wall cell.
+        // torchWallBase[i] lies on the wall/floor boundary, so floor(x)/floor(z) is wrong for half
+        // the directions; stepping back by normal * 0.5 recovers the wall cell (otherwise culling
+        // could hide a torch while its wall is in view).
         const glm::vec3& torchN = torchNormal[i];
         const int torchChunk = chunkIndexForCell(
             (int)std::floor(torchWallBase[i].x - torchN.x * 0.5f),
@@ -908,15 +689,15 @@ void SceneGeometry::build(int mapW, int mapH, const std::vector<int>& map,
             indices,
             torchWallBase[i],
             torchNormal[i],
-            (int)i
+            (int)i,
+            firstGuideTorchIndex >= 0 && (int)i >= firstGuideTorchIndex
         );
 
-        // ------------------------------------------------
-        // [comment corrupted in source file - original text lost/unrecoverable]
-        //
-        // [comment corrupted in source file - original text lost/unrecoverable]
-        // [comment corrupted in source file - original text lost/unrecoverable]
-        // ------------------------------------------------
+        // Flickering ember particles are skipped for landmark torches (saves RAM): a small
+        // decorative accent whose three spark points per torch add up across dozens of torches, and
+        // a landmark is already visible from its blue flame.
+        if (!(firstGuideTorchIndex >= 0 && (int)i >= firstGuideTorchIndex))
+        {
 
         const glm::vec3 origin =
             torchFlamePos[i]
@@ -929,14 +710,7 @@ void SceneGeometry::build(int mapW, int mapH, const std::vector<int>& map,
         const int torchIndex =
             static_cast<int>(i);
 
-        // [comment corrupted in source file - original text lost/unrecoverable]
-        // [comment corrupted in source file - original text lost/unrecoverable]
-        // [comment corrupted in source file - original text lost/unrecoverable]
         const float PARTICLE_ID_SCALE = 16384.0f;
-
-        // ==================================================
-        // PARTICLE SLOT 0
-        // ==================================================
 
         const float particleMatId0 =
             3.0f
@@ -969,10 +743,6 @@ void SceneGeometry::build(int mapW, int mapH, const std::vector<int>& map,
             }
         );
 
-        // ==================================================
-        // PARTICLE SLOT 1
-        // ==================================================
-
         const float particleMatId1 =
             3.0f
             +
@@ -1004,10 +774,6 @@ void SceneGeometry::build(int mapW, int mapH, const std::vector<int>& map,
             }
         );
 
-        // ==================================================
-        // PARTICLE SLOT 2
-        // ==================================================
-
         const float particleMatId2 =
             3.0f
             +
@@ -1038,27 +804,16 @@ void SceneGeometry::build(int mapW, int mapH, const std::vector<int>& map,
                 particleMatId2
             }
         );
+        }
     }
 
-    // ==================================================
-    // [comment corrupted in source file - original text lost/unrecoverable]
-    // ==================================================
+    // The win pedestal is not baked: it animates, and baked chunk geometry cannot be moved or
+    // removed. It is a dynamic mesh (m_winMonumentVao, AddDissolvingMonument()/AddSpinningTorus()
+    // in DungeonScene.cpp).
 
-    {
-        const int winChunk = chunkIndexForCell(
-            (int)std::floor(winButtonPos.x),
-            (int)std::floor(winButtonPos.z)
-        );
-        AddWinButtonMesh(chunkMainVerts[winChunk], chunkMainIndices[winChunk], winButtonPos);
-    }
-
-    // ==================================================
-    // Дневники (см. Diaries.h) — один пропс на карман, тот же принцип
-    // отнесения к чанку, что и у кнопки победы выше: по floor() мировых
-    // координат находим клетку, а через неё — чанк, чтобы фрустум-куллинг
-    // по чанкам (см. render()) не терял дневник, если камера смотрит
-    // прямо на него, но чанк формально "не тот".
-    // ==================================================
+    // Diaries: one prop per pocket, assigned to a chunk like the torches: find the cell via floor()
+    // of the world coordinates, then the chunk through it, so chunk culling does not drop a diary
+    // the camera is looking straight at.
     for (size_t i = 0; i < diaryPositions.size(); ++i) {
         const glm::vec3& diaryPos = diaryPositions[i];
         const int diaryChunk = chunkIndexForCell(
@@ -1067,18 +822,9 @@ void SceneGeometry::build(int mapW, int mapH, const std::vector<int>& map,
         );
         AddDiaryMesh(chunkMainVerts[diaryChunk], chunkMainIndices[diaryChunk], diaryPos);
 
-        // Пара тихих "мотыльков"-частиц над книгой — так игрок замечает
-        // дневник издалека и понимает, что именно ЭТО нужно подобрать/
-        // прочитать, а не просто декорация. Переиспользует систему
-        // факельных частиц (см. torchWallBase-цикл выше, matId>=3.0,
-        // анимация в scene.vert) — тот же spawn/lifetime/drift, но:
-        //  - ЦВЕТ приглушённый тёплый бледно-золотой, а не огненно-
-        //    оранжевый — чтобы не путать с настоящим факельным светом;
-        //  - id (torchWallBase.size() + i) продолжается ПОСЛЕ диапазона
-        //    факелов, чтобы не делить фазу мерцания с факелом того же
-        //    порядкового номера (см. hash(torchId,...) в scene.vert —
-        //    matId лишь seed для псевдослучайности, коллизия id не
-        //    ломает рендер, но даёт заметно одинаковую анимацию).
+        // A couple of pale-gold "moth" particles above the book reveal the diary from afar. They
+        // reuse the torch particle system with a muted color and id torchWallBase.size() + i, so
+        // they do not share a flicker phase with a torch.
         std::vector<Vertex>& diaryParticleVerts = chunkParticleVerts[diaryChunk];
         const glm::vec3 particleOrigin = diaryPos + glm::vec3(0.0f, 0.16f, 0.0f);
         const int diaryParticleId = (int)torchWallBase.size() + (int)i;
@@ -1096,15 +842,8 @@ void SceneGeometry::build(int mapW, int mapH, const std::vector<int>& map,
         });
     }
 
-    // ==================================================
-    // Шаг 2: свободностоящие колонны (см. Columns.h)
-    // ==================================================
-    // Позиции уже мировые XZ-центры клеток (Columns::BuildColumns
-    // отдаёт (cellX+0.5, cellZ+0.5)) — та же клетка в map[] к этому
-    // моменту уже пол (мутация случилась ДО generateMap() передал map
-    // сюда), так что floor-квад под колонной уже построен обычным
-    // floor-проходом в BuildFloorAndWallsGreedy() выше — здесь только
-    // сам цилиндр.
+    // Free-standing columns (Columns.h): positions are world XZ cell centers and the cell is
+    // already floor, so only the cylinder is added.
     for (const glm::vec2& col : columnCentersXZ) {
         const int colCellX = (int)std::floor(col.x);
         const int colCellZ = (int)std::floor(col.y);
@@ -1116,11 +855,8 @@ void SceneGeometry::build(int mapW, int mapH, const std::vector<int>& map,
         AddColumnMesh(chunkMainVerts[colChunk], chunkMainIndices[colChunk], col, colWallColor, 0.0f, kWallHeight);
     }
 
-    // ==================================================
-    // Flatten per-chunk buckets into contiguous buffers + build
-    // per-chunk metadata (draw ranges + AABB) used by render() for
-    // frustum/distance culling.
-    // ==================================================
+    // Flatten the per-chunk buckets into contiguous buffers and build the per-chunk metadata (draw
+    // ranges + AABB) that render() uses for frustum/distance culling.
 
     std::vector<Vertex> verts;
     std::vector<GLuint> indices;
@@ -1140,10 +876,9 @@ void SceneGeometry::build(int mapW, int mapH, const std::vector<int>& map,
             const std::vector<GLuint>& mi = chunkMainIndices[idx];
             const std::vector<Vertex>& pv = chunkParticleVerts[idx];
 
-            // Indices in mi are local to mv (start at 0). When we append
-            // mv's vertices onto the end of the global 'verts' array they
-            // land at vertexBase..vertexBase+mv.size(), so every local
-            // index needs vertexBase added to stay correct.
+            // Indices in mi are local to mv (they start at 0). When mv's vertices are appended to
+            // the global verts array they land at vertexBase.., so each local index needs
+            // vertexBase added.
             const GLuint vertexBase = (GLuint)verts.size();
             verts.insert(verts.end(), mv.begin(), mv.end());
 
@@ -1157,10 +892,9 @@ void SceneGeometry::build(int mapW, int mapH, const std::vector<int>& map,
             chunk.particleCount = (GLsizei)pv.size();
             particleVerts.insert(particleVerts.end(), pv.begin(), pv.end());
 
-            // Cell-grid-based AABB (with a small margin for torch/flame
-            // meshes that poke slightly past a cell's edge) — cheap and
-            // always conservative (never smaller than the real geometry),
-            // which is all that's required for correct frustum culling.
+            // Cell-grid-based AABB with a small margin for torch/flame meshes that poke past a cell
+            // edge: cheap and always conservative (never smaller than the real geometry), which is
+            // all frustum culling needs.
             const float margin = 0.5f;
             const int cellX0 = cxi * kChunkSize;
             const int cellZ0 = cz * kChunkSize;
@@ -1172,16 +906,9 @@ void SceneGeometry::build(int mapW, int mapH, const std::vector<int>& map,
         }
     }
 
-    // ==================================================
-    // [comment corrupted in source file - original text lost/unrecoverable]
-    // ==================================================
-
     m_vertexCount =
         (int)verts.size();
 
-    // Item 1: index buffer element count (used by render() for the
-    // glMultiDrawElements calls, and by the per-chunk mainIndexFirst/
-    // mainIndexCount offsets computed above).
     m_indexCount =
         (int)indices.size();
 
@@ -1273,9 +1000,8 @@ void SceneGeometry::build(int mapW, int mapH, const std::vector<int>& map,
         )
     );
 
-    // The EBO binding is stored as part of the VAO's state, so it must be
-    // bound while m_vao is still bound (before the glBindVertexArray(0)
-    // below) — same pattern as the VBO/attribute setup above.
+    // The EBO binding is part of the VAO state, so it must be bound while m_vao is still bound
+    // (before the glBindVertexArray(0) below), like the VBO/attribute setup above.
     glBindBuffer(
         GL_ELEMENT_ARRAY_BUFFER,
         m_ebo
@@ -1290,10 +1016,6 @@ void SceneGeometry::build(int mapW, int mapH, const std::vector<int>& map,
     );
 
     glBindVertexArray(0);
-
-    // ==================================================
-    // [comment corrupted in source file - original text lost/unrecoverable]
-    // ==================================================
 
     m_particleVertexCount =
         (int)particleVerts.size();
@@ -1384,27 +1106,18 @@ void SceneGeometry::build(int mapW, int mapH, const std::vector<int>& map,
     glBindVertexArray(0);
 }
 
-// ---------------- Item 3 (review): precomputed chunk PVS ----------------
-//
-// See the m_chunkPvsMask comment in DungeonScene.h for the full rationale.
-// Short version: for every chunk, flood-fill outward through floor cells
-// only (walls block the flood) starting from that chunk's own footprint,
-// and record every chunk touched as a bit in a 64-bit mask. Run once,
-// right after buildGeometry() builds m_chunks/m_map, before the first
-// frame — this is the "offline vis pass" equivalent for a procedurally
-// generated maze.
+// Precomputed chunk PVS: flood-fill from each chunk's footprint through floor cells only, one bit
+// per reachable chunk in a 64-bit mask. Built once after geometry. Conservative: it only rules out
+// provably unreachable chunks, and render() combines it with frustum/distance culling.
 
 void SceneGeometry::buildPVS(int mapW, int mapH, const std::function<bool(int, int)>& isWall)
 {
     const size_t numChunks = m_chunks.size();
     m_chunkPvsMask.assign(numChunks, 0ull);
 
-    // The mask is a single uint64_t (bit-per-chunk), so this only works
-    // for up to 64 chunks. That's exactly what the current 128x128 /
-    // kChunkSize(16) maze produces (8x8 = 64), but if that ever changes,
-    // fail safe rather than silently truncate: disable the prefilter and
-    // let render() fall back to frustum+distance culling alone, as if
-    // this feature didn't exist.
+    // The mask is one uint64_t, so at most 64 chunks (the 128x128 maze with kChunkSize 16 gives
+    // exactly 64). Beyond that the prefilter is disabled and render() falls back to frustum +
+    // distance culling.
     if (numChunks == 0 || numChunks > 64 || m_chunksX <= 0 || mapW <= 0 || mapH <= 0)
     {
         m_chunkPvsEnabled = false;
@@ -1434,9 +1147,6 @@ void SceneGeometry::buildPVS(int mapW, int mapH, const std::function<bool(int, i
 
         uint64_t mask = (1ull << srcChunk); // a chunk is always potentially visible from itself
 
-        // Seed the flood with every non-wall cell inside the source
-        // chunk's own footprint (a corridor cell right at the chunk's
-        // edge still needs to start propagating outward).
         for (int z = cellZ0; z < cellZ1; ++z)
         {
             for (int x = cellX0; x < cellX1; ++x)

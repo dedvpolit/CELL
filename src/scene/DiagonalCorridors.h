@@ -2,59 +2,22 @@
 #include <vector>
 #include "WallShapes.h"
 
-// ============================================================================
-// DiagonalCorridors — пункт 3 второго документа ТЗ ("диагональные
-// коридоры без обучения генератора диагональным шагам"). MapGenerator
-// по-прежнему ходит только по 4 осям (не трогается вообще) — но когда
-// путь получается "лесенкой" (шаг вправо, шаг вниз, шаг вправо...), у
-// такой лесенки есть цепочка стен-углов ОДНОГО типа (см. WallShapes::
-// CornerCut), расположенных на равном диагональном расстоянии друг от
-// друга — ровно тех же кандидатов, что WallShapes::BuildCornerCuts уже
-// умеет срезать по отдельности и независимо-случайно.
-//
-// Разница с обычным (независимым) срезом: если каждый угол в лесенке
-// срезается по своей собственной вероятности, цепочка почти никогда не
-// срезается ЦЕЛИКОМ — получается редкая россыпь одиночных срезов, а не
-// связная грубая диагональ. Этот модуль находит такие цепочки
-// (детерминированно, чистая топология, до всякого RNG) и метит их
-// клетки как "срезать безусловно" — тогда, если хотя бы кандидат один
-// раз выбрал сработать по вероятности региона, вся цепочка целиком даёт
-// читаемую диагональ, а не изолированный зубец.
-//
-// Как это применяется на практике (см. DungeonScene::generateMap()):
-// НЕ отдельный проход, мутирующий map (в отличие от CorridorWidth/
-// Columns) — этот модуль только помечает, какие клетки ДОЛЖНЫ получить
-// cornerCut, если WallShapes::BuildCornerCuts вообще будет их
-// рассматривать. Итоговое решение "срезать" всё равно проходит через
-// WallShapes::BuildCornerCuts с обёрнутым chamferProbabilityAt: для
-// клеток из цепочки вероятность форсируется в 1.0, для всех прочих —
-// обычный профиль зоны (см. Zoning.h) без изменений.
-// ============================================================================
+// Diagonal "staircase" corridors without teaching the generator diagonal steps: a staircase leaves
+// a chain of same-type corner walls at equal diagonal distances, which BuildCornerCuts would
+// chamfer only by chance. This module finds such chains (pure topology, before any RNG) and flags
+// them so they are chamfered with probability 1.0 (via a wrapped chamferProbabilityAt in
+// generateMap()). It does not mutate the map.
 namespace DiagonalCorridors {
 
-// Минимальная длина цепочки (число клеток одного типа среза, стоящих
-// подряд по диагонали с шагом ровно 2 клетки — см. геометрию MapGenerator:
-// "1 шаг = 2 клетки"), чтобы её вообще считать "лестницей" и форсировать
-// срез. Цепочки длины 1 — обычные одиночные повороты, они остаются на
-// усмотрение обычной вероятности региона (kChamferProbability/Zoning),
-// как и было — иначе КАЖДЫЙ единичный поворот лабиринта тоже считался бы
-// "диагональю", и разница с обычным Шагом 1 стёрлась бы полностью.
+// Minimum chain length (same-type chamfer cells stepping 2 cells diagonally, matching the
+// generator's "1 step = 2 cells") to count as a staircase; single turns stay subject to the normal
+// probability.
 constexpr int kMinChainLength = 3;
 
-// Находит цепочки eligible-кандидатов ОДНОГО типа (WallShapes::
-// GetEligibleCornerCut), связанных диагональными соседями на расстоянии
-// (±2,±2) — именно этот шаг соответствует геометрии MapGenerator (см.
-// шапку файла). Возвращает битовую маску mapW*mapH: 1, если клетка —
-// часть цепочки длиной >= kMinChainLength (т.е. должна быть срезана
-// безусловно), 0 — во всех остальных случаях (включая клетки, у которых
-// вообще нет eligible-типа, и клетки в слишком коротких цепочках).
-//
-// Чистая функция от готового грида — не зависит от seed/RNG вообще (в
-// отличие от WallShapes::BuildCornerCuts) и может быть вызвана до или
-// после CorridorWidth/Columns — главное, чтобы map уже был в финальном
-// виде (после всех мутирующих проходов), иначе часть цепочек будет не
-// обнаружена или обнаружена неверно (см. порядок вызовов в
-// DungeonScene::generateMap()).
+// Finds chains of same-type eligible candidates (WallShapes::GetEligibleCornerCut) connected
+// diagonally at (+-2,+-2). Returns a mapW*mapH mask: 1 for cells in a chain of length >=
+// minChainLength. A pure function of the finished grid (no seed); call it after all mutating
+// passes.
 std::vector<unsigned char> DetectChains(
     int mapW, int mapH,
     const std::vector<int>& map,

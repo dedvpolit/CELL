@@ -1,37 +1,15 @@
 #pragma once
 #include <string>
 
-// ============================================================================
-// AssetPath — единая точка поиска файлов ассетов (шейдеры, текстуры, аудио)
-// относительно исполняемого файла.
-//
-// Раньше одна и та же логика (искать файл сначала рядом с .exe, затем в
-// текущей рабочей директории, поднимаясь вверх по дереву папок, пока не
-// найдётся assets/...) была продублирована как минимум дважды:
-//   - DungeonScene.cpp: locateWallTextureAsset() (текстуры стен)
-//   - FootstepAudio.h: locateAsset() (звуки шагов)
-// Обе версии работают, но это дублирование — при изменении алгоритма
-// поиска пришлось бы править оба места. AssetPath::Resolve() — общая
-// реализация, которую теперь использует ShaderLoader (см. ShaderLoader.h)
-// для .vert/.frag файлов.
-//
-// ВАЖНО: FootstepAudio.h и DungeonScene::locateWallTextureAsset() НЕ
-// переведены на этот класс в рамках Этапа 1 — рефакторинг делается
-// маленькими безопасными шагами (см. план), объединение всех трёх мест
-// в одну точку входа запланировано отдельным шагом позже, чтобы не
-// трогать сразу несколько независимых подсистем в одном коммите.
-// ============================================================================
+// Single lookup point for asset files (shaders, textures, fonts) relative to the executable. The
+// audio code (AssetLocate.h, EnemyAudio.h, FootstepAudio.h) still has its own copies of the same
+// search.
 namespace AssetPath {
 
-// Ищет relativePath (например, "assets/shaders/scene.frag") сначала
-// относительно папки исполняемого файла, затем относительно текущей
-// рабочей директории, поднимаясь вверх до kMaxLevelsUp раз в каждом
-// случае — так ассеты находятся независимо от того, запущен ли .exe
-// из bin/Debug, bin/Release, из-под IDE с working dir в корне проекта
-// и т.п. (см. .cbp: ExtraCommands копирует assets/ рядом с .exe).
-//
-// Возвращает полный путь к найденному файлу, либо пустую строку, если
-// файл не найден нигде.
+// Looks for relativePath next to the .exe first, then from the current working directory, walking
+// up to kMaxLevelsUp levels either way: this makes the lookup independent of where the .exe was
+// launched from (bin/Debug, bin/Release, an IDE's working dir, etc.). Returns an empty string if
+// nothing is found.
 std::string Resolve(const std::string& relativePath);
 
 } // namespace AssetPath

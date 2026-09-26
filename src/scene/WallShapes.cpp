@@ -4,12 +4,10 @@ namespace WallShapes {
 
 namespace {
 
-// Простой детерминированный hash(seed,x,z) -> [0,1). Не нужно
-// криптографическое качество — только: (а) стабильность между запусками
-// с тем же seed, (б) отсутствие явной решётчатой корреляции по x/z (иначе
-// вырезанные углы легли бы полосами вдоль осей). splitmix64-подобное
-// перемешивание битов с этим справляется с большим запасом для данной
-// задачи.
+// A simple deterministic hash(seed, x, z) -> [0,1). It does not need cryptographic quality, only
+// (a) stability across runs with the same seed and (b) no obvious grid correlation on x/z
+// (otherwise chamfered corners would line up in stripes along the axes). splitmix64-style bit
+// mixing has plenty of margin for this.
 float HashUnitFloat(unsigned int seed, int x, int z) {
     uint64_t h = (uint64_t)seed * 0x9E3779B97F4A7C15ull;
     h ^= (uint64_t)(uint32_t)x * 0xBF58476D1CE4E5B9ull;
@@ -17,8 +15,8 @@ float HashUnitFloat(unsigned int seed, int x, int z) {
     h ^= (h >> 33);
     h *= 0xFF51AFD7ED558CCDull;
     h ^= (h >> 33);
-    // Верхние 24 бита — достаточно энтропии для одной decision-точки на
-    // клетку, и укладываются в float без потери точности.
+    // The top 24 bits give enough entropy for one decision per cell and fit into a float without
+    // losing precision.
     return (float)((h >> 40) & 0xFFFFFF) / (float)0x1000000;
 }
 
@@ -27,10 +25,9 @@ float Lerp(float a, float b, float t) { return a + (b - a) * t; }
 } // namespace
 
 float ComputeVariedChamferSize(unsigned int seed, int x, int z) {
-    // Отдельная соль (xor 0x51) от HashUnitFloat выше (там уже другие
-    // множители на x/z), чтобы "срезать ли эту клетку" (BuildCornerCuts,
-    // через HashUnitFloat) и "насколько сильно" (эта функция) не были
-    // жёстко скоррелированы для одной и той же клетки/seed.
+    // A separate salt (xor 0x51) from HashUnitFloat above (which uses different x/z multipliers),
+    // so "chamfer this cell?" (BuildCornerCuts, via HashUnitFloat) and "how much?" (this function)
+    // are not tightly correlated for the same cell/seed.
     uint64_t h = (uint64_t)seed * 0x9E3779B97F4A7C15ull;
     h ^= (uint64_t)(uint32_t)x * 0xA24BAED4963EE407ull;
     h ^= (uint64_t)(uint32_t)z * 0x9FB21C651E98DF25ull;
@@ -68,9 +65,8 @@ CornerCut GetEligibleCornerCut(int mapW, int mapH, const std::vector<int>& map, 
         (swCorner ? 1 : 0) + (seCorner ? 1 : 0) +
         (neCorner ? 1 : 0) + (nwCorner ? 1 : 0);
 
-    // Ровно один выпуклый угол — единственный случай, который этот шаг
-    // умеет срезать (см. комментарий в заголовке про "зубья"/колонны для
-    // cornerCount >= 2).
+    // Exactly one convex corner: the only case that is chamfered (see the header comment about
+    // teeth/columns for cornerCount >= 2).
     if (cornerCount != 1) return CornerCut::None;
 
     return swCorner ? CornerCut::SW :
@@ -108,24 +104,22 @@ std::vector<CornerCut> BuildCornerCuts(
 bool GetChamferPoints(CornerCut cut, float c, ChamferPoints& out) {
     switch (cut) {
         case CornerCut::SW:
-            // Угол (0,0). Обходя клетку против часовой стрелки South->East->
-            // North->West, "предыдущая" грань перед этим углом — West
-            // (идём ...North-edge -> West-edge -> [угол] -> South-edge...),
-            // "следующая" — South.
-            out.onEdgeCcwFrom = glm::vec2(0.0f, c);   // точка на западной грани
-            out.onEdgeCcwTo   = glm::vec2(c, 0.0f);   // точка на южной грани
+            // Corner (0,0). Walking the cell counter-clockwise South -> East -> North -> West, the
+            // "previous" edge before this corner is West and the "next" is South.
+            out.onEdgeCcwFrom = glm::vec2(0.0f, c);
+            out.onEdgeCcwTo   = glm::vec2(c, 0.0f);
             return true;
         case CornerCut::SE:
-            out.onEdgeCcwFrom = glm::vec2(1.0f - c, 0.0f); // на южной грани
-            out.onEdgeCcwTo   = glm::vec2(1.0f, c);        // на восточной грани
+            out.onEdgeCcwFrom = glm::vec2(1.0f - c, 0.0f);
+            out.onEdgeCcwTo   = glm::vec2(1.0f, c);
             return true;
         case CornerCut::NE:
-            out.onEdgeCcwFrom = glm::vec2(1.0f, 1.0f - c); // на восточной грани
-            out.onEdgeCcwTo   = glm::vec2(1.0f - c, 1.0f); // на северной грани
+            out.onEdgeCcwFrom = glm::vec2(1.0f, 1.0f - c);
+            out.onEdgeCcwTo   = glm::vec2(1.0f - c, 1.0f);
             return true;
         case CornerCut::NW:
-            out.onEdgeCcwFrom = glm::vec2(c, 1.0f);        // на северной грани
-            out.onEdgeCcwTo   = glm::vec2(0.0f, 1.0f - c); // на западной грани
+            out.onEdgeCcwFrom = glm::vec2(c, 1.0f);
+            out.onEdgeCcwTo   = glm::vec2(0.0f, 1.0f - c);
             return true;
         case CornerCut::None:
         default:
@@ -134,29 +128,24 @@ bool GetChamferPoints(CornerCut cut, float c, ChamferPoints& out) {
 }
 
 bool IsLocalPointSolid(float lx, float lz, CornerCut cut, float c) {
-    // Полуплоскость "внутри клина" для каждого угла — клин образован
-    // диагональю через две точки среза (см. GetChamferPoints). Точка
-    // считается вырезанной (не сплошной), если она лежит СТРОГО ближе к
-    // срезанному углу, чем диагональ — т.е. по ту же сторону, что и сам
-    // угол клетки.
+    // Half-plane "inside the wedge" for each corner: the wedge is formed by a diagonal through the
+    // two chamfer points (see GetChamferPoints). A point counts as cut (not solid) if it lies
+    // strictly closer to the chamfered corner than the diagonal, i.e. on the same side as the
+    // corner itself.
     switch (cut) {
         case CornerCut::SW:
-            // Диагональ через (0,c)-(c,0): x + z = c. Угол (0,0) даёт
-            // x+z=0 < c, значит клин — там, где x+z < c.
+            // Diagonal through (0,c)-(c,0): x + z = c. Corner (0,0) gives x + z = 0 < c, so the
+            // wedge is where x + z < c.
             return !(lx + lz < c);
         case CornerCut::SE:
-            // Диагональ через (1-c,0)-(1,c): (1-x) + z = c. Угол (1,0)
-            // даёт (1-1)+0=0 < c.
             return !((1.0f - lx) + lz < c);
         case CornerCut::NE:
-            // Диагональ через (1,1-c)-(1-c,1): (1-x) + (1-z) = c.
             return !((1.0f - lx) + (1.0f - lz) < c);
         case CornerCut::NW:
-            // Диагональ через (c,1)-(0,1-c): x + (1-z) = c.
             return !(lx + (1.0f - lz) < c);
         case CornerCut::None:
         default:
-            return true; // обычный сплошной квадрат — везде стена
+            return true;
     }
 }
 

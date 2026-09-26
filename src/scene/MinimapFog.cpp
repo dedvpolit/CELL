@@ -14,12 +14,9 @@ void MinimapFog::uploadMapTexture(int mapW, int mapH, const std::vector<int>& ma
         );
     }
 
-    // 4 байта на тексель: R=стена(255)/пол(0), G=тип среза угла (0..4,
-    // сырое целое), B=расширен ли коридор именно здесь (0/255), A=часть
-    // ли диагональной цепочки (0/255) — см. комментарии в MinimapFog.h.
-    // Любой из векторов может быть пуст (старый вызывающий код до
-    // соответствующего шага) — тогда соответствующий канал всегда 0, что
-    // даёт прежнее поведение.
+    // 4 bytes per texel: R = wall (255) / floor (0), G = corner-cut type (0..4, raw integer), B =
+    // corridor widened here (0/255), A = part of a diagonal chain (0/255); see MinimapFog.h. Any of
+    // the vectors can be empty; the corresponding channel is then 0.
     const bool hasCuts = cornerCuts.size() == (size_t)mapW * (size_t)mapH;
     const bool hasWidened = corridorWidened.size() == (size_t)mapW * (size_t)mapH;
     const bool hasChains = diagonalChainMask.size() == (size_t)mapW * (size_t)mapH;
@@ -104,30 +101,16 @@ void MinimapFog::uploadMapTexture(int mapW, int mapH, const std::vector<int>& ma
     );
 }
 
-// ---------------- Fog of war ----------------
-//
-// [comment corrupted in source file - original text lost/unrecoverable]
-// [comment corrupted in source file - original text lost/unrecoverable]
-// [comment corrupted in source file - original text lost/unrecoverable]
-// [comment corrupted in source file - original text lost/unrecoverable]
-// [comment corrupted in source file - original text lost/unrecoverable]
-//
-// [comment corrupted in source file - original text lost/unrecoverable]
-// [comment corrupted in source file - original text lost/unrecoverable]
-// [comment corrupted in source file - original text lost/unrecoverable]
-// [comment corrupted in source file - original text lost/unrecoverable]
 void MinimapFog::revealVisibleCells(int mapW, int mapH,
                                      const glm::vec3& camPos, float yaw,
                                      const std::function<bool(int, int)>& isWall)
 {
-    static constexpr float FOV_DEG     = 75.0f;  // угол конуса обзора, градусы
-    static constexpr float VIEW_RADIUS = 9.0f;   // дальность в клетках карты
+    static constexpr float FOV_DEG     = 75.0f;  // FOV cone angle, degrees
+    static constexpr float VIEW_RADIUS = 9.0f;   // range in map cells
 
-    static constexpr int   RAY_COUNT = 64;  // сколько направлений лучей
-    static constexpr float STEP      = 0.2f; // шаг вдоль луча, в клетках
+    static constexpr int   RAY_COUNT = 64;  // number of ray directions
+    static constexpr float STEP      = 0.2f; // step along the ray, in cells
 
-    // Клетка под ногами всегда открыта, независимо от того,
-    // куда во направлен взгляд.
     {
         int pcx = (int)std::floor(camPos.x);
         int pcz = (int)std::floor(camPos.z);
@@ -135,17 +118,9 @@ void MinimapFog::revealVisibleCells(int mapW, int mapH,
             m_explored[(size_t)pcz * mapW + pcx] = 1;
     }
 
-    // Небольшой радиус вокруг игрока раскрывается БЕЗУСЛОВНО, независимо
-    // от направления взгляда (yaw) — иначе стены/факелы сбоку или сзади
-    // от текущего направления камеры (вне конуса FOV_DEG ниже) никогда
-    // не попадают ни под один луч и остаются "неразведанными", хотя
-    // игрок физически стоит прямо рядом с ними. Раньше это давало
-    // впечатление, что факелы на мини-карте появляются то тут, то там
-    // "случайно" — на самом деле это просто зависело от того, куда в
-    // конкретный момент была повёрнута камера. Радиус небольшой (в
-    // клетках карты) — намеренно не такой, как VIEW_RADIUS у конуса
-    // обзора, чтобы не открывать всю карту вокруг, только непосредственно
-    // прилегающие стены.
+    // A small radius around the player is revealed regardless of yaw: otherwise walls beside or
+    // behind the camera (outside the FOV cone) would stay unexplored although the player stands
+    // next to them. It is smaller than VIEW_RADIUS, so only adjacent walls are revealed.
     static constexpr float NEARBY_RADIUS = 2.5f;
     {
         int pcx = (int)std::floor(camPos.x);
@@ -170,8 +145,8 @@ void MinimapFog::revealVisibleCells(int mapW, int mapH,
     }
 
     const float halfFovRad = glm::radians(FOV_DEG * 0.5f);
-    // Тот же порядок операций, что и у getFront()/расчёта фронта на мини-карте
-    // в AsciiEffect: направление = (cos(yaw), sin(yaw)) в плоскости XZ.
+    // Same operation order as getFront() and the minimap front calculation in AsciiEffect:
+    // direction = (cos(yaw), sin(yaw)) in the XZ plane.
     const float yawRad = glm::radians(yaw);
 
     for (int r = 0; r <= RAY_COUNT; ++r)
@@ -199,20 +174,18 @@ void MinimapFog::revealVisibleCells(int mapW, int mapH,
             m_explored[(size_t)cz * mapW + cx] = 1;
 
             if (isWall(cx, cz))
-                break;  // [comment corrupted in source file - original text lost/unrecoverable]
+                break;
         }
     }
 }
 
-// [comment corrupted in source file - original text lost/unrecoverable]
-
 void MinimapFog::updateMinimap(int mapW, int mapH, const std::vector<int>& map,
                                 const glm::vec3& camPos, float yaw,
                                 const std::function<bool(int, int)>& isWall,
-                                const std::vector<unsigned char>& torchCellLookup)
+                                const std::vector<unsigned char>& torchCellLookup,
+                                const std::vector<unsigned char>& guideTorchCellLookup,
+                                const std::vector<unsigned char>& diaryReadWallLookup)
 {
-    // [comment corrupted in source file - original text lost/unrecoverable]
-    // [comment corrupted in source file - original text lost/unrecoverable]
     revealVisibleCells(mapW, mapH, camPos, yaw, isWall);
 
     if (m_minimapTexture == 0)
@@ -226,27 +199,42 @@ void MinimapFog::updateMinimap(int mapW, int mapH, const std::vector<int>& map,
     const int N = kMinimapSize;
     const int half = N / 2;
 
-    // [comment corrupted in source file - original text lost/unrecoverable]
     int pcx = (int)std::floor(camPos.x);
     int pcz = (int)std::floor(camPos.z);
 
-    // Perf: persistent member buffer instead of a fresh heap allocation
-    // every call (every frame) — see m_minimapPixels declaration.
-    // .resize() is a no-op after the first call (size never changes,
-    // kMinimapSize is a compile-time constant), so this doesn't
-    // reallocate in steady state.
+    // Persistent member buffer instead of a fresh heap allocation on every call (every frame):
+    // resize() is a no-op after the first call because the size never changes (kMinimapSize is a
+    // compile-time constant).
     m_minimapPixels.resize((size_t)N * N);
     std::vector<unsigned char>& pixels = m_minimapPixels;
 
-    // [comment corrupted in source file - original text lost/unrecoverable]
-    // O(1) lookup built once in buildTorchCellLookup() (see placeTorches())
-    // instead of rescanning the whole torch list (up to MAX_TORCHES) for
-    // every one of the N*N minimap cells, every frame.
+    // O(1) lookup built once (MapGenerator::BuildTorchCellLookup()) instead of rescanning the whole
+    // torch list for each of the N*N minimap cells every frame.
     auto isTorchCell = [&](int mx, int mz)
     {
         if (mx < 0 || mx >= mapW || mz < 0 || mz >= mapH)
             return false;
         return torchCellLookup[(size_t)mz * mapW + mx] != 0;
+    };
+
+    // Landmark torches: an empty vector is valid (landmarks not built yet) and means false
+    // everywhere, instead of being indexed out of bounds.
+    auto isGuideTorchCell = [&](int mx, int mz)
+    {
+        if (guideTorchCellLookup.empty())
+            return false;
+        if (mx < 0 || mx >= mapW || mz < 0 || mz >= mapH)
+            return false;
+        return guideTorchCellLookup[(size_t)mz * mapW + mx] != 0;
+    };
+
+    auto isDiaryReadWallCell = [&](int mx, int mz)
+    {
+        if (diaryReadWallLookup.empty())
+            return false;
+        if (mx < 0 || mx >= mapW || mz < 0 || mz >= mapH)
+            return false;
+        return diaryReadWallLookup[(size_t)mz * mapW + mx] != 0;
     };
 
     for (int j = 0; j < N; ++j)
@@ -256,20 +244,12 @@ void MinimapFog::updateMinimap(int mapW, int mapH, const std::vector<int>& map,
             int mx = pcx - half + i;
             int mz = pcz - half + j;
 
-            // [comment corrupted in source file - original text lost/unrecoverable]
-            // [comment corrupted in source file - original text lost/unrecoverable]
-            // [comment corrupted in source file - original text lost/unrecoverable]
-            // [comment corrupted in source file - original text lost/unrecoverable]
             unsigned char v = 0;
 
             bool inBounds =
                 mx >= 0 && mx < mapW &&
                 mz >= 0 && mz < mapH;
 
-            // [comment corrupted in source file - original text lost/unrecoverable]
-            // [comment corrupted in source file - original text lost/unrecoverable]
-            // [comment corrupted in source file - original text lost/unrecoverable]
-            // [comment corrupted in source file - original text lost/unrecoverable]
             bool revealed =
                 inBounds &&
                 m_explored[(size_t)mz * mapW + mx] != 0;
@@ -283,7 +263,15 @@ void MinimapFog::updateMinimap(int mapW, int mapH, const std::vector<int>& map,
                 else if (cell == 2)
                     v = 85;
 
-                if (v == 170 && isTorchCell(mx, mz))
+                // Final priority is decided below: landmark torch (220, the same '*' as a regular
+                // torch but tinted) > read-diary highlight (200) > regular torch (255) > regular
+                // wall (170). A regular torch must not beat the highlight: a tight pocket has only
+                // 2-3 perimeter wall cells but 3 torches, so the highlight would almost never show.
+                if (v == 170 && isGuideTorchCell(mx, mz))
+                    v = 220;
+                else if (v == 170 && isDiaryReadWallCell(mx, mz))
+                    v = 200;
+                else if (v == 170 && isTorchCell(mx, mz))
                     v = 255;
             }
 
@@ -296,16 +284,9 @@ void MinimapFog::updateMinimap(int mapW, int mapH, const std::vector<int>& map,
         m_minimapTexture
     );
 
-    // Perf: glTexImage2D reallocates GPU storage for the texture from
-    // scratch — was being called every single frame even though N (=
-    // kMinimapSize) never changes after the very first upload. Now only
-    // the FIRST call allocates storage (glTexImage2D); every call after
-    // that just overwrites the existing storage in place
-    // (glTexSubImage2D), which is what every frame after the first
-    // actually needs. Sampler parameters are texture STATE, not pixel
-    // data — they don't need to be (and previously were being)
-    // re-specified on every single upload either, only once right after
-    // the texture is created.
+    // glTexImage2D reallocates GPU storage, so only the first call allocates it; later calls
+    // overwrite it in place (glTexSubImage2D). Sampler parameters are texture state, not pixel
+    // data, so they are set once right after the texture is created, not on every upload.
     if (!m_minimapTextureAllocated)
     {
         glTexImage2D(
@@ -377,10 +358,9 @@ void MinimapFog::destroy()
         glDeleteTextures(1, &m_minimapTexture);
         m_minimapTexture = 0;
     }
-    // The next updateMinimap() call will glGenTextures() a brand new
-    // texture object (m_minimapTexture is now 0) — it has no storage
-    // yet, so the allocate-vs-subimage flag must be reset too, or the
-    // very first upload after a destroy()/re-init would wrongly try
-    // glTexSubImage2D on a texture that was never glTexImage2D'd.
+    // The next updateMinimap() call creates a brand new texture object (m_minimapTexture is now 0)
+    // with no storage yet, so the allocate-vs-subimage flag must be reset too. Otherwise the first
+    // upload after destroy()/re-init would call glTexSubImage2D on a texture that never got
+    // storage.
     m_minimapTextureAllocated = false;
 }

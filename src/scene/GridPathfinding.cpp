@@ -23,7 +23,7 @@ std::vector<glm::ivec2> FindPath(
     auto idx = [&](glm::ivec2 p) { return p.y * mapW + p.x; };
 
     if (!isWalkable(start) || !isWalkable(goal))
-        return path; // одна из точек физически в стене — пути нет
+        return path; // one of the points is physically inside a wall: no path
 
     if (start == goal)
     {
@@ -31,9 +31,9 @@ std::vector<glm::ivec2> FindPath(
         return path;
     }
 
-    // cameFrom[i] = -1 (не посещено), иначе линейный индекс клетки-предка.
-    // Стартовая клетка сама себе предок — так отличаем "не посещено" от
-    // "это старт" при восстановлении пути в конце.
+    // cameFrom[i] = -1 (unvisited), otherwise the linear index of the parent cell. The start cell
+    // is its own parent, which distinguishes "unvisited" from "this is the start" when
+    // reconstructing the path.
     std::vector<int> cameFrom((size_t)mapW * mapH, -1);
     cameFrom[idx(start)] = idx(start);
 
@@ -68,9 +68,8 @@ std::vector<glm::ivec2> FindPath(
     }
 
     if (!found)
-        return path; // пустой — вызывающий код (EnemyAI) должен считать это "пути нет"
+        return path; // empty: the caller (EnemyAI) treats this as "no path"
 
-    // Восстановление пути от goal к start по cameFrom, потом разворот.
     glm::ivec2 cur = goal;
     while (idx(cur) != cameFrom[idx(cur)])
     {
@@ -105,14 +104,8 @@ bool HasGridLineOfSight(
     const int sz = (a.y < b.y) ? 1 : ((a.y > b.y) ? -1 : 0);
     int err = dx - dz;
 
-    // Стандартный Брезенхэм, но с явной проверкой диагонального шага —
-    // когда за один шаг меняются ОБЕ координаты, это "срезание угла"
-    // между клеткой (nx, z) и клеткой (x, nz). Если ОБЕ они — стены,
-    // диагональ технически проходит через щель толщиной в точку между
-    // двумя стенами, поставленными по диагонали друг к другу —
-    // геометрически невозможно, поэтому блокируем. Если хотя бы одна из
-    // двух свободна — считаем, что можно "срезать" рядом с углом (как и
-    // обычно трактуют диагональное движение по сетке в играх).
+    // Bresenham with a corner check on diagonal steps: if both side cells are walls the diagonal
+    // would pass a point-thin gap and is blocked; if one is open, cutting the corner is allowed.
     while (x != b.x || z != b.y)
     {
         const int e2 = 2 * err;
@@ -154,23 +147,22 @@ std::vector<glm::ivec2> SmoothPath(
         return smoothed;
 
     smoothed.push_back(cellPath[0]);
-    size_t anchor = 0; // индекс последней ЗАКРЕПЛЁННОЙ точки в cellPath
+    size_t anchor = 0; // index of the last anchored point in cellPath
 
     for (size_t i = 1; i < n; ++i)
     {
         if (i == n - 1)
         {
-            // Последняя точка (сама цель) — всегда оставляем, даже если
-            // видно по прямой (иначе некуда будет идти дальше anchor'а).
+            // The last point (the goal itself) is always kept, even if it is visible in a straight
+            // line (otherwise there would be nowhere to go past the anchor).
             smoothed.push_back(cellPath[i]);
             break;
         }
 
-        // Пока от anchor'а всё ещё видно СЛЕДУЮЩУЮ точку по прямой — не
-        // фиксируем cellPath[i], просто продолжаем расширять видимость
-        // дальше по пути. Как только прямая до cellPath[i+1] чем-то
-        // перекрыта — cellPath[i] это последняя точка, до которой ещё
-        // было видно, фиксируем её как новый anchor.
+        // As long as the anchor still has a straight line of sight to the next point, cellPath[i]
+        // is not anchored: visibility just keeps extending along the path. Once the line to
+        // cellPath[i+1] is blocked, cellPath[i] is the last point that was still visible: it
+        // becomes the new anchor.
         if (!HasGridLineOfSight(mapW, mapH, map, cellPath[anchor], cellPath[i + 1]))
         {
             smoothed.push_back(cellPath[i]);

@@ -29,12 +29,10 @@ void Lighting::update(const glm::vec3& camPos, float renderDistance, int maxActi
             glm::vec3 delta = torchFlamePos[i] - camPos;
             float distanceSquared = glm::dot(delta, delta);
 
-            // Кандидат в активные факелы отбрасывается, если он дальше
-            // дальности прорисовки (renderDistance) — тогда всё равно не
-            // виден из-за тумана/discard в шейдере, тратить на него один из
-            // maxActiveTorches слотов смысла нет. renderDistance обычно
-            // 16.0, но может быть увеличена (см. DevTools.h/isNoclipEnabled()),
-            // поэтому радиус отбора берём динамически, а не константой.
+            // A candidate is dropped if it is beyond the draw distance: it is hidden by fog/discard
+            // in the shader anyway, so there is no point spending an active-torch slot on it.
+            // renderDistance is usually 16.0 but can be increased (see DevTools.h), so the cutoff
+            // radius is taken dynamically instead of being a constant.
             if (distanceSquared > renderDistance * renderDistance)
                 continue;
 
@@ -54,12 +52,10 @@ void Lighting::update(const glm::vec3& camPos, float renderDistance, int maxActi
         m_cachedActiveTorchPos.clear();
         m_cachedActiveTorchColor.clear();
         m_cachedActiveTorchIntensity.clear();
-        m_cachedActiveTorchOriginalIndex.clear();
 
         m_cachedActiveTorchPos.reserve(count);
         m_cachedActiveTorchColor.reserve(count);
         m_cachedActiveTorchIntensity.reserve(count);
-        m_cachedActiveTorchOriginalIndex.reserve(count);
 
         for (int i = 0; i < count; ++i)
         {
@@ -67,7 +63,6 @@ void Lighting::update(const glm::vec3& camPos, float renderDistance, int maxActi
             m_cachedActiveTorchPos.push_back(torchFlamePos[index]);
             m_cachedActiveTorchColor.push_back(torchColor[index]);
             m_cachedActiveTorchIntensity.push_back(torchIntensity[index]);
-            m_cachedActiveTorchOriginalIndex.push_back(index);
         }
 
         m_cachedActiveTorchCount = count;

@@ -4,164 +4,72 @@
 #include <cstdint>
 #include <functional>
 
-// ============================================================================
-// WallShapes — Шаг 1 прототипа "неровные стены": один тип вариации силуэта
-// клетки стены — срезанный (chamfered) прямой угол, — накладываемый
-// ОТДЕЛЬНЫМ проходом поверх уже готового грида MapGenerator (сам генератор
-// лабиринта не трогается, как и было оговорено).
-//
-// Это "источник истины" для формы клетки: и SceneGeometry (рендер), и
-// PlayerController (коллизия) читают ОДНУ и ту же функцию IsPointBlocked(),
-// поэтому визуал и коллизия физически не могут разойтись — нет двух
-// независимых реализаций одной и той же геометрии.
-//
-// Модель для первого шага была предельно простой: на клетку — не более
-// ОДНОГО срезанного угла (несколько одновременных срезов на одну клетку
-// физически некуда деть в этой топологии грида — см. историю правок:
-// "сколько сторон клетки открыто" даёт только 4 исхода (0/1/2/4), и все
-// уже заняты соседними фичами — 0→CorridorWidth, 1→этот срез угла,
-// 2→Columns T-образный, 4→Columns изолированный); срез — плоская
-// диагональ ПЕРЕМЕННОЙ длины на клетку (см. ComputeVariedChamferSize
-// ниже, отдельно от фиксированного большего среза диагональных цепочек,
-// см. kChamferSizeChain) — оба пункта "несколько углов на клетку/другая
-// длина среза" из исходного ТЗ разобраны этим комментарием: длина —
-// сделана, несколько углов — осознанно не сделано за неимением места в
-// топологии, а не забыто.
-//
-// Какие углы вообще СЧИТАЮТСЯ (eligibility) и какие из них реально
-// срезаны (rng) — детерминированы по seed, см. BuildCornerCuts().
-// ============================================================================
+// Chamfered wall corners: a per-cell silhouette variation, a separate pass over MapGenerator's
+// finished grid. This header is the single source of truth for the cell shape: render
+// (SceneGeometry) and collision (PlayerController) both use IsLocalPointSolid(). At most one
+// chamfered corner per cell (other open-side counts belong to CorridorWidth and Columns); the
+// choice is deterministic from the seed.
 namespace WallShapes {
 
-// Какой из 4 углов клетки (в её локальных координатах, см. ниже) срезан.
-// None — обычный прямой прямоугольник (как сейчас везде в движке).
 enum class CornerCut : uint8_t {
     None = 0,
-    SW, // угол в локальной точке (0,0) — срез обращён в направление -X,-Z
-    SE, // угол (1,0) — срез в направлении +X,-Z
-    NE, // угол (1,1) — срез в направлении +X,+Z
-    NW, // угол (0,1) — срез в направлении -X,+Z
+    SW, // corner at local point (0,0) — chamfer faces -X,-Z
+    SE, // corner (1,0) — chamfer faces +X,-Z
+    NE, // corner (1,1) — chamfer faces +X,+Z
+    NW, // corner (0,1) — chamfer faces -X,+Z
 };
 
-// Длина среза вдоль обеих граней угла, в тех же мировых единицах, что и
-// сама клетка (клетка — единичный квадрат). 0.35 — БАЗОВОЕ значение
-// (fallback для старых вызовов, где нет per-cell вариации, см.
-// ComputeVariedChamferSize ниже) — даёт заметный, но не доминирующий
-// скос — угол читается как "срезанный", а не как половина клетки. Общая
-// константа для рендера (SceneGeometry) и коллизии (PlayerController) —
-// именно поэтому она живёт здесь, а не дублируется.
+// Chamfer length along both corner edges in world units. 0.35 is the base value and what the shadow
+// shaders assume for regular chamfers; shared by render and collision.
 constexpr float kChamferSize = 0.35f;
 
-// Диапазон переменной длины среза "обычных" (не диагональ-цепочка, см.
-// kChamferSizeChain ниже) срезанных клеток — пункт "переменная длина
-// среза на клетку" из ТЗ. Раньше ВСЕ обычные срезы получали одинаковый
-// kChamferSize=0.35 — теперь каждая клетка получает свой размер в этом
-// диапазоне (детерминированно по seed, см. ComputeVariedChamferSize),
-// давая дополнительную низкополигональную вариативность силуэта: где-то
-// едва заметная царапина на углу, где-то заметно более крупный скос —
-// но всегда в разумных пределах, не подменяя собой отдельный (гораздо
-// больший) случай диагональных цепочек.
+// Range of the per-cell chamfer length for regular (non-chain) chamfers, deterministic from the
+// seed (ComputeVariedChamferSize).
 constexpr float kChamferSizeVariedMin = 0.20f;
 constexpr float kChamferSizeVariedMax = 0.55f;
 
-// Больший срез — специально для клеток из диагональных "лестниц" (см.
-// DiagonalCorridors.h): при kChamferSize=0.35 срезается только ~6%
-// площади клетки (0.5*c^2) — визуально это "квадрат с царапиной на
-// углу", а не диагональ (см. историю правок — реальный скриншот в игре
-// показал именно это: цепочка среза читается, но между срезами остаются
-// явно квадратные куски стены). При kChamferSizeChain=0.92 срезается уже
-// ~42% площади — клетка выглядит как настоящий диагональный клин, и
-// последовательные клетки цепочки визуально сливаются в связную
-// диагональную стену, а не редкие засечки на прямых углах.
+// Larger chamfer for diagonal staircases (DiagonalCorridors.h): at 0.35 only ~6% of a cell is cut,
+// at 0.92 ~42%, so a chain reads as a connected diagonal wall instead of notches.
 constexpr float kChamferSizeChain = 0.92f;
 
-// Из eligible-углов (см. BuildCornerCuts) реально срезаются не все —
-// иначе результат выглядел бы "как будто так и было спроектировано", а
-// не как вариативность поверх обычных прямых углов (жёсткое требование
-// ТЗ: "не все стены/углы такие"). Это доля [0..1] от eligible-кандидатов.
+// Not every eligible corner is chamfered: otherwise the result would look designed that way rather
+// than like variation on top of normal right angles. This is the fraction [0..1] of eligible
+// candidates that fire.
 constexpr float kChamferProbability = 0.45f;
 
-// Детерминированный по seed размер среза ИМЕННО для этой клетки, в
-// диапазоне [kChamferSizeVariedMin..kChamferSizeVariedMax] — см. комментарий
-// выше. Отдельная (от вероятности "срезать или нет") соль хэша, чтобы
-// решения "срезать?" и "насколько сильно?" не были жёстко
-// скоррелированы для одной и той же клетки.
+// Seed-deterministic chamfer size for this cell, in [kChamferSizeVariedMin..kChamferSizeVariedMax].
+// It uses a separate hash salt from the "chamfer or not" decision, so "chamfer?" and "how much?"
+// are not tightly correlated for the same cell.
 float ComputeVariedChamferSize(unsigned int seed, int x, int z);
 
-// ----------------------------------------------------------------------
-// Генерация: детерминированный проход по готовому гриду (MapGenerator уже
-// отработал, сам алгоритм лабиринта не меняется). Возвращает mapW*mapH
-// массив (тот же индекс z*mapW+x, что и m_map/isWall/isFloor).
-//
-// Клетка (x,z) — кандидат на срез, только если она стена (map[]==1) и
-// РОВНО один из 4 диагональных случаев выполняется:
-//   SW: floor(x-1,z) && floor(x,z-1)
-//   SE: floor(x+1,z) && floor(x,z-1)
-//   NE: floor(x+1,z) && floor(x,z+1)
-//   NW: floor(x-1,z) && floor(x,z+1)
-// (т.е. клетка — "внешний" выпуклый угол стены, где две ортогональные
-// соседние клетки открыты — ровно та ситуация, где игрок в реальности
-// огибает угол стены). Если выполняется 2+ условия сразу (например,
-// отдельно стоящий "зуб" стены, открытый с трёх сторон) — клетка
-// ПРОПУСКАЕТСЯ: это уже не одиночный угол, а кандидат в колонну/иную
-// форму, что осознанно вынесено за рамки этого шага.
-//
-// seed — тот же seed, что и у MapGenerator::Generate()/PlaceTorches(), так
-// что "Продолжить" детерминированно восстанавливает те же срезы, что и при
-// первой генерации (без необходимости сохранять сами срезы в сейв).
-//
-// chamferProbabilityAt — опционально: колбэк "какова вероятность среза
-// ИМЕННО в этой клетке" (см. Zoning.h — там же лежит его типичная
-// реализация через сектор). Если не передан (пустой std::function) —
-// используется единая kChamferProbability для всей карты, как и было до
-// зонирования (это гарантирует, что весь код/тесты, написанные ДО
-// зонирования, продолжают работать без изменений).
+// Deterministic pass over the finished grid, returning mapW*mapH (z*mapW+x). A wall cell is a
+// candidate when exactly one diagonal case holds (both orthogonal neighbors on that corner are
+// floor); cells matching several are skipped. seed matches MapGenerator's, so CONTINUE recreates
+// the chamfers. chamferProbabilityAt optionally overrides the per-cell probability (Zoning.h).
 std::vector<CornerCut> BuildCornerCuts(
     int mapW, int mapH,
     const std::vector<int>& map,
     unsigned int seed,
     const std::function<float(int, int)>& chamferProbabilityAt = {});
 
-// ----------------------------------------------------------------------
-// Общая математика формы клетки — ОДНА реализация для рендера и коллизии.
-//
-// Все точки/координаты ниже — ЛОКАЛЬНЫЕ координаты внутри клетки (x,z),
-// т.е. localX = worldX - cellX, localZ = worldZ - cellZ, оба в [0,1].
-// Это то же соглашение, что уже используют мировые координаты граней в
-// SceneGeometry::BuildFloorAndWallsGreedy (south face at z, north at z+1,
-// west at x, east at x+1 — здесь то же самое, но в единичном локальном
-// квадрате клетки).
+// Shared cell-shape math for render and collision, in cell-local coordinates (localX = worldX -
+// cellX, both in [0,1]).
 
-// Две точки среза (пересечение диагонали с двумя исходными гранями угла),
-// в локальных координатах. Возвращает false для CornerCut::None (срез не
-// определён — вызывающий код должен использовать обычный прямой угол).
-//
-// Именование: cutOnEdgeA/cutOnEdgeB — не "первая/вторая" в абстрактном
-// смысле, а буквально точка на конкретной грани; см. использование в
-// SceneGeometry (там по имени грани — south/west/north/east — понятно,
-// какая из двух это).
+// The two chamfer points where the diagonal meets the corner's original edges; false for
+// CornerCut::None. onEdgeCcwFrom/To are the points on the previous/next edge in counter-clockwise
+// order.
 struct ChamferPoints {
-    glm::vec2 onEdgeCcwFrom; // точка на "предыдущей" (против часовой) грани
-    glm::vec2 onEdgeCcwTo;   // точка на "следующей" (по часовой) грани
+    glm::vec2 onEdgeCcwFrom;
+    glm::vec2 onEdgeCcwTo;
 };
 bool GetChamferPoints(CornerCut cut, float chamferSize, ChamferPoints& out);
 
-// Точка (localX, localZ) считается СПЛОШНОЙ стеной (заблокирована), если
-// она НЕ попадает в срезанный клин. Для CornerCut::None — всегда true
-// (вся клетка — сплошной квадрат, как сейчас). Это и есть тест
-// point-in-footprint из ТЗ, только выражен как "не в клине" — для
-// выпуклого клина проще и дешевле одной проверки полуплоскости, чем
-// полный point-in-convex-polygon с 5 рёбрами.
+// Solid if the point is NOT inside the chamfer wedge; always true for CornerCut::None. Cheaper than
+// a full point-in-polygon test.
 bool IsLocalPointSolid(float localX, float localZ, CornerCut cut, float chamferSize);
 
-// ----------------------------------------------------------------------
-// Тип eligible-угла клетки (x,z) БЕЗ вероятностного решения "срезать
-// или нет" — чистая топология (см. eligibility в комментарии у
-// BuildCornerCuts). Вынесено отдельно (не только внутрь BuildCornerCuts),
-// т.к. нужно и другим проходам, которым важен именно ТИП потенциального
-// среза, а не финальное решение — например, детектору диагональных
-// "лестниц" (см. src/scene/DiagonalCorridors.h), который ищет цепочки
-// eligible-кандидатов ОДНОГО типа вдоль диагонали, до всякого RNG.
+// Eligible corner type for a cell (pure topology, no RNG). Exposed for the diagonal-staircase
+// detector, which needs candidates before the random decision.
 CornerCut GetEligibleCornerCut(int mapW, int mapH, const std::vector<int>& map, int x, int z);
 
 } // namespace WallShapes

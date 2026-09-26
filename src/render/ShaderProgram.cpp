@@ -1,5 +1,6 @@
 #include "ShaderProgram.h"
-#include <cstdio>
+#include <stdexcept>
+#include <string>
 
 namespace ShaderProgram {
 
@@ -14,7 +15,8 @@ GLuint CompileShader(GLenum type, const char* src, const char* debugLabel)
     if (!ok) {
         char log[2048];
         glGetShaderInfoLog(shader, sizeof(log), nullptr, log);
-        std::fprintf(stderr, "%s shader compile error: %s\n", debugLabel, log);
+        glDeleteShader(shader);
+        throw std::runtime_error(std::string(debugLabel) + " shader failed to compile:\n" + log);
     }
     return shader;
 }
@@ -31,7 +33,10 @@ GLuint LinkProgram(GLuint vertexShader, GLuint fragmentShader, const char* debug
     if (!ok) {
         char log[2048];
         glGetProgramInfoLog(program, sizeof(log), nullptr, log);
-        std::fprintf(stderr, "%s program link error: %s\n", debugLabel, log);
+        glDeleteProgram(program);
+        glDeleteShader(vertexShader);
+        glDeleteShader(fragmentShader);
+        throw std::runtime_error(std::string(debugLabel) + " shader program failed to link:\n" + log);
     }
 
     glDeleteShader(vertexShader);

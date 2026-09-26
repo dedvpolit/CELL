@@ -60,45 +60,11 @@ static void compassAddCylinder(
     }
 }
 
-static void compassAddSphere(
-    std::vector<CompassVertexCPU>& out,
-    const glm::vec3& c,
-    float r,
-    float type,
-    int segments,
-    int rings)
-{
-    for (int y = 0; y < rings; ++y) {
-        float v0 = (float)y / (float)rings;
-        float v1 = (float)(y + 1) / (float)rings;
-        float phi0 = glm::pi<float>() * v0 - glm::half_pi<float>();
-        float phi1 = glm::pi<float>() * v1 - glm::half_pi<float>();
-
-        for (int x = 0; x < segments; ++x) {
-            float u0 = glm::two_pi<float>() * (float)x / (float)segments;
-            float u1 = glm::two_pi<float>() * (float)(x + 1) / (float)segments;
-
-            glm::vec3 n00(std::cos(phi0)*std::cos(u0), std::sin(phi0), std::cos(phi0)*std::sin(u0));
-            glm::vec3 n01(std::cos(phi0)*std::cos(u1), std::sin(phi0), std::cos(phi0)*std::sin(u1));
-            glm::vec3 n10(std::cos(phi1)*std::cos(u0), std::sin(phi1), std::cos(phi1)*std::sin(u0));
-            glm::vec3 n11(std::cos(phi1)*std::cos(u1), std::sin(phi1), std::cos(phi1)*std::sin(u1));
-
-            out.push_back({c + n00*r, n00, type});
-            out.push_back({c + n10*r, n10, type});
-            out.push_back({c + n11*r, n11, type});
-            out.push_back({c + n00*r, n00, type});
-            out.push_back({c + n11*r, n11, type});
-            out.push_back({c + n01*r, n01, type});
-        }
-    }
-}
-
 void Compass::create()
 {
     std::vector<CompassVertexCPU> verts;
     verts.reserve(4096);
 
-    // Compass body: very thin cylinder, like a pocket compass.
     compassAddCylinder(
         verts,
         glm::vec3(0.0f, -0.030f, 0.0f),
@@ -109,7 +75,6 @@ void Compass::create()
         glm::vec3(0,1,0)
     );
 
-    // Top disk is rendered as ASCII map by the compass fragment shader.
     const int diskSegments = 64;
     const float r = 0.235f;
     for (int i = 0; i < diskSegments; ++i) {
@@ -161,7 +126,6 @@ void Compass::create()
 
     glBindVertexArray(0);
 
-    // Compile the dedicated compass shader.
     const std::string compassVertSrc = ShaderLoader::LoadSource("assets/shaders/compass.vert");
     const std::string compassFragSrc = ShaderLoader::LoadSource("assets/shaders/compass.frag");
     GLuint vs = ShaderProgram::CompileShader(GL_VERTEX_SHADER, compassVertSrc.c_str(), "Compass");
@@ -182,8 +146,8 @@ void Compass::cacheUniformLocations()
     m_uniProjection        = glGetUniformLocation(m_program, "projection");
     m_uniMinimapTex        = glGetUniformLocation(m_program, "minimapTex");
     m_uniMinimapYawDeg     = glGetUniformLocation(m_program, "minimapYawDeg");
-    m_uniMinimapFontTex    = glGetUniformLocation(m_program, "minimapFontTex");
-    m_uniMinimapGlyphCount = glGetUniformLocation(m_program, "minimapGlyphCount");
+    m_uniUiFontTex    = glGetUniformLocation(m_program, "uiFontTex");
+    m_uniUiGlyphCount = glGetUniformLocation(m_program, "uiGlyphCount");
     m_uniColorEnabled      = glGetUniformLocation(m_program, "colorEnabled");
     m_uniEnemySpottedAlpha   = glGetUniformLocation(m_program, "enemySpottedAlpha");
     m_uniEnemyMinimapOffset  = glGetUniformLocation(m_program, "enemyMinimapOffset");
@@ -218,26 +182,20 @@ void Compass::render(float poseBlend, float yawDeg,
     if (!m_program || !m_vao || !minimapTexture)
         return;
 
-    // Nothing is rendered when the compass is fully put away.
     if (poseBlend <= 0.0001f)
         return;
 
-    // Compass is a held first-person object.
-    // It must never be occluded by dungeon walls/floor.
+    // The compass is a held first-person object: it must never be occluded by dungeon walls/floor.
     glDisable(GL_DEPTH_TEST);
     glDepthMask(GL_FALSE);
 
-    // The compass fades/slides in with a small delay. Both directions use
-    // smootherstep, so taking it out and putting it away are visibly
-    // non-linear and never snap.
+    // The compass fades/slides in with a small delay. Both directions use smootherstep, so taking
+    // it out and putting it away are visibly non-linear and never snap.
     const float handT = glm::clamp((poseBlend - 0.14f) / 0.86f, 0.0f, 1.0f);
     const float e =
         handT * handT * handT *
         (handT * (handT * 6.0f - 15.0f) + 10.0f);
 
-    // Screen-space coordinates.
-    // X > 0  = right
-    // Y < 0  = down
     const float hiddenX = 1.35f;
     const float hiddenY = -1.35f;
 
@@ -260,8 +218,8 @@ void Compass::render(float poseBlend, float yawDeg,
         1.5f
     );
 
-    // View/projection are already available in the active frame; reconstruct
-    // them here so the compass can be rendered after the dungeon geometry.
+    // View/projection are already available in the active frame; they are reconstructed here so the
+    // compass can be rendered after the dungeon geometry.
     int viewport[4];
     glGetIntegerv(GL_VIEWPORT, viewport);
 
@@ -299,17 +257,15 @@ void Compass::render(float poseBlend, float yawDeg,
         yawDeg
     );
 
-    // Same glyph atlas the old flat ASCII minimap used, shared via
-    // AsciiEffect so the two views never drift apart visually.
     glActiveTexture(GL_TEXTURE1);
-    glBindTexture(GL_TEXTURE_2D, m_minimapFontTex);
+    glBindTexture(GL_TEXTURE_2D, m_uiFontTex);
     glUniform1i(
-        m_uniMinimapFontTex,
+        m_uniUiFontTex,
         1
     );
     glUniform1f(
-        m_uniMinimapGlyphCount,
-        (float)m_minimapGlyphCount
+        m_uniUiGlyphCount,
+        (float)m_uiGlyphCount
     );
 
     glUniform1f(
@@ -317,14 +273,10 @@ void Compass::render(float poseBlend, float yawDeg,
         colorEnabled ? 1.0f : 0.0f
     );
 
-    // УЛУЧШЕНИЕ ("4 врага по всей карте", "на мини-карте отображать
-    // врага, если игрок его уже видел", "плавное затухание") — массивы
-    // вместо одного значения, тот же приём заливки, что и у
-    // devLightPos[8] в DungeonScene.cpp (glUniform*fv на базовый
-    // location индекса 0). enemySpottedAlphas уже посчитаны на CPU (см.
-    // EnemyAI::spottedMarkerAlpha() для каждого врага), шейдеру
-    // остаётся только смешать со своим обычным цветом клетки (см.
-    // compass.frag).
+    // Arrays instead of a single value: the same upload trick as devLightPos[8] in DungeonScene.cpp
+    // (glUniform*fv on the base location of index 0). enemySpottedAlphas is already computed on the
+    // CPU (see EnemyAI::spottedMarkerAlpha() per enemy); the shader just blends it with the regular
+    // cell color (see compass.frag).
     const int enemyCount = (int)std::min(enemySpottedAlphas.size(), enemyMinimapOffsets.size());
     glUniform1i(m_uniEnemyCount, enemyCount);
     if (enemyCount > 0) {
@@ -339,7 +291,6 @@ void Compass::render(float poseBlend, float yawDeg,
     glBindTexture(GL_TEXTURE_2D, 0);
     glActiveTexture(GL_TEXTURE0);
 
-    // Restore normal dungeon depth state.
     glDepthMask(GL_TRUE);
     glEnable(GL_DEPTH_TEST);
 }

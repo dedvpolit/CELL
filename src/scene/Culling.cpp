@@ -25,12 +25,6 @@ void ExtractFrustumPlanes(const glm::mat4& vp, glm::vec4 outPlanes[6])
     }
 }
 
-// Conservative AABB-vs-frustum test: for each plane, pick the AABB corner
-// furthest along the plane's normal ("positive vertex") — if even that
-// corner is outside, the whole box is outside. This can have false
-// positives right at the frustum edges (box treated as visible when only
-// a corner of its bounding box would be), which is exactly what we want
-// for culling: it never pops geometry that's actually on screen.
 bool AabbInFrustum(const glm::vec3& mn, const glm::vec3& mx, const glm::vec4 planes[6])
 {
     for (int i = 0; i < 6; ++i)
@@ -44,7 +38,7 @@ bool AabbInFrustum(const glm::vec3& mn, const glm::vec3& mx, const glm::vec4 pla
         );
 
         if (pl.x * positive.x + pl.y * positive.y + pl.z * positive.z + pl.w < 0.0f)
-            return false; // fully outside this plane
+            return false;
     }
     return true;
 }

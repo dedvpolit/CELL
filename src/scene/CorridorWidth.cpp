@@ -4,9 +4,6 @@
 namespace CorridorWidth {
 
 namespace {
-// Тот же splitmix64-приём, что и в WallShapes.cpp/Columns.cpp — своя соль,
-// чтобы решение "расширить корридор здесь" не было жёстко скоррелировано
-// с решениями "срезать угол"/"поставить колонну" для той же клетки/seed.
 float HashUnitFloat(unsigned int seed, int x, int z) {
     uint64_t h = (uint64_t)seed * 0x9E3779B97F4A7C15ull;
     h ^= (uint64_t)(uint32_t)x * 0xA24BAED4963EE407ull;
@@ -36,11 +33,9 @@ std::vector<unsigned char> ApplyWidening(
         return map[(size_t)z * mapW + x] == 1;
     };
 
-    // Собираем кандидатов ПЕРЕД мутацией map — тот же приём, что и в
-    // Columns::BuildColumns: иначе только что расширенная клетка сама
-    // открыла бы соседнюю стену с ещё одной стороны и неверно "заразила"
-    // бы её в этом же проходе (домино-эффект вместо независимых решений
-    // по исходному лабиринту).
+    // Collect the candidates before mutating map (like Columns::BuildColumns): otherwise a cell
+    // just widened would open up a neighboring wall and infect it in the same pass, a domino effect
+    // instead of independent decisions against the original maze.
     std::vector<std::pair<int,int>> candidates;
     for (int z = 0; z < mapH; ++z) {
         for (int x = 0; x < mapW; ++x) {
@@ -49,12 +44,10 @@ std::vector<unsigned char> ApplyWidening(
             const bool hOpen = isFloor(x - 1, z) && isFloor(x + 1, z);
             const bool vOpen = isFloor(x, z - 1) && isFloor(x, z + 1);
 
-            // Клетка, открытая СРАЗУ по обеим осям — изолированный "зуб"
-            // стены (4 ортогональных соседа открыты) — это ровно
-            // eligibility Columns::BuildColumns (см. Columns.h), не
-            // трогаем её здесь, чтобы не отбирать кандидата у колонн.
+            // Open on both axes at once: an isolated wall "tooth", which is Columns::BuildColumns'
+            // territory; do not steal its candidate.
             if (hOpen && vOpen) continue;
-            if (!hOpen && !vOpen) continue; // не "стена-перегородка" вовсе
+            if (!hOpen && !vOpen) continue; // not a "partition wall" at all
 
             candidates.emplace_back(x, z);
         }

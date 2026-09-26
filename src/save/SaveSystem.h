@@ -2,101 +2,77 @@
 #include <vector>
 #include <string>
 
-// ============================================================================
-// SaveSystem — 3 независимых файла сохранения ("SLOT A/B/C", см.
-// ui/MenuLayouts.h: BuildContinueMenu()) для кнопки "CONTINUE" главного
-// меню. Лабиринт НИКОГДА не сериализуется целиком: MapGenerator::Generate()/
-// PlaceTorches() детерминированы по seed (тот же seed -> тот же лабиринт,
-// та же расстановка факелов), поэтому в файл достаточно записать сам seed —
-// DungeonScene::loadSlot() просто перегенерирует карту тем же seed'ом и
-// поверх неё восстанавливает состояние игрока (позицию/поворот камеры,
-// здоровье/стамину) и туман войны (MinimapFog::explored()).
-//
-// Формат файла — простой текст (KEY=VALUE построчно), как и остальные
-// текстовые ассеты движка (шейдеры): не бинарный, легко читается глазами
-// при отладке. Файлы лежат в папке "saves" рядом с .exe (создаётся сама
-// при первой записи, см. GetSavesDir() в .cpp) — в том же духе, что и
-// AssetPath::Resolve() для чтения ассетов, только для записи.
-// ============================================================================
+// Three independent save files (SLOT1..SLOT3). The maze is not serialized: MapGenerator is
+// deterministic from a seed, so a file stores the seed plus player state, fog of war and pickups,
+// and DungeonScene::loadSlot() regenerates the rest. Plain text (KEY=VALUE per line) in a "saves"
+// folder next to the .exe, created on first write.
 namespace SaveSystem {
 
 constexpr int kSlotCount = 3;
 
-// Максимальная длина имени сохранения, которое вводит игрок (см.
-// SaveData::name выше, AppState::SAVE_NAME_ENTRY в Application.cpp).
 constexpr int kNameMaxLen = 5;
 
 struct SaveData {
-    bool valid = false; // false = слот пуст/файл повреждён — грузить нечего
+    bool valid = false; // false = slot empty/file corrupted — nothing to load
 
-    unsigned int seed = 0; // см. MapGenerator::GenerateResult::seed
+    unsigned int seed = 0; // see MapGenerator::GenerateResult::seed
 
-    // Имя, которое игрок сам ввёл при сохранении (см. AppState::
-    // SAVE_NAME_ENTRY в Application.cpp) — максимум kNameMaxLen символов
-    // (см. ниже), обрезается при записи/чтении на случай повреждённого
-    // руками файла. Пустая строка — легитимное значение: автосейв со
-    // старта NEW GAME (до первого ручного SAVE) имени не имеет, экран
-    // выбора слота в этом случае показывает как подпись просто "SLOT"
-    // (см. Application.cpp).
+    // Name typed when saving (at most kNameMaxLen chars, truncated on read/write). Empty is
+    // legitimate: an autosave from a fresh NEW GAME has no name and the picker shows a generic
+    // SLOT<n>.
     std::string name;
 
-    // Позиция/поворот камеры игрока в момент сохранения (см.
-    // PlayerController::camPos()/yaw()/pitch()).
     float posX = 6.5f, posY = 0.5f, posZ = 6.5f;
     float yaw = -90.0f;
     float pitch = 0.0f;
 
-    // 0..1 — см. PlayerController::healthFraction()/staminaFraction().
-    // Абсолютные значения не нужны: максимумы (m_maxHealth/m_maxStamina)
-    // константы движка, не часть сейва.
     float healthFraction = 1.0f;
     float staminaFraction = 1.0f;
 
-    // Туман войны (см. MinimapFog::explored()) — какие клетки карты игрок
-    // уже видел. Может быть пустым (например, самый первый автосейв сразу
-    // после генерации, до того как игрок сделал хоть шаг) — тогда
-    // DungeonScene::loadSlot() просто оставляет туман нераскрытым.
+    // Fog of war (see MinimapFog::explored()): which map cells the player has already seen. It can
+    // be empty (e.g. the very first autosave right after generation, before the first step);
+    // DungeonScene::loadSlot() then leaves the fog unrevealed.
     std::vector<unsigned char> explored;
 
-    // Индексы прочитанных дневников (см. Diaries.h, DungeonScene::
-    // m_diariesRead) — сам ТЕКСТ не хранится, он детерминированно
-    // восстанавливается из seed выше (Diaries::SelectForSeed), здесь
-    // только "какие из уже разложенных 12 игрок открывал". Список
-    // индексов, а не битовая маска/RLE — записей всего 12 (в отличие от
-    // explored, там счёт на тысячи), простой список компактнее и проще.
+    // Indices of read diaries. The text is rebuilt from the seed (Diaries::SelectForSeed); a plain
+    // list because there are only a dozen.
     std::vector<int> diariesReadIndices;
+
+    float torchFuel = 1.0f;
+    int torchInventoryCount = 0;
+
+    // Indices of wall torches already picked up. Without them picked-up torches would respawn on
+    // load (placement is deterministic from the seed) while the inventory kept the count, allowing
+    // infinite pickups.
+    std::vector<int> torchTakenIndices;
+
+    // Throwable stones: an absolute inventory count plus the indices already picked up, for the
+    // same reason as the torches.
+    int stoneCount = 2; // must match PlayerController::kInitialStoneCount
+    std::vector<int> stoneTakenIndices;
 };
 
-// Дешёвая проверка "есть ли вообще файл в этом слоте" — для отрисовки
-// экрана CONTINUE (см. MenuLayouts::BuildContinueMenu()): не парсит туман
-// войны, только сам факт существования непустого файла. slotIndex: 0..2.
+// Cheap "does a file exist in this slot at all" check for drawing the CONTINUE screen: it does not
+// parse the fog of war, it only checks that a non-empty file exists. slotIndex: 0..2.
 bool SlotExists(int slotIndex);
 
-// Полная загрузка слота. SaveData::valid остаётся false, если слот пуст
-// или файл повреждён/нечитаем — вызывающий код (Application.cpp) и так не
-// должен предлагать выбрать такой слот (см. UI: пустые слоты не
-// кликабельны), но эта проверка — дополнительная защита от поломанного
-// файла на диске.
+// Full slot load; SaveData::valid stays false if the slot is empty or has no SEED. Parsing is
+// lenient: missing fields default, and non-finite or out-of-range values fall back to their
+// defaults (the fog run lengths and list sizes are capped).
 SaveData LoadSlot(int slotIndex);
 
-// Полностью перезаписывает слот (не сливает со старым содержимым — как
-// обычный "quick save"). СИНХРОННО блокирует вызывающий поток на время
-// записи файла — см. SaveSlotAsync() ниже для неблокирующей версии.
+// Fully overwrites the slot (no merging with old contents). It blocks the calling thread while
+// writing; see SaveSlotAsync() for the non-blocking version. The data goes to a temporary file that
+// replaces the slot only after a successful write, so a failed write keeps the previous save.
 bool SaveSlot(int slotIndex, const SaveData& data);
 
-// Тот же SaveSlot(), но запись реально уходит в отдельный, короткоживущий
-// поток (см. большой БАГФИКС-комментарий в .cpp) — вызывающий код
-// продолжает работать немедленно, не дожидаясь диска. Используется
-// ЕДИНСТВЕННЫМ местом в движке, которое пишет сохранения (см.
-// DungeonScene::saveActiveSlot()) — как периодический автосейв, так и
-// ручной SAVE из меню паузы идут именно сюда.
+// Same as SaveSlot(), but the write happens on a short-lived thread so the caller does not wait on
+// disk. It is the only save path used by the engine (DungeonScene::saveActiveSlot(): autosave and
+// manual SAVE).
 void SaveSlotAsync(int slotIndex, const SaveData& data);
 
-// Слот-кандидат для новой игры (см. DungeonScene::newGame()): первый
-// пустой слот, если такой есть, иначе — слот с самым старым временем
-// последней записи (перезаписываем наименее свежую сессию, простая
-// ротация истории из 3 последних игр вместо ручного выбора слота
-// специальным экраном, которого по ТЗ у "NEW GAME" нет).
+// Candidate slot for a new game without an explicit slot (the death path): the first empty slot,
+// otherwise the least recently written one.
 int PickSlotForNewGame();
 
 } // namespace SaveSystem

@@ -16,12 +16,8 @@ GenerateResult Generate(unsigned int seed) {
     result.seed = seed;
     result.mapW = 128;
     result.mapH = 128;
-    result.map.assign((size_t)result.mapW * result.mapH, 1);  // [comment corrupted in source file - original text lost/unrecoverable]
+    result.map.assign((size_t)result.mapW * result.mapH, 1);
 
-    // [comment corrupted in source file - original text lost/unrecoverable]
-    // [comment corrupted in source file - original text lost/unrecoverable]
-
-    // [comment corrupted in source file - original text lost/unrecoverable]
     int nodesX = (result.mapW - 1) / 2;
     int nodesZ = (result.mapH - 1) / 2;
 
@@ -33,12 +29,9 @@ GenerateResult Generate(unsigned int seed) {
             result.map[z * result.mapW + x] = 2;
     };
 
-    // seed передан вызывающим кодом (см. Generate(unsigned int) выше):
-    // NEW GAME каждый раз генерирует новый случайный seed (см. перегрузку
-    // Generate() без аргументов), а "Продолжить" передаёт seed, сохранённый
-    // в файле сейва, — тот же seed здесь ВСЕГДА разворачивается в тот же
-    // лабиринт (детерминированный mt19937), так что сохранять саму
-    // геометрию не нужно.
+    // The seed comes from the caller: NEW GAME generates a fresh random one, CONTINUE passes the
+    // saved one. The same seed always unfolds into the same maze (deterministic mt19937), so the
+    // geometry itself does not need saving.
     std::mt19937 rng(seed);
 
     std::vector<glm::ivec2> stack;
@@ -77,60 +70,48 @@ GenerateResult Generate(unsigned int seed) {
         if (!moved) stack.pop_back();
     }
 
-    // ---------------- Стартовая safe-zone (спавн игрока) ----------------
-    // Квадрат 10x10 клеток возле угла (0,0), как и раньше.
+    // Starting safe zone (player spawn): a 10x10 cell square near corner (0,0).
     const int safeX0 = 2, safeZ0 = 2, safeX1 = 11, safeZ1 = 11;
     for (int z = safeZ0; z <= safeZ1; z++)
         for (int x = safeX0; x <= safeX1; x++)
             setFloor(x, z);
 
-    // [comment corrupted in source file - original text lost/unrecoverable]
     for (int z = safeZ0; z <= safeZ1; z++)
         setFloor(safeX1 + 1, z);
 
-    // ---------------- Финишная safe-zone (противоположный угол) ----------------
-    // Того же размера, что и стартовая: сюда нужно добежать через
-    // весь лабиринт. Внутри неё стоит кнопка победы (см. result.winButtonPos
-    // и addWinButtonMesh()).
-    result.endSafeX1 = result.mapW - 1 - safeX0;             // зеркально от safeX0 у дальнего края
+    // Finish safe zone (opposite corner), the same size as the starting one; the player reaches it
+    // by running through the whole maze. The win button stands inside it.
+    result.endSafeX1 = result.mapW - 1 - safeX0;             // mirrored from safeX0 at the far edge
     result.endSafeZ1 = result.mapH - 1 - safeZ0;
-    result.endSafeX0 = result.endSafeX1 - (safeX1 - safeX0); // та же ширина, что у стартовой зоны
+    result.endSafeX0 = result.endSafeX1 - (safeX1 - safeX0); // same width as the starting zone
     result.endSafeZ0 = result.endSafeZ1 - (safeZ1 - safeZ0);
 
     for (int z = result.endSafeZ0; z <= result.endSafeZ1; z++)
         for (int x = result.endSafeX0; x <= result.endSafeX1; x++)
             setFloor(x, z);
 
-    // Двери из финишной зоны в лабиринт с двух сторон, обращённых
-    // к центру карты, чтобы комната гарантированно была связана
-    // с лабиринтом (она перекрывает как минимум один узел DFS-обхода,
-    // но дверь ещё и делает проход визуально явным, как у стартовой зоны).
+    // Doors from the finish zone into the maze on the two sides facing the map's center, so the
+    // room is guaranteed to connect (it probably overlaps a DFS node anyway, but the door makes the
+    // passage visually explicit, like the starting zone).
     for (int z = result.endSafeZ0; z <= result.endSafeZ1; z++)
         setFloor(result.endSafeX0 - 1, z);
     for (int x = result.endSafeX0; x <= result.endSafeX1; x++)
         setFloor(x, result.endSafeZ0 - 1);
 
-    // Кнопка победы стоит в центре финишной комнаты.
     result.winButtonPos = glm::vec3(
         (result.endSafeX0 + result.endSafeX1) * 0.5f + 0.5f,
         0.0f,
         (result.endSafeZ0 + result.endSafeZ1) * 0.5f + 0.5f
     );
 
-    // ---------------- Маленькие safe-зоны внутри лабиринта ----------------
-    // В 3 раза меньше стартовой (сторона стартовой = 10 клеток -> сторона
-    // маленькой ~= 3 клетки), разбросаны случайно по лабиринту. Так как
-    // каждый карман центрируется на уже посещённом узле DFS-обхода, он
-    // всегда остаётся связан с остальным лабиринтом.
-    const int startSide = safeX1 - safeX0 + 1;             // 10
-    const int smallSafeSide = std::max(1, startSide / 3);  // 3
-    const int smallSafeRadius = smallSafeSide / 2;         // 1
-    // 12 карманов — под дневники (см. Diaries.h): один дневник на карман,
-    // без отдельного отбора подмножества. Раньше было 18 (в 3 раза больше
-    // исходных 6) — уменьшено, чтобы карманы совпадали 1:1 со списком
-    // лора и не были слишком частыми/мелкими относительно размера карты.
+    // Small safe zones (pockets) inside the maze: about a third of the starting zone's side,
+    // scattered randomly. Each pocket is centered on an already visited DFS node, so it always
+    // stays connected to the rest of the maze.
+    const int startSide = safeX1 - safeX0 + 1;
+    const int smallSafeSide = std::max(1, startSide / 3);
+    const int smallSafeRadius = smallSafeSide / 2;
     const int smallSafeCount = 12;
-    const int minPocketSpacing = 8; // минимальное расстояние между карманами/зонами, в клетках
+    const int minPocketSpacing = 8; // minimum distance between pockets/zones, in cells
 
     std::vector<glm::ivec2> pocketCenters;
     std::uniform_int_distribution<int> nxDist(1, std::max(1, nodesX - 2));
@@ -141,10 +122,8 @@ GenerateResult Generate(unsigned int seed) {
         pocketAttempts++;
         glm::ivec2 cell = cellAt(nxDist(rng), nzDist(rng));
 
-        // подальше от стартовой зоны
         if (cell.x <= safeX1 + minPocketSpacing && cell.y <= safeZ1 + minPocketSpacing)
             continue;
-        // подальше от финишной зоны
         if (cell.x >= result.endSafeX0 - minPocketSpacing && cell.y >= result.endSafeZ0 - minPocketSpacing)
             continue;
 
@@ -168,15 +147,12 @@ GenerateResult Generate(unsigned int seed) {
                 setFloor(x, z);
     }
 
-    // Сохраняем карманы для placeTorches() — там на каждый гарантированно
-    // ставится по 3 факела (см. блок SMALL SAFE ZONES).
     result.smallSafeZoneCenters = pocketCenters;
     result.smallSafeZoneRadius = smallSafeRadius;
 
-    // Дневники — тем же rng, что и весь остальной лабиринт выше (не новый
-    // std::mt19937(seed), а продолжение той же последовательности): важно
-    // не то, каким konkретно вызовом rng они выбраны, а то, что вызов
-    // детерминирован по seed — на "Продолжить" получаем тот же набор.
+    // Diaries use the same rng as the rest of the maze (a continuation of the same sequence, not a
+    // new mt19937(seed)): all that matters is that the call is deterministic from the seed, so
+    // CONTINUE gets the same set.
     result.diaries = Diaries::SelectForSeed(pocketCenters, rng);
 
     return result;
@@ -190,13 +166,9 @@ static bool TryAddTorch(int x, int z,
     if (!isWall(x, z))
         return false;
 
-    // Срезанная клетка — грань у неё укорочена (у диагональных
-    // "лестниц" — сильно, см. WallShapes::kChamferSizeChain), и центр
-    // грани, где ниже встаёт факел, может оказаться уже не на стене, а
-    // в вырезанном клине ("факел висит в воздухе", см. комментарий у
-    // MapGenerator::PlaceTorches в .h). Проще исключить такую клетку из
-    // кандидатов совсем, чем аккуратно вычислять безопасную точку на
-    // укороченной грани для каждого типа/размера среза.
+    // A chamfered cell has a shortened face, so the face center where a torch would mount can land
+    // in the cut wedge and leave the torch floating. Such cells are excluded instead of computing a
+    // safe mount point per chamfer type.
     if (isChamfered && isChamfered(x, z))
         return false;
 
@@ -227,8 +199,6 @@ static bool TryAddTorch(int x, int z,
             glm::vec3 wallBase =
                 wallCenter + normal * 0.5f;
 
-            // [comment corrupted in source file - original text lost/unrecoverable]
-            // [comment corrupted in source file - original text lost/unrecoverable]
             bool duplicate = false;
 
             for (const glm::vec3& p :
@@ -247,22 +217,10 @@ static bool TryAddTorch(int x, int z,
             if (duplicate)
                 return false;
 
-            // Высота крепления факела считается от уровня пола (y=0), а не
-            // от глаз игрока (m_camPos.y = 0.5, см. DungeonScene::init()).
-            // Раньше факел висел на y ~0.86-1.15 — ВЫШЕ уровня глаз, да ещё
-            // и с сильным диагональным "вылетом" от стены (0.30-0.34
-            // единицы наружу) — из-за чего при взгляде снизу-вверх (игрок
-            // стоит прямо под факелом) он визуально казался оторванным от
-            // стены, будто висит в воздухе: тёмная (почти невидимая на
-            // фоне тёмной стены при ASCII-пороге яркости) ручка-держатель
-            // терялась, а видно было только яркое пламя далеко над головой.
-            // Теперь факел висит чуть ниже уровня глаз (держатель почти
-            // вплотную к стене), как настенный факел на высоте груди/плеч.
-            //
-            // Смещение по нормали и высота ЗДЕСЬ повторяют tip + смещение
-            // сферы пламени из addTorchMesh() (0.14 наружу, 0.62+0.045
-            // по высоте) — иначе точка света/частиц (flamePos) окажется
-            // не там, где реально нарисован сам огонёк.
+            // Mount height is below eye level with the handle nearly flush with the wall (a high,
+            // far mount made the handle vanish in the ASCII output). The normal offset and height
+            // mirror addTorchMesh() (0.14 out, 0.62 + 0.045 up), or flamePos would differ from
+            // where the flame is drawn.
             glm::vec3 flamePos =
                 wallBase
                 + normal * 0.14f
@@ -290,7 +248,6 @@ static bool TryAddTorch(int x, int z,
 
     return false;
 }
-
 
 TorchPlacement PlaceTorches(
     int mapW, int mapH,
@@ -321,16 +278,12 @@ TorchPlacement PlaceTorches(
 {
     TorchPlacement out;
 
-    // Same name/arg-count as the original member function tryAddTorch(x, z)
-    // -- lets every call site below stay textually unchanged.
     auto tryAddTorch = [&](int x, int z) {
         return TryAddTorch(x, z, isWall, isFloor, isChamfered, out);
     };
 
-    // seed передан вызывающим кодом — тот же принцип, что и у Generate()
-    // выше: детерминированная расстановка факелов нужна, чтобы
-    // "Продолжить" воспроизводило ТОЧНО ту же картину, что была сохранена
-    // (тот же seed карты используется и здесь, см. DungeonScene::loadSlot()).
+    // The seed comes from the caller, as in Generate(): torch placement is deterministic, so
+    // CONTINUE reproduces the saved layout (the map's seed is reused here).
     std::mt19937 rng(seed);
 
     struct TorchCandidate
@@ -338,10 +291,6 @@ TorchPlacement PlaceTorches(
         int x;
         int z;
     };
-
-    // ==================================================
-    // SAFE ZONE
-    // ==================================================
 
     std::vector<TorchCandidate>
         safeCandidates;
@@ -357,8 +306,6 @@ TorchPlacement PlaceTorches(
             if (!isWall(x, z))
                 continue;
 
-            // [comment corrupted in source file - original text lost/unrecoverable]
-            // [comment corrupted in source file - original text lost/unrecoverable]
             if (isFloor(x + 1, z) ||
                 isFloor(x - 1, z) ||
                 isFloor(x, z + 1) ||
@@ -379,10 +326,6 @@ TorchPlacement PlaceTorches(
         safeCandidates.end(),
         rng
     );
-
-    // --------------------------------------------------
-    // [comment corrupted in source file - original text lost/unrecoverable]
-    // --------------------------------------------------
 
     const float safeSpacing = 3.0f;
 
@@ -424,10 +367,6 @@ TorchPlacement PlaceTorches(
             c.z
         );
     }
-
-    // ==================================================
-    // END SAFE ZONE (финишная комната)
-    // ==================================================
 
     std::vector<TorchCandidate>
         endSafeCandidates;
@@ -490,14 +429,11 @@ TorchPlacement PlaceTorches(
 
     const int endSafeTorchCount = (int)out.wallBase.size() - torchesBeforeEndZone;
 
-    // ==================================================
-    // SMALL SAFE ZONES (маленькие карманы в лабиринте)
-    // Гарантированно по 3 факела в каждом кармане, а не "как повезёт"
-    // при общем проходе по лабиринту.
-    // ==================================================
+    // Small safe zones (pockets in the maze): a guaranteed number of torches per pocket instead of
+    // whatever the general maze pass happens to give.
 
     const int torchesPerPocket = 3;
-    const float smallSafeSpacing = 1.3f; // комната всего 3x3 — обычный safeSpacing (3.0) сюда не влезет
+    const float smallSafeSpacing = 1.3f; // the pocket is only 3x3; the regular safeSpacing would not fit
 
     const int torchesBeforePockets = (int)out.wallBase.size();
 
@@ -562,10 +498,6 @@ TorchPlacement PlaceTorches(
 
     const int pocketTorchCount = (int)out.wallBase.size() - torchesBeforePockets;
 
-    // ==================================================
-    // [comment corrupted in source file - original text lost/unrecoverable]
-    // ==================================================
-
     std::vector<TorchCandidate>
         mazeCandidates;
 
@@ -584,10 +516,6 @@ TorchPlacement PlaceTorches(
             if (!isWall(x, z))
                 continue;
 
-            // ------------------------------------------------
-            // [comment corrupted in source file - original text lost/unrecoverable]
-            // ------------------------------------------------
-
             if (x >= 1 &&
                 x <= 12 &&
                 z >= 1 &&
@@ -596,11 +524,6 @@ TorchPlacement PlaceTorches(
                 continue;
             }
 
-            // ------------------------------------------------
-            // [comment corrupted in source file - original text lost/unrecoverable]
-            // [comment corrupted in source file - original text lost/unrecoverable]
-            // ------------------------------------------------
-
             if (x >= endSafeX0 - 1 &&
                 x <= endSafeX1 + 1 &&
                 z >= endSafeZ0 - 1 &&
@@ -608,11 +531,6 @@ TorchPlacement PlaceTorches(
             {
                 continue;
             }
-
-            // ------------------------------------------------
-            // [comment corrupted in source file - original text lost/unrecoverable]
-            // [comment corrupted in source file - original text lost/unrecoverable]
-            // ------------------------------------------------
 
             {
                 bool insidePocket = false;
@@ -632,10 +550,6 @@ TorchPlacement PlaceTorches(
                 if (insidePocket)
                     continue;
             }
-
-            // ------------------------------------------------
-            // [comment corrupted in source file - original text lost/unrecoverable]
-            // ------------------------------------------------
 
             bool touchesCorridor =
                 isFloor(x + 1, z) ||
@@ -661,16 +575,11 @@ TorchPlacement PlaceTorches(
         rng
     );
 
-    // ==================================================
-    // [comment corrupted in source file - original text lost/unrecoverable]
-    // ==================================================
-
-    const int MIN_MAZE_TORCHES = 256; // см. комментарий в DungeonScene.h/README о том, как менять общее число факелов
+    const int MIN_MAZE_TORCHES = 256;
     const float mazeSpacing = 3.5f;
 
-    // Порог считаем от количества факелов, уже расставленных в safe-zone /
-    // end safe-zone / карманах, а не от жёстко зашитых "6", как раньше —
-    // иначе добавление END SAFE ZONE и SMALL SAFE ZONES сдвигало бы порог.
+    // The threshold is computed from the torches already placed in the safe zones and pockets
+    // instead of being hardcoded, so adding zones does not shift it.
     const int torchesBeforeMaze = (int)out.wallBase.size();
 
     for (const TorchCandidate& c :
@@ -715,11 +624,6 @@ TorchPlacement PlaceTorches(
         );
     }
 
-    // ==================================================
-    // [comment corrupted in source file - original text lost/unrecoverable]
-    // [comment corrupted in source file - original text lost/unrecoverable]
-    // ==================================================
-
     if ((int)out.wallBase.size() <
         torchesBeforeMaze + MIN_MAZE_TORCHES)
     {
@@ -728,18 +632,9 @@ TorchPlacement PlaceTorches(
         for (const TorchCandidate& c :
              mazeCandidates)
         {
-            // БАГФИКС: было `>= maxTorches` (глобальный потолок в 1024) —
-            // явная опечатка/копипаста из финального прохода ниже. Этот
-            // проход — fallback ДЛЯ ТОЙ ЖЕ цели, что и основной проход
-            // выше (torchesBeforeMaze + MIN_MAZE_TORCHES = 64), просто с
-            // более плотным шагом (2.2 вместо 3.5), если кандидатов на
-            // широком шаге не хватило. Со старым условием этот проход не
-            // останавливался вообще, пока не забивал буквально всю карту
-            // факелами (см. "total torches = 1024, maze = 966" в логах —
-            // это ПРЯМОЕ следствие данной опечатки, особенно заметное
-            // после того как smallSafeCount подняли 6 -> 18: больше
-            // карманов -> больше кандидатных стенных сегментов -> этому
-            // проходу стало из чего заполнять карту почти целиком).
+            // Fallback pass with a denser step (2.2 instead of 3.5) for when the wider step found
+            // too few candidates. It must stop at the same target (torchesBeforeMaze +
+            // MIN_MAZE_TORCHES), not at the global maxTorches, or it would fill the map.
             if ((int)out.wallBase.size()
                 >= torchesBeforeMaze + MIN_MAZE_TORCHES)
             {
@@ -781,17 +676,8 @@ TorchPlacement PlaceTorches(
         }
     }
 
-    // ==================================================
-    // Финальный проход-"подчистка": самый плотный шаг (1.5), задуман как
-    // ПОСЛЕДНИЙ резерв на случай, если после проходов 1+2 всё ещё не
-    // набралось MIN_MAZE_TORCHES (например, совсем маленький/тесный
-    // лабиринт, где даже 2.2 было слишком много). Раньше выполнялся
-    // БЕЗУСЛОВНО (без проверки, а нужно ли вообще) и был ограничен
-    // только глобальным maxTorches — то есть, даже если проходу 1
-    // отлично хватило кандидатов на 64 факела, этот проход всё равно
-    // допихивал факелы во все оставшиеся позиции с шагом 1.5. Теперь
-    // пропускается целиком, если цель уже достигнута.
-    // ==================================================
+    // Last resort with the densest step (1.5) if MIN_MAZE_TORCHES is still not reached (a very
+    // small or tight maze). Skipped when the target is met.
 
     if ((int)out.wallBase.size() < torchesBeforeMaze + MIN_MAZE_TORCHES)
     {
@@ -838,10 +724,6 @@ TorchPlacement PlaceTorches(
         }
     }
 
-    // ==================================================
-    // [comment corrupted in source file - original text lost/unrecoverable]
-    // ==================================================
-
     std::uniform_real_distribution<float>
         intensRange(
             2.1f,
@@ -864,10 +746,6 @@ TorchPlacement PlaceTorches(
             intensRange(rng)
         );
     }
-
-    // ==================================================
-    // DEBUG
-    // ==================================================
 
     int total =
         (int)out.wallBase.size();
@@ -899,22 +777,10 @@ std::vector<unsigned char> BuildTorchCellLookup(
 {
     std::vector<unsigned char> lookup((size_t)mapW * mapH, 0);
 
-    // ВАЖНО: torchWallBase хранит позицию на ГРАНИЦЕ клетки стены и
-    // соседней клетки пола (см. tryAddTorch(): wallBase = wallCenter +
-    // normal*0.5, где normal смотрит в сторону пола). Из-за этого
-    // floor(p.x)/floor(p.z) НАПРЯМУЮ давал верную клетку стены только
-    // для факелов, чья стена смотрит в сторону -x/-z (там wallBase.x/z
-    // ровно x.0/z.0) — а для факелов на стенах, смотрящих в сторону
-    // +x/+z, wallBase.x/z оказывался ровно x+1.0/z+1.0 (сама граница!),
-    // и floor() возвращал СОСЕДНЮЮ клетку пола вместо клетки стены.
-    // Именно поэтому примерно половина факелов на мини-карте пропадала
-    // "как будто случайно" — на самом деле зависело от того, в какую
-    // сторону конкретный факел "прибит" к стене, а не от освещённости/
-    // тумана войны. Чтобы получить именно клетку стены, откатываем
-    // wallBase обратно на normal*0.5 (используя уже существующий,
-    // параллельный torchWallBase, массив torchNormal) — это
-    // восстанавливает исходный wallCenter = (x+0.5, z+0.5), чей floor()
-    // уже однозначно даёт нужную клетку стены в любом направлении.
+    // torchWallBase lies exactly on the wall/floor boundary (wallCenter + normal * 0.5), so
+    // floor(p) is the right wall cell only for walls facing -x/-z. Rolling back by normal * 0.5
+    // recovers wallCenter for any direction (without it about half of the torches vanished from the
+    // minimap).
     for (size_t i = 0; i < torchWallBase.size(); ++i)
     {
         const glm::vec3& p = torchWallBase[i];

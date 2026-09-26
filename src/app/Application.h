@@ -2,80 +2,63 @@
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
 #include <string>
+#include <vector>
 #include "render/AsciiEffect.h"
 #include "scene/DungeonScene.h"
 #include "ui/MainMenu.h"
 #include "ui/TextRenderer.h"
 #include "WindowManager.h"
+#include "audio/AudioMixer.h"
 
-// ============================================================================
-// Application — конечный автомат приложения (меню/пауза/настройки/фейды) и
-// композиция кадра. Вынесено из main.cpp при разбиении на модули (Этап 5).
-// main.cpp теперь только bootstrap + один вызов app.tick(...) за кадр.
-// ============================================================================
+// App-level state machine (menu/pause/settings/fades) and frame composition. main.cpp is only
+// bootstrap plus one app.tick(...) call per frame.
 class Application {
 public:
-    // Вызывается один раз после создания окна/сцены/AsciiEffect.
     void init(GLFWwindow* window, DungeonScene& scene, AsciiEffect& ascii);
 
-    // Один кадр: обрабатывает ввод, обновляет стейт-машину, рисует сцену
-    // и UI-оверлей. window/scene/ascii передаются те же, что и в init()
-    // (см. main.cpp — единственный вызывающий).
     void tick(GLFWwindow* window, DungeonScene& scene, AsciiEffect& ascii,
               WindowManager& windowManager, float deltaTime);
 
-    // true, пока идёт реальный геймплей (FADE_TO_GAME/PLAYING) — нужно
-    // main.cpp, чтобы включать/выключать mouse-look колбэк (см. mouseCallback
-    // там же) и переключать GLFW_CURSOR режим.
+    // True while actual gameplay is running (FADE_TO_GAME/PLAYING); main.cpp uses it to toggle the
+    // mouse-look callback and the GLFW cursor mode.
     bool isMouseLookEnabled() const { return m_mouseLookEnabled; }
 
 private:
-    // Настоящий TTF-рендер (stb_truetype, шрифт VT323) для текста
-    // дневников/журнала — см. большой комментарий в ui/TextRenderer.h за
-    // тем, почему это отдельный слой, а не расширение старого сеточного
-    // UI-шрифта.
     TextRenderer m_textRenderer;
 
-    // ---- Экраны и переходы (см. подробные комментарии в исходном main.cpp,
-    // сохранены при переносе тела tick()) ----
     enum class AppState {
         MENU, CONTINUE_SELECT, SETTINGS, SAVE_SELECT, SAVE_CONFIRM, SAVE_NAME_ENTRY,
-        FADE_TO_BLACK, FADE_TO_GAME, FADE_TO_MENU, PLAYING, PAUSED
+        // The same slot-picker and overwrite-confirm screens as SAVE_SELECT/SAVE_CONFIRM, for the
+        // main menu's NEW GAME (see m_newGameLayout); SAVE_NAME_ENTRY serves both flows (see
+        // m_nameEntryForNewGame).
+        NEWGAME_SELECT, NEWGAME_CONFIRM,
+        FADE_TO_BLACK, FADE_TO_GAME, FADE_TO_MENU, PLAYING, PAUSED,
+        // Credits (see PendingAction::SHOW_CREDITS): the thank-you text over a black background
+        // (the camera is moved out of the map, see the CREDITS branch in tick()). The only way out
+        // is ESC, which closes the game.
+        CREDITS
     };
+
     enum class PendingAction {
-        // NEW_GAME — генерирует новый лабиринт (см. DungeonScene::newGame()).
-        // LOAD_GAME — грузит m_pendingLoadSlot (см. DungeonScene::loadSlot()).
-        // Оба выполняются в момент, когда экран уже полностью чёрный (см.
-        // FADE_TO_BLACK ниже) — тяжёлая работа (перегенерация карты и
-        // GL-геометрии) невидима игроку. SAVE (кнопка SAVE меню паузы,
-        // AppState::SAVE_SELECT/SAVE_CONFIRM/SAVE_NAME_ENTRY) через
-        // FADE_TO_BLACK НЕ идёт — запись файла мгновенная, отдельного
-        // PendingAction не требует (см. DungeonScene::saveToSlot(),
-        // вызывается сразу по подтверждению имени клавишей ENTER).
-        // DIED — смерть игрока (здоровье дошло до нуля, см.
-        // PlayerController::applyDamage()/consumeDeathFadeTrigger()).
-        // Отдельный от RETURN_TO_MENU: та реюзается для паузы -> меню и
-        // жёстко считает, что поверх фейда уже видно меню паузы (см.
-        // OverlayMode::PAUSE_MENU ниже в Application.cpp) — смерть же
-        // может случиться посреди обычного геймплея, когда пауза вообще
-        // не была открыта, так что overlay здесь должен остаться NONE
-        // (просто тёмный экран, без всплывающего меню паузы). Плюс, в
-        // отличие от RETURN_TO_MENU, для DIED генерируется НОВАЯ карта
-        // (см. FADE_TO_BLACK ниже) — не оставляем в фоне меню ту самую
-        // карту, где игрок только что погиб.
-        NONE, NEW_GAME, LOAD_GAME, QUIT_APP, RETURN_TO_MENU, DIED
+        // NEW_GAME/LOAD_GAME run once the screen is fully black (FADE_TO_BLACK), hiding the heavy
+        // map/GL regeneration. NEW_GAME_IN_SLOT: slot and name were picked before the fade
+        // (NEW_GAME is the fallback that lets DungeonScene::newGame() choose). DIED: player death;
+        // unlike RETURN_TO_MENU (which assumes an open pause menu) it has no overlay and generates
+        // a fresh map. SHOW_CREDITS: E at the donut, then AppState::CREDITS. SAVE needs no
+        // PendingAction: the write is instant.
+        NONE, NEW_GAME, NEW_GAME_IN_SLOT, LOAD_GAME, QUIT_APP, RETURN_TO_MENU, DIED, SHOW_CREDITS
     };
-    enum class OverlayMode { NONE, MAIN_MENU, CONTINUE_MENU, SAVE_MENU, SAVE_CONFIRM_MENU, SAVE_NAME_MENU, PAUSE_MENU, SETTINGS_MENU };
 
     static float sensitivityToSlider01(float sensitivity);
     static float slider01ToSensitivity(float t);
 
-    // Тот же принцип, что и у sensitivityToSlider01/slider01ToSensitivity
-    // выше, для нового слайдера SHARPNESS (см. MenuLayouts::
-    // BuildSettingsMenu()/AsciiEffect::setUserCellSize()) — размер
-    // ASCII-ячейки в пикселях, а не физическая величина, но сама
-    // механика перевода "значение <-> положение бегунка 0..1" одна и та
-    // же, отдельная пара функций просто чтобы не путать единицы измерения.
+    // Shared confirm logic for the name entry screen (AppState::SAVE_NAME_ENTRY), called from both
+    // the ENTER key and the OK click so the default-name and NEW GAME/SAVE branching is not
+    // duplicated.
+    void confirmNameEntry(DungeonScene& scene);
+    // The same "value <-> slider position 0..1" mapping as
+    // sensitivityToSlider01/slider01ToSensitivity, for the SHARPNESS slider (ASCII cell size in
+    // pixels): a separate pair to keep the units from getting mixed up.
     static float cellSizeToSlider01(int cellSize);
     static int slider01ToCellSize(float t);
 
@@ -83,15 +66,10 @@ private:
     bool m_cursorCaptured = false;
 
     bool m_fKeyWasDown = false;
-    bool m_f1KeyWasDown = false; // см. Application::tick() — F1 = Performance/Stability mode
+    bool m_f1KeyWasDown = false;
 
     bool m_appliedCinematicBoost = false;
     int m_currentSceneW = 0, m_currentSceneH = 0;
-    // Возвращено на 1280x720 по просьбе — было временно урезано до
-    // 640x360 (см. историю правок) как рычаг производительности,
-    // независимый от количества факелов; после фикса реального бага в
-    // PlaceTorches (см. MapGenerator.cpp::MIN_MAZE_TORCHES) в этом рычаге
-    // больше не было необходимости в такой степени.
     int m_normalSceneW = 1280, m_normalSceneH = 720;
 
     AppState m_appState = AppState::MENU;
@@ -112,36 +90,68 @@ private:
     int m_pauseOpenCount = 0;
     int m_pauseVariant = 0;
 
-    // ---- CONTINUE (выбор слота для загрузки, см. save/SaveSystem.h) ----
     MainMenu::SlotMenuLayout m_continueLayout;
     bool m_continueLayoutDirty = true;
-    int m_pendingLoadSlot = -1; // какой слот грузить, когда FADE_TO_BLACK дойдёт до конца (см. PendingAction::LOAD_GAME)
+    int m_pendingLoadSlot = -1; // slot to load once FADE_TO_BLACK finishes
 
-    // ---- SAVE (выбор слота для записи + подтверждение перезаписи +
-    // ввод имени, кнопка SAVE меню паузы) ----
     MainMenu::SlotMenuLayout m_saveLayout;
     bool m_saveLayoutDirty = true;
     MainMenu::ConfirmLayout m_saveConfirmLayout;
     bool m_saveConfirmLayoutDirty = true;
-    int m_pendingSaveSlot = -1; // какой слот подтверждаем перезаписать (AppState::SAVE_CONFIRM) / в какой пишем имя (SAVE_NAME_ENTRY)
+    int m_pendingSaveSlot = -1; // slot pending overwrite confirmation / name entry
 
-    // ---- SAVE_NAME_ENTRY (игрок сам вводит имя сохранения, максимум
-    // save/SaveSystem.h::kNameMaxLen символов) ----
+    // NEW GAME has its own layouts and dirty flags instead of reusing the save ones: both screens
+    // can appear back to back with different titles and a shared cache would overwrite itself.
+    MainMenu::SlotMenuLayout m_newGameLayout;
+    bool m_newGameLayoutDirty = true;
+    MainMenu::ConfirmLayout m_newGameConfirmLayout;
+    bool m_newGameConfirmLayoutDirty = true;
+    int m_pendingNewGameSlot = -1; // slot pending overwrite confirmation / new game's name
+
+    // The name entry serves both SAVE (from pause) and NEW GAME (from the main menu); this flag
+    // decides whether confirming starts a new game in m_pendingNewGameSlot (NEW_GAME_IN_SLOT) or
+    // overwrites m_pendingSaveSlot.
+    bool m_nameEntryForNewGame = false;
+
     MainMenu::NameEntryLayout m_nameEntryLayout;
     bool m_nameEntryLayoutDirty = true;
     std::string m_saveNameBuffer;
     bool m_backHoveredNameEntry = false;
-    // Отдельная edge-trigger таблица для алфавитно-цифровых клавиш + Enter/
-    // Backspace (см. tick() — опрашиваются только в AppState::
-    // SAVE_NAME_ENTRY). Размер — GLFW_KEY_LAST+1 (348+1): GLFW_KEY_ENTER
-    // (257) и GLFW_KEY_BACKSPACE (259) лежат ЗА пределами диапазона A-Z/
-    // 0-9 (65-90, 48-57), маленького массива на них не хватило бы.
+    bool m_confirmHoveredNameEntry = false;
+    // Edge-trigger table for the alphanumeric keys plus Enter/Backspace, polled only in
+    // AppState::SAVE_NAME_ENTRY. Sized GLFW_KEY_LAST + 1 because GLFW_KEY_ENTER (257) and
+    // GLFW_KEY_BACKSPACE (259) lie outside the A-Z/0-9 range (65-90, 48-57).
     bool m_textEntryKeyWasDown[GLFW_KEY_LAST + 1] = {};
 
-    // Автосохранение прогресса ТЕКУЩЕЙ игры (см. DungeonScene::
-    // saveActiveSlot()) — периодически во время игры, чтобы "Продолжить"
-    // отражало реальный прогресс, а не только момент старта/загрузки.
+    // Autosave of the run's progress (DungeonScene::saveActiveSlot()), so CONTINUE reflects real
+    // progress and not only the start/load moment.
     float m_autosaveTimer = 0.0f;
+
+    // Reusable buffer instead of rebuilding the icon vector every frame (like DungeonScene's
+    // scratch vectors). Reallocated only when the screen size changes.
+    std::vector<unsigned char> m_hudIconsGridScratch;
+
+    // Shared reusable buffer for all six gameplay hints
+    // (DIARY_HINT/TORCH_HINT/TORCH_EMPTY_MSG/WIN_BLOCKED_MSG/WIN_ACTIVATE_HINT/WIN_READY_MSG): they
+    // are shown one at a time, so one buffer serves them all.
+    std::vector<unsigned char> m_hintGridScratch;
+
+    // A separate reusable buffer for the diary-reading screen: a persistent member, not a local
+    // vector in tick().
+    std::vector<unsigned char> m_diaryReadingGridScratch;
+
+    // Credits (AppState::CREDITS, see PendingAction::SHOW_CREDITS). The text is long and does not
+    // fit at once: UP/DOWN scrolling, like the journal (DungeonScene::tickReadingOverlayInput()),
+    // but as its own AppState-level screen instead of a gameplay overlay.
+    float m_creditsScrollPx = 0.0f;
+    bool m_creditsUpKeyWasDown = false;
+    bool m_creditsDownKeyWasDown = false;
+
+    // The line-wrapped credits text does not change while the screen is open, only the visible line
+    // range (scroll) does. It is built once on entering the screen (see m_creditsLinesBuilt).
+    std::vector<std::string> m_creditsLinesCache;
+    bool m_creditsLinesBuilt = false;
+    float m_creditsLinesCachedWidth = -1.0f; // rebuild if window width changes
     static constexpr float kAutosaveIntervalSeconds = 20.0f;
 
     AppState m_settingsReturnState = AppState::MENU;
@@ -150,13 +160,19 @@ private:
     bool m_backHovered = false;
     bool m_sliderHovered = false;
     bool m_sliderDragging = false;
-    // ---- Новый слайдер SHARPNESS (см. AsciiEffect::setUserCellSize()) ----
     bool m_sharpnessSliderHovered = false;
     bool m_sharpnessSliderDragging = false;
 
-    // УЛУЧШЕНИЕ ("чтобы при запуске уже были включены COLOR и LENS") —
-    // были false по умолчанию.
-    bool m_colorEnabled = true;
+    // MUSIC/MASTER sliders (same hover/drag pattern as SENSITIVITY/SHARPNESS). The values live here
+    // because they belong to AudioMixer; they are pushed to it once per frame in tick().
+    float m_musicVolume = 1.0f;
+    float m_masterVolume = 1.0f;
+    bool m_musicSliderHovered = false;
+    bool m_musicSliderDragging = false;
+    bool m_masterSliderHovered = false;
+    bool m_masterSliderDragging = false;
+
+    bool m_colorEnabled = true; // on by default so COLOR and LENS are already enabled at launch
     bool m_lensEnabled = true;
     bool m_lensCheckboxHovered = false;
     bool m_colorCheckboxHovered = false;
@@ -165,13 +181,9 @@ private:
 
     float m_fadeAlpha = 0.0f;
     static constexpr float kFadeOutSpeed = 1.2f;
-    // БАГФИКС ("затемнение экрана слишком быстрое при смерти") — раньше
-    // общий kFadeOutSpeed использовался И для смерти, И для обычного
-    // выхода в меню (RETURN_TO_MENU) — общий фейд-пайплайн (см.
-    // PendingAction). Замедлять kFadeOutSpeed целиком не стали —
-    // затронуло бы и обычный выход в меню, который никто не просил
-    // менять. Отдельная, вдвое медленнее, скорость — используется ТОЛЬКО
-    // при m_pendingAction==DIED (см. её применение в update()).
+    // The death fade uses its own, half-speed value instead of kFadeOutSpeed, which the normal menu
+    // exit shares (one fade pipeline, see PendingAction). It applies only while m_pendingAction ==
+    // DIED.
     static constexpr float kDeathFadeOutSpeed = 0.6f;
     static constexpr float kFadeInSpeed = 0.5f;
 };

@@ -29,10 +29,17 @@
 				<Option compiler="gcc" />
 				<Compiler>
 					<Add option="-O2" />
+					<Add option="-DNDEBUG" />
+					<Add option="-flto" />
+					<Add option="-ffunction-sections" />
+					<Add option="-fdata-sections" />
 					<Add directory="include" />
 				</Compiler>
 				<Linker>
 					<Add option="-s" />
+					<Add option="-O2" />
+					<Add option="-flto" />
+					<Add option="-Wl,--gc-sections" />
 					<Add option="-static-libgcc -static-libstdc++ -static" />
 				</Linker>
 				<ExtraCommands>
@@ -55,6 +62,9 @@
 			<Add library="gdi32" />
 			<Add directory="C:/Program Files/CodeBlocks/MinGW/x86_64-w64-mingw32/lib" />
 		</Linker>
+		<Unit filename="app.rc">
+			<Option compilerVar="WINDRES" />
+		</Unit>
 		<Unit filename="src/render/AsciiEffect.cpp" />
 		<Unit filename="src/render/AsciiEffect.h" />
 		<Unit filename="src/render/AssetPath.cpp" />
@@ -96,8 +106,8 @@
 		<Unit filename="src/scene/DiagonalCorridors.cpp" />
 		<Unit filename="src/scene/Lighting.h" />
 		<Unit filename="src/scene/Lighting.cpp" />
-		<Unit filename="src/scene/LightBaking.h" />
-		<Unit filename="src/scene/LightBaking.cpp" />
+		<Unit filename="src/scene/LineOfSight.h" />
+		<Unit filename="src/scene/LineOfSight.cpp" />
 		<Unit filename="src/scene/PlayerTorchViewmodel.h" />
 		<Unit filename="src/scene/PlayerTorchViewmodel.cpp" />
 		<Unit filename="src/scene/EnemyCharacter.h" />
@@ -109,12 +119,12 @@
 		<Unit filename="src/render/SkinnedModel.h" />
 		<Unit filename="src/render/SkinnedModel.cpp" />
 		<Unit filename="third_party/cgltf.h" />
-		<Unit filename="src/scene/PlayerTorchIcon.h" />
-		<Unit filename="src/scene/PlayerTorchIcon.cpp" />
 		<Unit filename="src/scene/PlayerController.h" />
 		<Unit filename="src/scene/PlayerController.cpp" />
 		<Unit filename="third_party/stb_image.h" />
 		<Unit filename="third_party/stb_truetype.h" />
+		<Unit filename="third_party/minimp3.h" />
+		<Unit filename="third_party/minimp3_ex.h" />
 		<Unit filename="src/ui/MainMenu.h" />
 		<Unit filename="src/ui/UiGlyphs.h" />
 		<Unit filename="src/ui/TextGrid.h" />
@@ -129,7 +139,11 @@
 		<Unit filename="src/ui/MenuLayouts.cpp" />
 		<Unit filename="src/audio/FootstepAudio.h" />
 		<Unit filename="src/audio/EnemyAudio.h" />
+		<Unit filename="src/audio/Mp3Decoder.cpp" />
+		<Unit filename="src/audio/AssetLocate.h" />
+		<Unit filename="src/audio/AudioMixer.h" />
 		<Unit filename="src/main.cpp" />
+		<Unit filename="src/app/FatalError.h" />
 		<Unit filename="src/app/WindowManager.h" />
 		<Unit filename="src/app/WindowManager.cpp" />
 		<Unit filename="src/app/Application.h" />

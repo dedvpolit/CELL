@@ -11,27 +11,9 @@
 #include <psapi.h>
 #endif
 
-// ============================================================================
-// GetProcessWorkingSetBytes() — сколько ОЗУ реально занимает процесс
-// прямо сейчас, для консольного perf-лога рядом с FPS (см. Application::
-// tick() — "[perf] fps = ... | ram=...").
-//
-// БАГФИКС ("консоль показывает 150-170 МБ, а Диспетчер задач — 80-92 МБ
-// для того же самого запущенного процесса одновременно") — это не гонка
-// данных и не два разных момента времени, а два РАЗНЫХ по смыслу числа:
-// раньше здесь читался PROCESS_MEMORY_COUNTERS::WorkingSetSize — ПОЛНЫЙ
-// рабочий набор процесса, включая страницы, которые физически
-// присутствуют в ОЗУ, но РАЗДЕЛЯЮТСЯ с другими процессами (загруженные
-// системные DLL, компоненты видеодрайвера, отображённые в адресное
-// пространство через тот же GPU-контекст, который использует и Проводник,
-// и другие приложения). Диспетчер задач же в столбце "Память" по
-// умолчанию (начиная с Vista) показывает Private Working Set — ТОЛЬКО
-// страницы, которые принадлежат ИСКЛЮЧИТЕЛЬНО этому процессу и ни с кем
-// не общие. Оба числа верны — это просто разные метрики одного и того же
-// процесса в один и тот же момент; PrivateUsage (см. ниже) — тот же смысл,
-// что и "Память (закрытый рабочий набор)"/"Private Working Set" в
-// Диспетчере задач, поэтому теперь читаем именно его.
-// ============================================================================
+// Process RAM for the [perf] log. PrivateUsage is read to match Task Manager's Private Working Set;
+// WorkingSetSize also counts pages shared with other processes (DLLs, GPU driver) and reads much
+// higher.
 inline size_t GetProcessWorkingSetBytes()
 {
 #ifdef _WIN32
@@ -66,15 +48,10 @@ inline size_t GetProcessWorkingSetBytes()
     if (!s_fn(GetCurrentProcess(), &counters, sizeof(counters)))
         return 0;
 
-    // PrivateUsage — то же самое число, что Диспетчер задач показывает
-    // как "Память (закрытый рабочий набор)" (см. большой комментарий
-    // выше) — НЕ WorkingSetSize (общий рабочий набор, раздутый общими
-    // страницами видеодрайвера и системных DLL).
     return (size_t)counters.PrivateUsage;
 #else
-    // Не-Windows (сборка/отладка движка на этой платформе локально, см.
-    // остальные dev-инструменты) — VmRSS из /proc/self/status несёт тот
-    // же смысл, что Working Set в Windows.
+    // Non-Windows builds: VmRSS from /proc/self/status is the equivalent of the working set on
+    // Windows.
     std::FILE* f = std::fopen("/proc/self/status", "r");
     if (!f)
         return 0;

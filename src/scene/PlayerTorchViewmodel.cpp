@@ -3,28 +3,25 @@
 
 void PlayerTorchViewmodel::init()
 {
-    // Геометрия строится ОДИН раз здесь, напрямую в системе координат
-    // камеры (OpenGL view-space convention: +X вправо, +Y вверх, -Z
-    // вперёд, камера в начале координат) — см. большой комментарий в
-    // PlayerTorchViewmodel.h. Мировая позиция восстанавливается в
-    // scene.vert через inverse(view) каждый кадр, поэтому здесь эти
-    // координаты — просто константы, ничего не пересчитывается.
+    // Geometry is built once in camera space (OpenGL view convention: +X right, +Y up, -Z forward);
+    // scene.vert reconstructs world positions via inverse(view), so these are constants.
 
-    // Держится в ЛЕВОЙ руке (-X), заметно ниже уровня глаз (-Y) и
-    // немного впереди камеры (-Z). "Рукоять удлинить ВНИЗ" — удлиняем
-    // именно за счёт точки хвата (grip), а не за счёт того, где сидит
-    // пламя (tip остаётся там же, где читается хорошо в кадре).
+    // Held in the left hand (-X), noticeably below eye level (-Y) and slightly ahead of the camera
+    // (-Z). The handle is lengthened by extending the grip point, not by moving where the flame
+    // sits (the tip stays where it reads well in the frame).
     const glm::vec3 grip(-0.30f, -0.60f, -0.38f);
-    // ОТКАТ по срочной просьбе — вернули состояние ДО правки "наклон
-    // верхушки на игрока" (tip.z был -0.28, tip.x был -0.24 — эти два
-    // числа и меняли специально ради того наклона). tip.z=-0.46 (дальше
-    // от камеры, чем grip.z=-0.38) и tip.x=-0.30 (совпадает с grip.x) —
-    // это и есть состояние ДО той правки.
     const glm::vec3 tip(-0.30f, -0.10f, -0.46f);
 
-    const glm::vec3 handleColor(0.34f, 0.25f, 0.16f); // тот же цвет, что и у настенных факелов
-    const glm::vec3 flameColor(1.0f, 0.60f, 0.15f);   // vColor.r=1.0 — множитель яркости в шейдере (см. scene.frag)
-    const float handleMatId = 1.0f; // обычный "лит" материал — получает свет от факелов И playerLight
+    const glm::vec3 handleColor(0.34f, 0.25f, 0.16f); // same color as wall torches
+    const glm::vec3 flameColor(1.0f, 0.60f, 0.15f);
+
+    // Reserved torch index 1536: above the real torch count (MAX_TORCHES = 1024) and below the 2048
+    // boundary where vMatId would spill into the next material range. Handle, flame and particles
+    // each encode it in their own scale (HANDLE/FLAME/PARTICLE_ID_SCALE); the handle needs an index
+    // too, or it would look like wall torch #0.
+    const int kViewmodelFlameIndex = 1536;
+    const float HANDLE_ID_SCALE = 4096.0f; // must match HANDLE_ID_SCALE in SceneGeometry.cpp::AddTorchMesh()
+    const float handleMatId = 1.0f + (float)kViewmodelFlameIndex / HANDLE_ID_SCALE;
 
     std::vector<Vertex> verts;
     std::vector<GLuint> indices;
@@ -33,22 +30,19 @@ void PlayerTorchViewmodel::init()
         verts, indices,
         grip, tip,
         0.045f, 0.025f,
-        4, // было 10 — "снизь вертексы, сделай рукоять ромбовидной"; 4 грани = призма с ромбовидным сечением вместо круглой
+        4, // reduced vertex count: a diamond cross-section handle instead of a round one
         handleColor,
         handleMatId
     );
 
-    // Зарезервированный индекс пламени (1536) — заведомо выше реального
-    // числа факелов на карте и заведомо ниже границы 2048, за которой
-    // vMatId = 2.0 + torchIndex/4096 вышел бы за 2.5 и пламя ошибочно
-    // попало бы в ветку частиц (vMatId > 2.5) вместо ветки
-    // самосветящегося пламени (scene.frag, `if (matId > 1.5)`).
-    const int kViewmodelFlameIndex = 1536;
     const float FLAME_ID_SCALE = 4096.0f;
     const float flameMatId = 2.0f + (float)kViewmodelFlameIndex / FLAME_ID_SCALE;
 
     const glm::vec3 handleDir = glm::normalize(tip - grip);
-    m_localFlamePos = tip + handleDir * 0.05f;
+    // The flame center sits almost flush with the handle's tip: fuel shrinkage scales the geometry
+    // around this fixed center, so a farther center would leave a shrunk flame floating above the
+    // handle.
+    m_localFlamePos = tip + handleDir * 0.012f;
 
     AddSphere(
         verts, indices,
@@ -59,17 +53,8 @@ void PlayerTorchViewmodel::init()
         flameMatId
     );
 
-    // ---- Частицы-пепел (см. PlayerTorchViewmodel.h) ----
-    // Тот же приём и те же 3 "слота" на факел, что и у настенных
-    // (SceneGeometry.cpp::AddTorchMesh) — координаты слотов (направление
-    // разлёта + цвет угольков) скопированы оттуда же для визуальной
-    // одинаковости. torchId переиспользует тот же зарезервированный
-    // индекс 1536, что и у пламени (см. flameMatId выше) — здесь он
-    // используется в СВОЕЙ, отдельной кодировке (см. scene.vert:
-    // particleKey = torchId*10+slot, matId = 3.0+particleKey/16384), но
-    // то же самое число 1536*10+9=15369 всё ещё безопасно меньше
-    // PARTICLE_ID_SCALE=16384 и заведомо больше реального числа факелов
-    // на карте (после фикса PlaceTorches — сотни, не тысячи).
+    // Ash particles: the same 3 slots per torch as wall torches; torchId is the reserved 1536
+    // (particleKey = torchId * 10 + slot, matId = 3.0 + particleKey / 16384; 15369 < 16384).
     m_particleFirstVertex = (GLint)verts.size();
     {
         const int torchIndex = kViewmodelFlameIndex;
@@ -86,12 +71,8 @@ void PlayerTorchViewmodel::init()
     }
     m_particleCount = (GLsizei)verts.size() - m_particleFirstVertex;
 
-    // ---- Смещение +10.0 на matId (и рукояти, и пламени, и частиц) ----
-    // Сигнал для scene.vert (uIsViewmodelDraw): "это viewmodel, интерп-
-    // ретируй pos/normal как локальные координаты камеры, а не мировые".
-    // Шейдер сам вычитает 10.0 обратно перед тем, как использовать matId
-    // по его обычному назначению (ветка пламени/материала во фрагментном
-    // шейдере эту разницу не видит вообще).
+    // +10.0 offset on matId (handle, flame, particles): tells scene.vert (uIsViewmodelDraw) that
+    // pos/normal are camera-local; the shader subtracts it back before the normal material logic.
     for (Vertex& v : verts)
         v.matId += 10.0f;
 
@@ -134,28 +115,21 @@ void PlayerTorchViewmodel::destroy()
     m_particleCount = 0;
 }
 
-glm::vec3 PlayerTorchViewmodel::worldFlamePos(const glm::mat4& invView) const
-{
-    return glm::vec3(invView * glm::vec4(m_localFlamePos, 1.0f));
-}
-
 void PlayerTorchViewmodel::draw() const
 {
     if (m_indexCount <= 0)
         return;
 
-    // "Факел должен быть всегда поверх стен": как и оружие-viewmodel в
-    // шутерах — отключаем тест глубины ТОЛЬКО на время этой отрисовки.
+    // "The torch should always draw over walls", like a weapon viewmodel in shooters: depth testing
+    // is disabled only for this draw call.
     glDisable(GL_DEPTH_TEST);
 
     glBindVertexArray(m_vao);
     glDrawElements(GL_TRIANGLES, m_indexCount, GL_UNSIGNED_INT, 0);
 
-    // ---- Частицы-пепел ----
-    // Тот же blend/point-size режим, что и у настенных факелов (см.
-    // DungeonScene::render() — GL_SRC_ALPHA/GL_ONE, аддитивное свечение
-    // угольков, а не обычная альфа-прозрачность), но локально для этого
-    // вызова, а не глобально на всю сцену.
+    // Ash particles: the same blend/point-size mode as wall torches (GL_SRC_ALPHA/GL_ONE, additive
+    // ember glow rather than regular alpha transparency), but scoped to this call, not global to
+    // the whole scene.
     if (m_particleCount > 0)
     {
         glEnable(GL_PROGRAM_POINT_SIZE);

@@ -1,28 +1,14 @@
 #pragma once
 #include <string>
 
-// ============================================================================
-// ShaderLoader — читает исходный текст GLSL-шейдера с диска.
-//
-// До рефакторинга каждый .vert/.frag шейдер (сцена, компас, debug-карта,
-// ASCII-постпроцесс) был встроен как raw-string литерал прямо в .cpp
-// (например, DungeonScene::s_fragSrc, ~1000 строк GLSL внутри C++ файла).
-// Теперь исходники лежат как обычные текстовые файлы в assets/shaders/ и
-// копируются рядом с .exe тем же ExtraCommands-шагом .cbp, что уже
-// копирует assets/textures и assets/audio — никаких изменений в системе
-// сборки для этого не потребовалось.
-//
-// Решение осознанно оставляет шейдеры читаемыми текстовыми файлами в
-// релизной сборке (см. обсуждение вариантов встраивания/обфускации) —
-// для этого проекта простота и удобство правки важнее сокрытия исходников.
-// ============================================================================
+// Reads GLSL shader source from disk. Shaders are plain text files under assets/shaders/ (not
+// embedded in .cpp) and are copied next to the .exe by the same .cbp ExtraCommands step that copies
+// textures/audio. Deliberate: ease of editing shaders matters more than hiding the source.
 namespace ShaderLoader {
 
-// relativePath — путь относительно корня проекта/exe, например
-// "assets/shaders/scene.frag" (см. AssetPath::Resolve()).
-// Бросает std::runtime_error, если файл не найден или не читается —
-// отсутствующий шейдер является фатальной ошибкой инициализации
-// рендера, а не ситуацией, которую стоит тихо проглатывать.
+// relativePath is resolved via AssetPath::Resolve(), e.g. "assets/shaders/scene.frag". Throws
+// std::runtime_error if the file is missing: a missing shader is a fatal startup error that main()
+// reports.
 std::string LoadSource(const std::string& relativePath);
 
 } // namespace ShaderLoader

@@ -116,7 +116,6 @@ const BigGlyph& BigI() {
     return g;
 }
 
-// ---- Добавлено для меню паузы (PAUSED / RESUME / MENU) ----
 const BigGlyph& BigP() {
     static const BigGlyph g = {{
         "####.",
@@ -178,7 +177,6 @@ const BigGlyph& BigN() {
     return g;
 }
 
-// ---- Добавлено для экрана настроек (SETTINGS / SENSITIVITY / BACK) ----
 const BigGlyph& BigG() {
     static const BigGlyph g = {{
         ".###.",
@@ -253,7 +251,6 @@ const BigGlyph& BigO() {
     return g;
 }
 
-// ---- Добавлено для кнопки "NEW GAME" (главное меню) ----
 const BigGlyph& BigW() {
     static const BigGlyph g = {{
         "#...#",
@@ -267,8 +264,6 @@ const BigGlyph& BigW() {
     return g;
 }
 
-// ---- Добавлено для полного алфавита A-Z (ввод имени сохранения, фраза
-// подтверждения перезаписи — см. комментарий у объявления в BigFont.h) ----
 const BigGlyph& BigF() {
     static const BigGlyph g = {{
         "#####",
@@ -334,10 +329,6 @@ const BigGlyph& BigZ() {
     return g;
 }
 
-// Подчёркивание — плейсхолдер незаполненной буквы при вводе имени
-// сохранения (см. AppState::SAVE_NAME_ENTRY в Application.cpp,
-// ui/MenuLayouts.cpp: BuildNameEntryMenu()) — "AB___" для уже введённых
-// "AB" из максимум 5 символов.
 const BigGlyph& BigUnderscore() {
     static const BigGlyph g = {{
         ".....",
@@ -351,11 +342,6 @@ const BigGlyph& BigUnderscore() {
     return g;
 }
 
-// Полностью пустой узор (ни одного '#') — см. комментарий у объявления
-// в BigFont.h: подставляется вместо буквы для пробела в многословных
-// надписях кнопок, чтобы DrawBigGlyph() честно ничего не рисовала на
-// этом месте, а не заливала его буквой E (старое поведение default-ветки
-// GetBigGlyph() для ЛЮБОГО незнакомого символа, включая пробел).
 const BigGlyph& BigSpace() {
     static const BigGlyph g = {{
         ".....",
@@ -369,7 +355,6 @@ const BigGlyph& BigSpace() {
     return g;
 }
 
-// ---- Цифры 0-9 — см. комментарий у объявления BigDigit() в BigFont.h ----
 const BigGlyph& GetBigDigitGlyph(int d) {
     static const BigGlyph digits[10] = {{{ // 0
         ".###.",
@@ -456,14 +441,10 @@ const BigGlyph& GetBigDigitGlyph(int d) {
 }
 
 const BigGlyph& BigDigit(int d) {
-    if (d < 0 || d > 9) return BigE(); // не должно случаться при контролируемом вводе
+    if (d < 0 || d > 9) return BigE(); // shouldn't happen with controlled input
     return GetBigDigitGlyph(d);
 }
 
-// Достаёт крупный ASCII-арт глиф по букве — используется заголовком
-// "CELL" и текстом кнопок главного меню ("START"/"EXIT"/"SETTINGS"),
-// меню паузы ("RESUME"/"MENU") и экрана настроек ("SETTINGS"/
-// "SENSITIVITY"/"BACK"), см. DrawBigText() ниже и BuildButtonMenu() ниже.
 const BigGlyph& GetBigGlyph(char c) {
     switch (c) {
         case 'C': return BigC();
@@ -497,32 +478,22 @@ const BigGlyph& GetBigGlyph(char c) {
         case '0': case '1': case '2': case '3': case '4':
         case '5': case '6': case '7': case '8': case '9':
             return BigDigit(c - '0');
-        default:  return BigE(); // не должно случаться при контролируемом вводе
+        default:  return BigE(); // shouldn't happen with controlled input
     }
 }
 
-// Рисует один крупный логотип-глиф с ПОВЫШЕННЫМ разрешением маски и
-// разнообразием символов внутри — раньше каждый "пиксель" исходного 5x7
-// паттерна заливался ОДНИМ И ТЕМ ЖЕ повторяющимся '#' на весь scale x
-// scale блок (буква выглядела сплошным блоком одинаковых символов).
-// Теперь каждый исходный пиксель раскладывается в finalRes x finalRes
-// экранных клеток (finalRes = round(scale * kMaskUpsample) — т.е. маска
-// апскейлится минимум вдвое относительно исходных 5x7), и КАЖДАЯ такая
-// клетка получает СВОЙ, независимо (но детерминированно, по seed —
-// без "мерцания" между кадрами) выбранный плотный символ из
-// kDenseFillGlyphs — соседние клетки почти всегда разные, силуэт буквы
-// при этом не меняется (пиксели 5x7-паттерна всё те же).
-//
-// scale — float (не int), чтобы можно было независимо задавать РАЗНЫЙ
-// физический размер для заголовка и текста кнопок (например 1.5 для
-// "CELL" и 0.5 для "START"/"EXIT") — раньше оба были int и часто
-// округлялись до одного и того же значения (кнопки выглядели как
-// заголовок по размеру).
+// How many screen cells one pixel of the original 5x7 pattern covers per axis: round(scale *
+// kMaskUpsample), never below 1. scale is a float, not an int, so the title and the button text can
+// have independently different physical sizes (e.g. 1.5 for "CELL" and 0.5 for buttons).
 
 int ComputeFinalRes(float scale) {
     return std::max(1, (int)std::lround((double)scale * kMaskUpsample));
 }
 
+// Draws one large logo glyph with an upscaled mask: each original pixel of the 5x7 pattern expands
+// into finalRes x finalRes screen cells, each getting its own dense glyph chosen deterministically
+// from the seed (no flicker between frames). Neighboring cells are almost always different, while
+// the letter's silhouette stays unchanged.
 void DrawBigGlyph(std::vector<unsigned char>& grid, int cols, int rows,
                           const BigGlyph& glyph, int originCol, int originRow, float scale, int seed) {
     const int finalRes = ComputeFinalRes(scale);
@@ -543,10 +514,6 @@ void DrawBigGlyph(std::vector<unsigned char>& grid, int cols, int rows,
 int BigGlyphWidth(float scale)  { return 5 * ComputeFinalRes(scale); }
 int BigGlyphHeight(float scale) { return 7 * ComputeFinalRes(scale); }
 
-// Крупный ASCII-арт текст (несколько букв подряд через GetBigGlyph()) —
-// используется и для заголовка "CELL", и для текста кнопок "START"/"EXIT",
-// чтобы весь видимый текст меню состоял из апскейленной маски с
-// разнообразными плотными символами, а не только заголовок.
 int BigTextWidth(const std::string& text, float scale) {
     if (text.empty()) return 0;
     const int letterW = BigGlyphWidth(scale);

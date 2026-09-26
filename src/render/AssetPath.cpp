@@ -16,8 +16,6 @@ std::string Resolve(const std::string& relativePath)
     std::vector<fs::path> startPoints;
 
 #ifdef _WIN32
-    // Папка самого exe — приоритетная точка поиска (совпадает с тем,
-    // куда .cbp реально копирует assets/, см. ExtraCommands в .cbp).
     wchar_t modulePath[32768]{};
     const DWORD len = GetModuleFileNameW(
         nullptr,
@@ -28,17 +26,14 @@ std::string Resolve(const std::string& relativePath)
         startPoints.push_back(fs::path(modulePath).parent_path());
 #endif
 
-    // Текущая рабочая директория — запасной вариант (например, запуск
-    // из-под IDE, где working dir настроен на корень проекта).
     std::error_code ec;
     const fs::path cwd = fs::current_path(ec);
     if (!ec)
         startPoints.push_back(cwd);
 
-    // Экзешник обычно лежит на несколько уровней ниже корня проекта
-    // (bin/Debug/app.exe рядом с assets/ в корне) — глубина может
-    // отличаться в зависимости от конфигурации сборки, поэтому
-    // поднимаемся вверх, а не полагаемся на фиксированное число уровней.
+    // The exe usually sits a few levels below the project root (bin/Debug/app.exe next to a
+    // top-level assets/) and the depth varies by build configuration, so it walks upward instead of
+    // assuming a fixed number of levels.
     constexpr int kMaxLevelsUp = 6;
 
     for (const fs::path& start : startPoints) {
@@ -50,7 +45,7 @@ std::string Resolve(const std::string& relativePath)
 
             const fs::path parent = dir.parent_path();
             if (parent == dir)
-                break; // дошли до корня файловой системы
+                break; // reached filesystem root
             dir = parent;
         }
     }

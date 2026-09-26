@@ -4,77 +4,43 @@
 #include <string>
 #include <vector>
 
-// ============================================================================
-// TextRenderer — настоящий TTF-рендер текста (stb_truetype, шрифт VT323 —
-// моноширинный "CRT-терминал", OFL-лицензия, см. assets/fonts/OFL.txt) для
-// текста дневников/журнала. Экранный 2D-оверлей, рисуется отдельным
-// шейдером (assets/shaders/text.{vert,frag}) ПОСЛЕ AsciiEffect::end() — тот
-// же принцип, что и у Compass (см. Compass.h), не проходит через основной
-// ASCII-постпроцесс сцены, поэтому остаётся чётким/читаемым.
-//
-// ПОЧЕМУ это отдельный слой, а не расширение старого сеточного UI-шрифта
-// (AsciiEffect.cpp::s_minimapGlyphs) — тот шрифт фиксирован по размеру
-// (1 символ = 1 клетка сетки, 11 экранных пикселей, см.
-// AsciiEffect::kMenuReferenceCellSize) и не имеет понятия "размер шрифта"
-// вообще. Он ОСТАЁТСЯ на месте и продолжает рисовать рамки/капли крови/
-// подсказки ("E CLOSE" и т.п.) — TextRenderer подключается ТОЛЬКО для
-// самого читаемого текста (проза дневника, "LOG", подписи записей
-// журнала), где реально важен управляемый размер шрифта.
-//
-// Раскладка — НАСТОЯЩАЯ пропорциональная (реальные ширины букв из шрифта,
-// через stbtt_GetBakedQuad), не фиксированная сетка колонок, как у старого
-// шрифта.
-// ============================================================================
+// TTF text renderer (stb_truetype, VT323) for diary/journal text and credits: a screen-space
+// overlay drawn with its own shader after AsciiEffect::end(), so it stays crisp instead of going
+// through the ASCII post-process. The grid UI font is fixed-size (one glyph per cell) and cannot do
+// readable prose; layout here uses real proportional advances (stbtt_GetBakedQuad).
 class TextRenderer {
 public:
-    bool create();  // грузит шрифт, запекает атлас, компилирует шейдер, заводит VAO/VBO
+    bool create();  // loads the font, bakes the atlas, compiles the shader, sets up VAO/VBO
     void destroy();
     bool isReady() const { return m_program != 0 && m_atlasTexture != 0; }
 
-    // Высота строки (baseline-to-baseline) в пикселях при данном scale —
-    // 1.0 = запечённый размер атласа (см. kBakedPixelHeight в .cpp).
     float lineHeight(float scale) const { return m_bakedPixelHeight * 1.15f * scale; }
 
-    // Реальная пропорциональная ширина строки в пикселях — тильды
-    // (~испорченное~ слово, см. Diaries.h) НЕ считаются (это разметка,
-    // не отображаемый символ), сама испорченная последовательность
-    // занимает ровно ту же ширину, что заняли бы настоящие буквы внутри.
+    // Real proportional line width in pixels. Tildes (~corrupted~ word) do not count toward it
+    // (they are markup, not a displayed character); the corrupted sequence itself takes exactly the
+    // width the real letters inside it would have.
     float textWidth(const std::string& markedUpText, float scale) const;
 
-    // Перенос строк по реальной ширине (в пикселях, не в колонках сетки)
-    // — та же логика, что была у DungeonScene::WrapDiaryText(), только
-    // на пропорциональных ширинах вместо фиксированных колонок. "Слово"
-    // с тильдами (~WORD~) переносится как единый неразрывный токен.
+    // Line wrapping by real width (pixels, not grid columns): wrap on spaces, and a word with
+    // tildes (~WORD~) wraps as one unbreakable token.
     std::vector<std::string> wrapText(const std::string& markedUpText, float maxWidthPx, float scale) const;
 
-    // Сбрасывает батч квадов на новый кадр — вызывается один раз перед
-    // серией drawLine(), before endFrame().
     void beginFrame(int screenW, int screenH);
 
-    // Рисует ОДНУ строку (уже перенесённую, см. wrapText()) с базовой
-    // линией в (x,baselineY), пиксели экрана, (0,0) = верхний левый угол.
-    // Тильды разбирают строку на "обычные"/"испорченные" куски на лету:
-    // обычные — настоящие глиф-квады из атласа; испорченные — то же
-    // место на экране, но процедурное "чернильное пятно" (см. text.frag)
-    // вместо реальных букв. Узор пятна зависит только от экранной
-    // позиции (не от времени/кадра) — стабилен между кадрами сам по
-    // себе, отдельный seed не нужен.
+    // Draws one already-wrapped line with its baseline at (x, baselineY) in screen pixels, (0,0) =
+    // top-left. Tildes split it into normal chunks (atlas quads) and corrupted chunks (a procedural
+    // ink stain of the same width whose pattern depends only on screen position, so it is stable
+    // between frames).
     void drawLine(const std::string& markedUpLine, float x, float baselineY,
                   float scale, const glm::vec3& color, float alpha = 1.0f);
 
-    // Заливает накопленный батч в GL_DYNAMIC_DRAW VBO и рисует одним
-    // draw call. Alpha-blending включается/выключается здесь же (не
-    // трогает состояние блендинга вне вызова).
+    // Uploads the accumulated batch into a GL_DYNAMIC_DRAW VBO and draws it in one call. Alpha
+    // blending is toggled here and restored (blend state outside the call is not touched).
     void endFrame();
 
-    // Сплошной полупрозрачный прямоугольник (подсветка выбранной строки
-    // списка и т.п.) — ЭТИМ ЖЕ слоем и в ТЕХ ЖЕ пиксельных координатах,
-    // что и drawLine() выше, чтобы подсветка гарантированно совпадала с
-    // положением текста поверх неё (раньше подсветка рисовалась старым
-    // сеточным слоем независимо от пиксельной раскладки TextRenderer —
-    // два независимых вычисления одной и той же позиции неизбежно
-    // расходились). Добавляется в батч ДО соответствующего drawLine(),
-    // чтобы текст лёг поверх заливки, а не под ней.
+    // A semi-transparent rectangle (e.g. a selected row) in the same layer and pixel coordinates as
+    // drawLine(), so it lines up with the text. Add it before the corresponding drawLine() so the
+    // text lands on top.
     void drawRect(float x0, float y0, float x1, float y1, const glm::vec3& color, float alpha = 1.0f);
 
 private:
@@ -83,13 +49,11 @@ private:
     int m_atlasW = 0, m_atlasH = 0;
     float m_bakedPixelHeight = 0.0f;
 
-    // stbtt_bakedchar — непрозрачно для .h (не тянуть stb_truetype.h
-    // сюда, он подключается только в .cpp, implementation-блок собран
-    // там же, как и STB_IMAGE_IMPLEMENTATION у WallTexture.cpp), поэтому
-    // держим как сырой массив байт нужного размера.
+    // stbtt_bakedchar is opaque to the .h (stb_truetype.h is pulled in only in the .cpp, with its
+    // implementation block), so it is kept as a raw byte array of the right size.
     static constexpr int kFirstChar = 32;  // ' '
-    static constexpr int kNumChars = 95;   // 32..126 включительно
-    void* m_bakedChars = nullptr;          // stbtt_bakedchar[kNumChars], см. .cpp
+    static constexpr int kNumChars = 95;   // 32..126 inclusive
+    void* m_bakedChars = nullptr;          // stbtt_bakedchar[kNumChars], see the .cpp
 
     GLuint m_vao = 0, m_vbo = 0;
     GLsizei m_vboCapacityBytes = 0;
@@ -102,27 +66,20 @@ private:
     GLint m_uniScreenSize = -1;
     GLint m_uniAtlasTex = -1;
 
-    // Ширина/продвижение курсора для ОДНОГО символа (в "запечённых"
-    // пикселях атласа, до умножения на scale) — обёртка над
-    // stbtt_GetBakedQuad с фиктивным курсором, используется и
-    // textWidth()/wrapText(), и drawLine() внутри.
+    // Cursor advance width for one character (in baked atlas pixels, before multiplying by scale):
+    // a wrapper over stbtt_GetBakedQuad with a dummy cursor, used by textWidth()/wrapText() and
+    // drawLine() internally.
     float charAdvance(char c) const;
 
-    // originX/baselineY — фиксированная точка старта строки на экране
-    // (пиксели). localCursorX — курсор в "родных" пикселях шрифта
-    // (масштаб атласа при запекании, ДО умножения на scale), общий на
-    // всю строку и продолжающийся через несколько вызовов подряд (один
-    // на "обычный" кусок, другой на "испорченный") — экранная позиция
-    // каждого квада считается как originX + localCursorX*scale, поэтому
-    // курсор обязан быть один и тот же для всех кусков строки, а не
-    // сбрасываться на каждом вызове.
+    // originX/baselineY is the line's fixed start in pixels; localCursorX is the cursor in the
+    // atlas's native pixels, carried across the chunk calls of one line (screen x = originX +
+    // localCursorX * scale), so it must not reset between calls.
     void appendGlyphRun(const std::string& run, float originX, float baselineY,
                          float scale, const glm::vec3& color, float alpha,
                          float& localCursorX);
 
-    // То же самое, но кусок "испорчен" — один квад того же суммарного
-    // размера, что заняли бы настоящие буквы, помечен mode=1 (см.
-    // text.frag — процедурное пятно вместо сэмпла атласа).
+    // The same, but the chunk is "corrupted": one quad of the total size the real letters would
+    // take, tagged mode = 1 (a procedural stain instead of sampling the atlas).
     void appendCorruptRun(const std::string& run, float originX, float baselineY,
                            float scale, const glm::vec3& color, float alpha,
                            float& localCursorX);

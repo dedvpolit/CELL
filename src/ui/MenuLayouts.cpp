@@ -8,58 +8,16 @@
 
 namespace MainMenu {
 
-// БАГФИКС ("sharpness сильно меняет размер меню, иконки уходят за
-// экран") — раньше здесь стояло `(float)std::max(1, rows / 60)` — ЦЕЛОЕ
-// деление (rows/60 обрубается до int ДО max()), да ещё и с полом в 1.0,
-// который НЕЛЬЗЯ пробить вниз. rows = высота окна в АСКИ-клетках, то
-// есть windowHeight/cellSize — она растёт, когда клетка становится
-// МЕЛЬЧЕ (см. AsciiEffect::setUserCellSize(), настройка SHARPNESS), и
-// падает, когда клетка КРУПНЕЕ. Само по себе умножение потом обратно на
-// cellSize при рендере глифа (finalRes * cellSize пикселей на клетку)
-// должно сокращать эту зависимость и держать РЕАЛЬНЫЙ, пиксельный
-// размер текста примерно постоянным — но только если baseScale может
-// СВОБОДНО уменьшаться пропорционально при рОСТЕ cellSize. С полом в
-// 1.0 это работало только в одну сторону (клетка мельче — baseScale
-// растёт как надо), а при УВЕЛИЧЕНИИ cellSize сверх дефолтных 11
-// (rows падает ниже 60) baseScale упереться в пол и оставался 1.0,
-// хотя обязан был продолжать падать, скажем, до 0.6 — из-за этого весь
-// текст/раскладка меню начинали занимать РЕАЛЬНО БОЛЬШЕ пикселей экрана
-// при увеличении cellSize, и на достаточно крупных клетках вылезали за
-// границы окна.
-//
-// Исправлено: обычное float-деление (не int/int) БЕЗ пола в 1.0 — та же
-// формула, что и раньше по сути ("сколько раз 60 строк умещается"),
-// просто теперь честно продолжается и ниже 1.0. Пол 0.15 — чисто
-// защитный (не даёт итоговому масштабу схлопнуться в 0/отрицательное
-// при совсем experimental крупных cellSize за пределами официального
-// диапазона AsciiEffect::kMinCellSize/kMaxCellSize), а не рабочий
-// нижний предел для обычного использования.
-// БАГФИКС #2 ("всё стало слишком большим после развязки меню от
-// cellSize") — прошлый фикс убрал ПОЛ в 1.0, но не поставил ПОТОЛОК.
-// Меню теперь всегда строится в фиксированной сетке
-// (windowWidth/windowHeight делённые на kMenuReferenceCellSize=11, см.
-// AsciiEffect.h) — если РЕАЛЬНОЕ окно/фреймбуфер оказывается крупнее
-// эталонных 1280x720 (больше пикселей на том же мониторе, другой DPI,
-// full screen на крупном экране и т.п.), rows пропорционально растёт, и
-// baseScale вместе с ним — раньше это тихо маскировалось целочисленным
-// делением (round down), теперь честно считается и уходит выше 1.0.
-// Верхний потолок 1.0 — тот же максимум, что и был исторически
-// "стандартным" видом меню (при cellSize=11 на 1280x720 rows=65,
-// 65/60=1.08 — почти ровно потолок); текст меню теперь никогда не
-// крупнее этого, независимо от того, насколько большой реальный экран.
-// Ползунки (trackW и т.п.) этот потолок не трогает — они считаются от
-// cols напрямую, не через baseScale, и уже были в порядке.
+// Menu text scale: rows / 60, capped at 1.0 (float division on purpose). The grid always has >=
+// kMenuMinGridRows rows, so on regular windows it sits at the cap; the 0.15 floor is only a safety
+// net.
 static float ComputeMenuBaseScale(int rows) {
     return std::clamp((float)rows / 60.0f, 0.15f, 1.0f);
 }
 
-// Вспомогательная функция для buttonScale (BuildButtonMenu ниже) и для
-// сообщения экрана подтверждения (BuildConfirmMenu ниже) — пытается
-// уменьшить шрифт на целую ступень finalRes (см. ComputeFinalRes() в
-// BigFont.cpp); если шрифт уже на полу (finalRes==1, дальше некуда) —
-// честно возвращает ИСХОДНЫЙ scale без изменений, а не подменяет разницу
-// истончённой рамкой/отступом где-то ещё (так уже было и оказалось
-// нежелательным, см. правку buttonScale в BuildButtonMenu).
+// Shrinks the font by one whole finalRes step (used for buttonScale in BuildButtonMenu and for the
+// confirm message). If the font is already at its floor (finalRes == 1) it returns the original
+// scale: faking the difference with a thinner frame or margin elsewhere was tried and looked worse.
 static float ShrinkTextScale(float baseTextScale, float scaleMultiplier) {
     if (scaleMultiplier >= 1.0f) return baseTextScale;
     const int normalRes = ComputeFinalRes(baseTextScale);
@@ -70,48 +28,22 @@ static float ShrinkTextScale(float baseTextScale, float scaleMultiplier) {
     return (float)reducedRes / (float)kMaskUpsample;
 }
 
-// Общий множитель "компактных" экранов (слоты сохранения/загрузки,
-// подтверждение перезаписи, ввод имени) — применяется и к заголовку, и
-// к кнопкам этих экранов через ShrinkTextScale() выше, ~20% меньше
-// главного меню/паузы.
+// Shared multiplier for the compact screens (save/load slots, overwrite confirmation, name entry):
+// applied to the title and the buttons through ShrinkTextScale(), about 20% smaller than the main
+// menu and pause.
 static constexpr float kCompactScale = 0.8f;
 
+// Left-aligned menu (the main menu): the distance of the left edge from the screen edge is
+// cols / kLeftMarginDiv cells, but at least kLeftMarginMin.
+static constexpr int kLeftMarginDiv = 16;
+static constexpr int kLeftMarginMin = 6;
 
-// Общая реализация "заголовок + N кнопок друг под другом" — раньше жила
-// только внутри Build() (главное меню, "CELL"/START/EXIT) в виде
-// BuildTwoButtonMenu() с ровно двумя кнопками; теперь обобщена до
-// произвольного их числа (главное меню — START/SETTINGS/EXIT, пауза —
-// RESUME/SETTINGS/MENU), чтобы вёрстка, отступы и dark-fantasy рамки не
-// разъезжались между экранами. Раскладка со ВСЕМИ кнопками одной ширины
-// (по самому длинному тексту среди них) не изменилась — просто теперь
-// это цикл по buttonTexts.size(), а не два скопированных блока кода.
-//
-// selection: индекс кнопки, подсвеченной курсором (0..buttonTexts.size()-1),
-// -1 (или любое другое значение) = ни одна не подсвечена — обычная рваная
-// рамка у всех. Подсветка управляется ИСКЛЮЧИТЕЛЬНО наведением курсора
-// (см. main.cpp: hoveredButton, пересчитывается заново каждый кадр, не
-// залипает); "подсвечена" больше не значит "залита сплошным #" — см.
-// новую версию DrawBox() выше.
-// seed — фиксируется один раз за сессию (см. main.cpp), чтобы рваные
-// рамки не "перестраивались" визуально каждый раз при смене наведения.
-// titleHovered — курсор сейчас над рамкой заголовка (только для CELL в
-// главном меню, у паузы заголовка нет) — включает тот же hover-акцент,
-// что и у кнопок (см. DrawBox). Пересчитывается в main.cpp каждый кадр
-// той же логикой, что и hoveredButton.
-// outButtons — заполняется РОВНО buttonTexts.size() прямоугольниками, в
-// том же порядке, что и buttonTexts (вызывающий код раскладывает их по
-// именованным полям Layout/PauseLayout).
-// skipTitleDraw (item 4, review): when true, every step is performed
-// EXCEPT the final title-glyph draw (DrawBrokenTitle/DrawBigText) — the
-// grid comes back with atmosphere + button frames + button text baked in,
-// but the title area left blank. This lets a caller cache that (expensive,
-// otherwise-static) result and draw only the cheap, per-frame-changing
-// title glyphs on top of a copy of it, instead of re-running the entire
-// layout (atmosphere pattern, box drawing, button text) every single frame
-// just because the title is mid-animation. See Build() below for the
-// caching wrapper that actually does this. Defaults to false so every
-// existing call site (including BuildPauseMenu(), which passes an empty
-// title and is unaffected either way) keeps its old one-shot behaviour.
+
+// Shared "title + N stacked buttons" layout for the main menu, pause and slot screens (all buttons
+// share one width). selection is the hovered button (others = none); seed is fixed per session so
+// ragged frames do not rebuild on hover. skipTitleDraw bakes everything except the title glyphs so
+// the caller can cache it (see Build()). leftAligned presses the title frame and buttons to the
+// left (main menu); otherwise they are centered.
 void BuildButtonMenu(std::vector<unsigned char>& grid, int cols, int rows,
                              int selection, int seed,
                              const std::string& title,
@@ -124,7 +56,8 @@ void BuildButtonMenu(std::vector<unsigned char>& grid, int cols, int rows,
                              bool titleHovered,
                              int atmosphereVariant,
                              bool skipTitleDraw,
-                             float buttonScale) {
+                             float buttonScale,
+                             bool leftAligned) {
     grid.assign((size_t)std::max(0, cols) * std::max(0, rows), 0);
     outButtons.assign(buttonTexts.size(), ButtonRect{});
     outTitle = ButtonRect{};
@@ -132,93 +65,42 @@ void BuildButtonMenu(std::vector<unsigned char>& grid, int cols, int rows,
 
     if (cols <= 0 || rows <= 0 || buttonTexts.empty()) return;
 
-    // Атмосфера (рамка/трещины/руна/факелы) рисуется НИЖЕ, ПОСЛЕ расчёта
-    // кнопок/outTitle — ей нужен реальный прямоугольник контента, чтобы
-    // не гадать координаты и не попадать руной под кнопку.
-
-    // ---- Заголовок ----
-    // title может быть пустым (см. BuildPauseMenu() ниже — экран паузы
-    // теперь без заголовка, только кнопки) — тогда весь блок заголовка
-    // просто не занимает места (letterH/titleWidth/titleToButtonsGap = 0),
-    // а внизу центрируются только сами кнопки.
+    // Title. It can be empty (pause has none): the title block then takes no space and only the
+    // buttons are centered. The atmosphere (frame, cracks, rune, torches) is drawn further below,
+    // once the buttons and outTitle are known, because it needs the real content rectangle.
     const bool hasTitle = !title.empty();
 
-    // baseScale — адаптивный "шаг" под размер экрана, от него отдельно
-    // считаются масштаб заголовка (крупнее) и масштаб кнопок (заметно
-    // мельче) — иначе кнопки визуально были бы почти как заголовок.
+    // baseScale is an adaptive step for the screen size. The title scale (larger) and the button
+    // scale (much smaller) derive from it separately, so buttons do not look almost as big as the
+    // title.
     const float baseScale = ComputeMenuBaseScale(rows);
 
-    // buttonScale теперь уменьшает И заголовок ("SAVE"/"LOAD"), И кнопки
-    // (не только кнопки, как раньше) — см. BuildSlotMenu()/
-    // BuildConfirmMenu() ниже, передают 0.8 (~20% меньше). Главного меню
-    // ("CELL") и паузы (без заголовка) это не касается — там buttonScale
-    // остаётся 1.0 по умолчанию.
+    // buttonScale shrinks both the title ("SAVE"/"LOAD") and the buttons; the slot, confirm and
+    // name screens pass kCompactScale. The main menu and pause keep the default 1.0.
     const float titleScaleBase = baseScale * 1.5f;
     const float titleScale = ShrinkTextScale(titleScaleBase, buttonScale);
     const int letterH = hasTitle ? BigGlyphHeight(titleScale) : 0;
     const int titleWidth = hasTitle ? BigTextWidth(title, titleScale) : 0;
 
-    // ---- Кнопки ----
-    // buttonScale уменьшает ТОЛЬКО текст (заголовка и кнопок) — рамка
-    // вокруг него ВСЕГДА обычная, как у главного меню/паузы, buttonScale
-    // на неё не влияет (см. BuildSlotMenu() ниже — передаёт 0.8, экран
-    // выбора слота сохранения заметно компактнее главного меню/паузы).
-    //
-    // ПРИНЦИПИАЛЬНО: рамка (buttonBorderThickness) и внутренний отступ
-    // (buttonInnerPadding) у кнопок ВСЕГДА обычные, как у главного меню/
-    // паузы — buttonScale уменьшает ТОЛЬКО сам текст (шрифт), а не рамку
-    // вокруг него. Шрифт квантован шагом kMaskUpsample=2 (см.
-    // ComputeFinalRes() в BigFont.cpp) и на типичном разрешении уже
-    // близок к минимуму (finalRes=1, 5x7 ячеек на букву) — на самом
-    // ходовом разрешении (1280x720 по умолчанию, см. main.cpp) шрифт
-    // кнопок и так уже на этом полу, дальше ужимать нечего. В такой
-    // ситуации кнопка честно остаётся обычного размера — это лучше, чем
-    // визуально "врать" истончённой рамкой при неизменном тексте.
+    // buttonScale shrinks only the text; frame thickness and padding stay regular so screens match.
+    // At 1280x720 the button font is already at its floor (finalRes = 1).
     const int buttonBorderThickness = 2;
-    const int buttonInnerPadding = 1; // отступ текста от рамки внутри кнопки
+    const int buttonInnerPadding = 1; // padding between text and frame inside a button
 
-    // Рамка вокруг заголовка (см. outTitleBox ниже) обрамляет буквы с
-    // отступом titleInnerPadding + толщиной buttonBorderThickness С КАЖДОЙ
-    // стороны — т.е. реальная занимаемая высота заголовка на экране
-    // БОЛЬШЕ, чем просто letterH (голая высота глифов), на 2*titleOverhang.
-    // Раньше это "нависание" рамки НЕ учитывалось в contentHeight/
-    // contentTop (там использовался голый letterH) — на плотных
-    // раскладках (когда contentTop итак прижат почти к верхнему краю,
-    // см. clamp max(1,...) ниже) верхняя часть рамки заголовка уходила
-    // за пределы сетки (row < 0) и обрезалась: именно это выглядело как
-    // "CELL не влезает" — не сам текст, а его декоративная рамка сверху.
-    // Считаем titleOverhang здесь же (а не только внутри if(hasTitle)
-    // ниже), чтобы использовать его и в contentHeight, и в положении
-    // titleRow.
+    // The title frame extends titleInnerPadding + border beyond the letters, so its height is
+    // letterH + 2 * titleOverhang; that must be counted in contentHeight/contentTop or the frame
+    // top clips at row < 0.
     const int titleInnerPadding = 2;
     const int titleOverhang = hasTitle ? (titleInnerPadding + buttonBorderThickness) : 0;
 
-    // buttonGap/titleToButtonsGap ниже — НЕ const: если после того, как
-    // шрифт кнопок уже ужат до пола (см. цикл автоподгонки ниже), блок
-    // всё ещё не помещается, второй проход слегка поджимает промежутки
-    // между кнопками и отступ под заголовком — это тоже часть "уменьшить
-    // кнопки" (их взаимное расположение, не только сам текст), и стоит
-    // почти ничего визуально по сравнению с уже урезанным шрифтом.
+    // buttonGap/titleToButtonsGap are not const: if the block still does not fit after the button
+    // font reached its floor, a second pass tightens the gaps.
     int buttonGap = pauseMenu ? 4 : 3;
     int titleToButtonsGap = hasTitle ? std::max(4, rows / 10) : 0;
     const int buttonCount = (int)buttonTexts.size();
 
-    // ---- Автоподгонка размера текста кнопок под доступную высоту ----
-    // Раньше buttonTextScale считался один раз по формуле (baseScale*0.5,
-    // прогнанной через buttonScale/ShrinkTextScale) — на больших окнах
-    // (fullscreen на 1080p/1440p/4K мониторах, где baseScale скачком
-    // растёт, см. комментарий у baseScale выше) сумма высоты заголовка и
-    // всех кнопок регулярно превышала rows: заголовок ("CELL"/"LOAD"/
-    // "SAVE") утыкался в край экрана или в первую кнопку. Высоту
-    // ЗАГОЛОВКА (letterH) здесь намеренно НЕ трогаем — она уже посчитана
-    // выше по обычной формуле, ужимаем ТОЛЬКО кнопки, шаг за шагом на одну
-    // ступень finalRes (см. ShrinkTextScale выше) за раз, пока весь блок
-    // (заголовок + отступ + все кнопки + зазоры между ними) не уместится
-    // по высоте — с небольшим запасом (targetHeight чуть меньше rows),
-    // чтобы декоративная рамка атмосферы не оказывалась впритык к краю
-    // экрана. Если кнопки уже на полу (finalRes==1) и всё равно не
-    // влезает — дальше сжимать нечего, ShrinkTextScale сама остановит
-    // цикл (см. floor-защиту внутри неё).
+    // Auto-fit: shrink the button font one finalRes step at a time until the block fits with a
+    // margin; the title height is untouched.
     float buttonTextScale = ShrinkTextScale(baseScale * 0.5f, buttonScale);
     int buttonTextAreaW = 0, buttonTextAreaH = 0, buttonW = 0, buttonH = 0, contentHeight = 0;
 
@@ -230,8 +112,6 @@ void BuildButtonMenu(std::vector<unsigned char>& grid, int cols, int rows,
         buttonTextAreaH = BigGlyphHeight(buttonTextScale);
         buttonW = buttonTextAreaW + buttonInnerPadding * 2 + buttonBorderThickness * 2;
         buttonH = buttonTextAreaH + buttonInnerPadding * 2 + buttonBorderThickness * 2;
-        // letterH + 2*titleOverhang — полная высота ЗАГОЛОВКА ВМЕСТЕ С его
-        // рамкой (см. комментарий у titleOverhang выше), не только буквы.
         contentHeight = (letterH + 2 * titleOverhang) + titleToButtonsGap +
             buttonCount * buttonH + std::max(0, buttonCount - 1) * buttonGap;
     };
@@ -240,36 +120,35 @@ void BuildButtonMenu(std::vector<unsigned char>& grid, int cols, int rows,
     const int targetHeight = std::max(1, rows - std::max(2, rows / 30));
     for (int guard = 0; guard < 6 && contentHeight > targetHeight; ++guard) {
         const float smaller = ShrinkTextScale(buttonTextScale, 0.99f);
-        if (smaller >= buttonTextScale) break; // уже на полу — дальше некуда
+        if (smaller >= buttonTextScale) break;
         buttonTextScale = smaller;
         recomputeButtonMetrics();
     }
 
-    // Второй проход: шрифт кнопок уже на полу, а блок всё ещё не влезает
-    // (маленькое окно/много кнопок сразу, см. targetHeight выше) — донажимаем
-    // зазоры между кнопками (buttonGap, floor 1) и под заголовком
-    // (titleToButtonsGap, floor 3) по одной клетке за раз, поочерёдно, пока
-    // не влезет или оба не упрутся в свой пол. Рамку/отступ самих кнопок
-    // (buttonBorderThickness/buttonInnerPadding) не трогаем — см. комментарий
-    // выше, это единственное, что должно визуально совпадать со START/EXIT
-    // на любом экране.
+    // Second pass when the font is at its floor: squeeze the gaps (buttons floor 1, under the title
+    // floor 3); frame and padding stay to match the other screens.
     for (int guard = 0; guard < 12 && contentHeight > targetHeight; ++guard) {
         const int minButtonGap = 1;
         const int minTitleGap = hasTitle ? 3 : 0;
         bool shrunk = false;
         if (buttonGap > minButtonGap) { --buttonGap; shrunk = true; }
         else if (titleToButtonsGap > minTitleGap) { --titleToButtonsGap; shrunk = true; }
-        if (!shrunk) break; // оба зазора уже на полу
+        if (!shrunk) break;
         recomputeButtonMetrics();
     }
     const int contentShiftY = pauseMenu ? -1 : 0;
     const int contentTop = std::max(1, (rows - contentHeight) / 2 + contentShiftY);
 
-    const int titleCol = std::max(0, (cols - titleWidth) / 2);
-    // titleRow сдвинут от contentTop на titleOverhang — оставляет место
-    // СВЕРХУ под рамку заголовка (outTitleBox ниже), которая иначе
-    // начиналась бы выше contentTop и обрезалась (см. комментарий у
-    // titleOverhang выше).
+    // Horizontal placement: centered, or (main menu) pressed to the left. The title frame is the
+    // widest element, so the shared left edge is clamped to keep the whole frame inside the grid
+    // on narrow windows. The title letters sit titleOverhang inside the frame's left edge.
+    const int widestW = hasTitle ? (titleWidth + 2 * titleOverhang) : buttonW;
+    const int leftEdge = std::min(std::max(kLeftMarginMin, cols / kLeftMarginDiv),
+                                  std::max(0, cols - widestW));
+    const int titleCol = leftAligned ? leftEdge + titleOverhang
+                                     : std::max(0, (cols - titleWidth) / 2);
+    // titleRow is offset by titleOverhang so the frame above the letters does not start above
+    // contentTop and get clipped.
     const int titleRow = contentTop + titleOverhang;
 
     if (hasTitle) {
@@ -280,12 +159,8 @@ void BuildButtonMenu(std::vector<unsigned char>& grid, int cols, int rows,
             titleRow + std::max(0, letterH - 1)
         };
 
-        // Рамка вокруг заголовка — с отступом от букв побольше, чем у
-        // кнопок (titleInnerPadding=2 против buttonInnerPadding=1): текст
-        // заметно крупнее, вплотную рамка выглядела бы тесной. Толщина
-        // рамки та же (buttonBorderThickness — теперь ВСЕГДА обычная, см.
-        // комментарий выше), чтобы визуально совпадать со START/EXIT —
-        // единая школа на весь экран, не два разных стиля.
+        // Title frame: more padding around the letters than buttons get (titleInnerPadding 2 vs 1),
+        // since the text is much bigger. Same frame thickness as the buttons, for one visual style.
         outTitleBox = ButtonRect{
             outTitle.x0 - titleInnerPadding - buttonBorderThickness,
             outTitle.y0 - titleInnerPadding - buttonBorderThickness,
@@ -294,13 +169,9 @@ void BuildButtonMenu(std::vector<unsigned char>& grid, int cols, int rows,
         };
     }
 
-    const int buttonCol = std::max(0, (cols - buttonW) / 2);
+    const int buttonCol = leftAligned ? leftEdge : std::max(0, (cols - buttonW) / 2);
 
     std::vector<ButtonRect> buttons(buttonCount);
-    // titleRow + letterH + titleOverhang == contentTop + (letterH + 2*titleOverhang)
-    // — низ ПОЛНОГО блока заголовка (буквы + нижняя половина рамки), см.
-    // contentHeight выше; при hasTitle=false titleOverhang=letterH=0, и
-    // это просто contentTop, как и раньше.
     int nextY0 = titleRow + letterH + titleOverhang + titleToButtonsGap;
     for (int i = 0; i < buttonCount; ++i) {
         buttons[i] = ButtonRect{ buttonCol, nextY0, buttonCol + buttonW - 1, nextY0 + buttonH - 1 };
@@ -308,16 +179,9 @@ void BuildButtonMenu(std::vector<unsigned char>& grid, int cols, int rows,
     }
     outButtons = buttons;
 
-    // Теперь у нас есть реальные координаты — считаем bbox контента
-    // (рамка заголовка, если есть, объединённая со всеми кнопками) и
-    // рисуем атмосферу вокруг него. bbox использует именно outTitleBox
-    // (с отступом+рамкой), а не голый текст outTitle — иначе атмосфера
-    // подумает, что контент уже кончился там, где на самом деле ещё
-    // стоит новая рамка вокруг CELL, и залезет на неё пеплом/трещиной.
-    // Вызывается ДО DrawBox() кнопок специально: если декор всё же на
-    // пару клеток заденет их зону (не должен благодаря отступам внутри
-    // DrawDarkFantasyAtmosphere, но на экстремально малых разрешениях
-    // подстраховка не помешает), кнопки перекроют его сверху.
+    // Draw the atmosphere around the content bbox (title frame unioned with the buttons, including
+    // their padding and frame). It is drawn before the buttons so they overwrite any decoration
+    // that still reaches them on tiny windows.
     AtmosphereBounds contentBounds;
     contentBounds.x0 = hasTitle ? std::min(outTitleBox.x0, buttons.front().x0) : buttons.front().x0;
     contentBounds.y0 = hasTitle ? outTitleBox.y0 : buttons.front().y0;
@@ -325,9 +189,6 @@ void BuildButtonMenu(std::vector<unsigned char>& grid, int cols, int rows,
     contentBounds.y1 = buttons.back().y1;
     DrawDarkFantasyAtmosphere(grid, cols, rows, seed, pauseMenu, contentBounds, atmosphereVariant);
 
-    // Рамка заголовка — та же DrawBox, что и у кнопок (одинаковая рваная
-    // dark-fantasy линия, тот же hover-акцент), рисуется ДО текста CELL
-    // по тому же принципу, что и у кнопок (рамка сначала, буквы поверх).
     if (hasTitle) {
         DrawBox(grid, cols, rows, outTitleBox.x0, outTitleBox.y0, outTitleBox.x1, outTitleBox.y1,
                 buttonBorderThickness, titleHovered, seed + 2000);
@@ -346,9 +207,8 @@ void BuildButtonMenu(std::vector<unsigned char>& grid, int cols, int rows,
         centerBigText(buttons[i], buttonTexts[(size_t)i]);
     }
 
-    // CELL рисуется ПОСЛЕ кнопок. Поэтому при третьем клике свисающая
-    // надпись может спокойно лежать поверх START, а после пятого клика
-    // падающее название остаётся поверх всех элементов меню.
+    // The title is drawn after the buttons: on the third click the sagging text may lie over the
+    // first button, and after the fifth the falling title stays on top of every menu element.
     if (hasTitle && !skipTitleDraw) {
         if (titleState) {
             DrawBrokenTitle(grid, cols, rows, title, titleCol, titleRow, titleScale, *titleState);
@@ -358,50 +218,10 @@ void BuildButtonMenu(std::vector<unsigned char>& grid, int cols, int rows,
     }
 }
 
-// Стартовый экран: заголовок "CELL" + кнопки NEW GAME/CONTINUE/SETTINGS/
-// EXIT. EXIT здесь — единственное место, где допустимо реально закрыть
-// приложение (см. main.cpp: PendingAction::QUIT_APP запускается только
-// отсюда). NEW GAME сразу генерирует новый случайный лабиринт и
-// начинает игру; CONTINUE открывает AppState::CONTINUE_SELECT — экран
-// выбора одного из 3 слотов сохранения (см. SlotMenuLayout/
-// BuildContinueMenu() ниже). SETTINGS открывает AppState::SETTINGS (см.
-// main.cpp) — экран с одной настройкой (чувствительность камеры), см.
-// BuildSettingsMenu() ниже.
-// titleHovered — курсор сейчас над рамкой CELL (см. main.cpp) — включает
-// тот же hover-акцент рамки, что и у кнопок.
-// variantIndex — какая из kAtmosphereVariantCount композиций атмосферы
-// используется (см. AtmosphereVariant/GetAtmosphereVariant/
-// PickAtmosphereVariant выше). Выбирается ОДИН РАЗ в main.cpp в момент
-// входа в AppState::MENU (не каждый кадр!) и передаётся сюда неизменным
-// на всё время, пока меню открыто — иначе композиция "плавала" бы при
-// каждом пересчёте раскладки (hover, ресайз окна).
-//
-// Item 4 (review): cache the static part of the layout, only redraw the
-// title.
-//
-// While the CELL title is mid-animation, main.cpp marks the layout dirty
-// and calls this EVERY frame (see menuLayoutDirty in main.cpp) — but only
-// the title glyphs actually change frame to frame; the dark-fantasy
-// atmosphere pattern, the button frames, and the button text are 100%
-// determined by (cols, rows, selection, seed, titleHovered, variantIndex)
-// and don't need to be recomputed at all as long as none of those changed.
-// Previously BuildButtonMenu() re-ran ALL of that (procedural atmosphere
-// generation, several DrawBox() calls, DrawBigText() for every button)
-// every single frame just to get a differently-postured "CELL" on top.
-//
-// So: build the "base" grid ONCE per distinct (cols, rows, selection,
-// seed, titleHovered, variantIndex) signature, with the title glyphs left
-// out entirely (BuildButtonMenu(..., skipTitleDraw=true)), and cache it in
-// static storage. Every call then just copies that cached base into *out
-// (a plain buffer copy — cheap, and allocation-free once out.grid's
-// capacity has stabilized, since vector::operator= reuses existing
-// capacity when it's sufficient) and draws only the title glyphs on top,
-// which is the one part that's actually supposed to change every frame.
-//
-// out is taken by reference (not returned by value) specifically so its
-// std::vector<unsigned char> grid buffer persists and keeps its capacity
-// across calls from main.cpp's persistently-stored menuLayout — the same
-// zero-allocation-in-steady-state reasoning as Item 1's render() buffers.
+// The start screen: CELL title with NEW GAME / CONTINUE / SETTINGS / EXIT. variantIndex is picked
+// once on entering MENU so the composition does not drift on relayout. The base grid (atmosphere,
+// buttons) is cached per (cols, rows, selection, seed, titleHovered, variantIndex) in static
+// storage (single instance, not thread-safe); each call draws only the title on a copy.
 void Build(Layout& out, int cols, int rows, int selection, int seed,
                           const TitleBreakupState* titleState,
                           bool titleHovered,
@@ -421,7 +241,8 @@ void Build(Layout& out, int cols, int rows, int selection, int seed,
         BuildButtonMenu(s_baseGrid, cols, rows, selection, seed,
                          "CELL", { "NEW GAME", "CONTINUE", "SETTINGS", "EXIT" }, buttons,
                          s_baseTitleRect, s_baseTitleBoxRect, nullptr, false, titleHovered,
-                         variantIndex, /*skipTitleDraw=*/true);
+                         variantIndex, /*skipTitleDraw=*/true, /*buttonScale=*/1.0f,
+                         /*leftAligned=*/true);
         s_baseNewGame  = buttons[0];
         s_baseContinue = buttons[1];
         s_baseSettings = buttons[2];
@@ -432,8 +253,6 @@ void Build(Layout& out, int cols, int rows, int selection, int seed,
         s_cacheValid = true;
     }
 
-    // Reuses out.grid's existing capacity when it's already the right size
-    // (steady-state: no allocation here at all).
     out.grid = s_baseGrid;
     out.newGameButton  = s_baseNewGame;
     out.continueButton = s_baseContinue;
@@ -444,8 +263,6 @@ void Build(Layout& out, int cols, int rows, int selection, int seed,
 
     if (cols <= 0 || rows <= 0) return;
 
-    // Only the title glyphs are drawn fresh every call — everything else
-    // above came from the cache.
     const float baseScale = ComputeMenuBaseScale(rows);
     const float titleScale = baseScale * 1.5f;
     if (titleState) {
@@ -455,19 +272,8 @@ void Build(Layout& out, int cols, int rows, int selection, int seed,
     }
 }
 
-// Меню паузы (по ESC во время игры, см. main.cpp): БЕЗ заголовка (ни
-// текстом, ни крупным dot-matrix шрифтом) — только кнопки RESUME/SETTINGS/
-// MENU и декоративная dark-fantasy рамка (DrawDarkFantasyAtmosphere),
-// которая сама заполняет верх композиции руной-сигилой вместо текста.
-// RESUME продолжает игру мгновенно (без затемнения), SAVE открывает
-// AppState::SAVE_SELECT (выбор слота для записи, см. SlotMenuLayout/
-// BuildSaveMenu() ниже), SETTINGS открывает AppState::SETTINGS (см.
-// main.cpp), MENU уводит на стартовый экран через обычное затемнение
-// (PendingAction::RETURN_TO_MENU) — само приложение при этом НЕ
-// закрывается, в отличие от EXIT в Build() выше.
-// variantIndex — см. комментарий у Build() выше; выбирается один раз в
-// main.cpp в момент входа в AppState::PAUSED, отдельно от menuVariant
-// стартового меню (свой счётчик входов — pauseOpenCount).
+// The pause menu: no title, a rune sigil fills the frame top. variantIndex is picked once on
+// entering PAUSED (own counter, pauseOpenCount).
 PauseLayout BuildPauseMenu(int cols, int rows, int selection, int seed,
                                     int variantIndex) {
     PauseLayout out;
@@ -484,15 +290,9 @@ PauseLayout BuildPauseMenu(int cols, int rows, int selection, int seed,
     return out;
 }
 
-// Общая часть BuildContinueMenu()/BuildSaveMenu() ниже — оба экрана
-// отличаются только заголовком ("LOAD"/"SAVE"), сама разметка "3 слота +
-// BACK" одинакова. Подписи слотов (slotLabels) готовит вызывающий код
-// (Application.cpp — имя, которое ввёл игрок, либо "EMPTY"/"SLOT", см.
-// комментарий у SlotMenuLayout в MenuLayouts.h) — здесь только вёрстка.
-// buttonScale=kCompactScale (~20%) (см. BuildButtonMenu() выше) — слоты заметно
-// компактнее кнопок главного меню/паузы.
-// (internal linkage — не объявлена в MenuLayouts.h, только вспомогательная
-// для BuildContinueMenu()/BuildSaveMenu() ниже в этом же файле)
+// Shared by the Continue/Save/NewGame menus: an identical "3 slots + BACK" layout differing only in
+// the title. The caller prepares the labels; kCompactScale makes the buttons smaller than on the
+// main menu.
 static SlotMenuLayout BuildSlotMenu(int cols, int rows, int selection, int seed,
                               const char* title,
                               const std::string slotLabels[3],
@@ -521,10 +321,8 @@ static SlotMenuLayout BuildSlotMenu(int cols, int rows, int selection, int seed,
     return out;
 }
 
-// Экран "CONTINUE" (загрузка) — см. BuildSlotMenu() выше. Пустой слот
-// НЕ кликабелен (нечего загружать) — эту часть решает вызывающий код,
-// Application.cpp, по SlotMenuLayout::slotFilled, сама раскладка только
-// сообщает факт.
+// The CONTINUE (load) screen, see BuildSlotMenu(). An empty slot is not clickable; the caller
+// decides that from SlotMenuLayout::slotFilled, the layout only reports it.
 SlotMenuLayout BuildContinueMenu(int cols, int rows, int selection, int seed,
                                   const std::string slotLabels[3],
                                   const bool slotFilled[3],
@@ -532,12 +330,6 @@ SlotMenuLayout BuildContinueMenu(int cols, int rows, int selection, int seed,
     return BuildSlotMenu(cols, rows, selection, seed, "LOAD", slotLabels, slotFilled, variantIndex);
 }
 
-// Экран "SAVE" (запись) — см. BuildSlotMenu() выше. В отличие от
-// CONTINUE, здесь кликабельны ВСЕ слоты, включая пустые — запись в
-// пустой слот сразу открывает ввод имени (AppState::SAVE_NAME_ENTRY,
-// см. BuildNameEntryMenu() ниже), а запись в занятый вызывающий код
-// (Application.cpp) должен сначала подтвердить через BuildConfirmMenu()
-// ниже (AppState::SAVE_CONFIRM).
 SlotMenuLayout BuildSaveMenu(int cols, int rows, int selection, int seed,
                               const std::string slotLabels[3],
                               const bool slotFilled[3],
@@ -545,13 +337,15 @@ SlotMenuLayout BuildSaveMenu(int cols, int rows, int selection, int seed,
     return BuildSlotMenu(cols, rows, selection, seed, "SAVE", slotLabels, slotFilled, variantIndex);
 }
 
-// Экран подтверждения перезаписи (см. ConfirmLayout в MenuLayouts.h) —
-// в отличие от главного меню/паузы/слотов, НЕ использует BuildButtonMenu()
-// (тот рисует ОДИН заголовок гигантским шрифтом — целая фраза-
-// предупреждение так не влезла бы ни по ширине, ни стилистически).
-// Вместо этого сообщение рисуется построчно маленьким шрифтом (тем же
-// ShrinkTextScale(0.85), что и у кнопок слотов — единый стиль), а YES/NO
-// собраны вручную под ним, в одной общей атмосферной рамке.
+SlotMenuLayout BuildNewGameMenu(int cols, int rows, int selection, int seed,
+                                 const std::string slotLabels[3],
+                                 const bool slotFilled[3],
+                                 int variantIndex) {
+    return BuildSlotMenu(cols, rows, selection, seed, "NEW", slotLabels, slotFilled, variantIndex);
+}
+
+// Overwrite confirmation: does not use BuildButtonMenu(), whose giant-font title cannot hold a
+// warning phrase. The message is drawn in a small font with YES/NO below it in one shared frame.
 ConfirmLayout BuildConfirmMenu(int cols, int rows, int selection, int seed,
                                 const std::vector<std::string>& messageLines,
                                 int variantIndex) {
@@ -561,7 +355,6 @@ ConfirmLayout BuildConfirmMenu(int cols, int rows, int selection, int seed,
 
     const float baseScale = ComputeMenuBaseScale(rows);
 
-    // ---- Блок сообщения ----
     const float messageScale = ShrinkTextScale(baseScale * 0.5f, kCompactScale);
     const int messageLineH = BigGlyphHeight(messageScale);
     const int messageLineGap = std::max(1, ComputeFinalRes(messageScale));
@@ -578,9 +371,8 @@ ConfirmLayout BuildConfirmMenu(int cols, int rows, int selection, int seed,
     const int msgBoxW = messageBlockW + msgInnerPadding * 2 + msgBorderThickness * 2;
     const int msgBoxH = messageBlockH + msgInnerPadding * 2 + msgBorderThickness * 2;
 
-    // ---- Кнопки YES/NO — та же арифметика, что и в BuildButtonMenu()
-    // (тот же buttonScale=kCompactScale (~20%)), но собрана здесь вручную, чтобы блок
-    // сообщения и кнопки легли в ОДНУ общую атмосферную рамку ----
+    // YES/NO buttons: the same arithmetic as BuildButtonMenu() (buttonScale = kCompactScale),
+    // assembled manually so the message and the buttons share one atmosphere frame.
     const int buttonBorderThickness = 2;
     const int buttonInnerPadding = 1;
     const float buttonTextScale = ShrinkTextScale(baseScale * 0.5f, kCompactScale);
@@ -648,15 +440,12 @@ ConfirmLayout BuildConfirmMenu(int cols, int rows, int selection, int seed,
     return out;
 }
 
-// Экран ввода имени сохранения (см. NameEntryLayout в MenuLayouts.h) —
-// заголовок "NAME" обычного (крупного) размера, под ним — уже набранные
-// буквы плюс подчёркивания-плейсхолдеры на оставшиеся maxLen символов
-// (см. BigUnderscore() в BigFont.cpp), снизу — BACK (отмена; подтверждение
-// самого имени — клавишей ENTER, целиком в Application.cpp, тут только
-// картинка).
+// The name entry screen: a regular (large) "NAME" title, below it the typed letters plus underscore
+// placeholders up to maxLen, then OK and BACK. Confirming with ENTER is handled entirely in
+// Application.cpp; this is only the picture.
 NameEntryLayout BuildNameEntryMenu(int cols, int rows, int seed,
                                     const std::string& currentName, int maxLen,
-                                    bool backHovered,
+                                    bool backHovered, bool confirmHovered,
                                     int variantIndex) {
     NameEntryLayout out;
     out.grid.assign((size_t)std::max(0, cols) * std::max(0, rows), 0);
@@ -664,44 +453,44 @@ NameEntryLayout BuildNameEntryMenu(int cols, int rows, int seed,
 
     const float baseScale = ComputeMenuBaseScale(rows);
 
-    // ---- "TITLE" — та же школа заголовка, что SAVE/LOAD (см.
-    // BuildButtonMenu()), в такой же рамке вокруг него — раньше заголовок
-    // этого экрана рисовался БЕЗ рамки, теперь единый стиль со всеми
-    // остальными титулами. Уменьшен на kCompactScale (~20%), как и весь
-    // остальной компактный экран (слоты/подтверждение/тут).
     const std::string title = "NAME";
     const float titleScale = ShrinkTextScale(baseScale * 1.5f, kCompactScale);
     const int titleTextW = BigTextWidth(title, titleScale);
     const int titleTextH = BigGlyphHeight(titleScale);
 
     const int titleBorderThickness = 2;
-    const int titleInnerPadding = 2; // тот же отступ, что и у SAVE/LOAD (см. BuildButtonMenu())
+    const int titleInnerPadding = 2;
     const int titleBoxW = titleTextW + titleInnerPadding * 2 + titleBorderThickness * 2;
     const int titleBoxH = titleTextH + titleInnerPadding * 2 + titleBorderThickness * 2;
 
-    // ---- Набранное имя, с подчёркиваниями на месте ещё не введённых
-    // букв ("AB___" из maxLen=5) — крупнее кнопок, но заметно скромнее
-    // титула, чтобы взгляд сразу шёл по иерархии TITLE -> ввод -> BACK ----
+    // The typed name, with underscores for the letters not typed yet ("AB___" for maxLen = 5):
+    // larger than the buttons but smaller than the title, so the eye follows TITLE -> input ->
+    // buttons.
     std::string displayName = currentName;
     while ((int)displayName.size() < maxLen) displayName += '_';
     const float nameScale = ShrinkTextScale(baseScale * 0.9f, kCompactScale);
     const int nameW = BigTextWidth(displayName, nameScale);
     const int nameH = BigGlyphHeight(nameScale);
 
-    // ---- BACK — тот же стиль/размер, что и везде (buttonScale=kCompactScale,
-    // как у слотов/YES-NO) ----
     const int buttonBorderThickness = 2;
     const int buttonInnerPadding = 1;
     const float buttonTextScale = ShrinkTextScale(baseScale * 0.5f, kCompactScale);
-    const std::string backText = "BACK";
-    const int buttonTextAreaW = BigTextWidth(backText, buttonTextScale);
+    const std::vector<std::string> buttonTexts = { "OK", "BACK" };
+
+    int buttonTextAreaW = 0;
+    for (const std::string& t : buttonTexts) {
+        buttonTextAreaW = std::max(buttonTextAreaW, BigTextWidth(t, buttonTextScale));
+    }
     const int buttonTextAreaH = BigGlyphHeight(buttonTextScale);
     const int buttonW = buttonTextAreaW + buttonInnerPadding * 2 + buttonBorderThickness * 2;
     const int buttonH = buttonTextAreaH + buttonInnerPadding * 2 + buttonBorderThickness * 2;
+    const int buttonGap = 3;
+    const int buttonCount = (int)buttonTexts.size();
 
     const int titleToNameGap = std::max(3, rows / 20);
     const int nameToButtonGap = std::max(3, rows / 20);
-    const int contentHeight = titleBoxH + titleToNameGap + nameH + nameToButtonGap + buttonH;
+    const int contentHeight = titleBoxH + titleToNameGap + nameH + nameToButtonGap +
+        buttonCount * buttonH + std::max(0, buttonCount - 1) * buttonGap;
     const int contentTop = std::max(1, (rows - contentHeight) / 2);
 
     const int titleBoxCol = std::max(0, (cols - titleBoxW) / 2);
@@ -718,14 +507,20 @@ NameEntryLayout BuildNameEntryMenu(int cols, int rows, int seed,
     const ButtonRect nameRect{ nameCol, nameRow, nameCol + std::max(0, nameW - 1), nameRow + std::max(0, nameH - 1) };
 
     const int buttonCol = std::max(0, (cols - buttonW) / 2);
-    const int buttonRow = nameRect.y1 + 1 + nameToButtonGap;
-    out.backButton = ButtonRect{ buttonCol, buttonRow, buttonCol + buttonW - 1, buttonRow + buttonH - 1 };
+    std::vector<ButtonRect> buttons(buttonCount);
+    int nextY0 = nameRect.y1 + 1 + nameToButtonGap;
+    for (int i = 0; i < buttonCount; ++i) {
+        buttons[i] = ButtonRect{ buttonCol, nextY0, buttonCol + buttonW - 1, nextY0 + buttonH - 1 };
+        nextY0 = buttons[i].y1 + 1 + buttonGap;
+    }
+    out.confirmButton = buttons[0];
+    out.backButton    = buttons[1];
 
     AtmosphereBounds contentBounds;
-    contentBounds.x0 = std::min({ titleBox.x0, nameRect.x0, out.backButton.x0 });
+    contentBounds.x0 = std::min({ titleBox.x0, nameRect.x0, buttons.front().x0 });
     contentBounds.y0 = titleBox.y0;
-    contentBounds.x1 = std::max({ titleBox.x1, nameRect.x1, out.backButton.x1 });
-    contentBounds.y1 = out.backButton.y1;
+    contentBounds.x1 = std::max({ titleBox.x1, nameRect.x1, buttons.front().x1 });
+    contentBounds.y1 = buttons.back().y1;
     DrawDarkFantasyAtmosphere(out.grid, cols, rows, seed, /*pauseMenu=*/true, contentBounds, variantIndex);
 
     DrawBox(out.grid, cols, rows, titleBox.x0, titleBox.y0, titleBox.x1, titleBox.y1,
@@ -733,44 +528,34 @@ NameEntryLayout BuildNameEntryMenu(int cols, int rows, int seed,
     DrawBigText(out.grid, cols, rows, title, titleTextRect.x0, titleTextRect.y0, titleScale, seed + 4000);
     DrawBigText(out.grid, cols, rows, displayName, nameRect.x0, nameRect.y0, nameScale, seed + 5000);
 
-    DrawBox(out.grid, cols, rows, out.backButton.x0, out.backButton.y0, out.backButton.x1, out.backButton.y1,
-            buttonBorderThickness, backHovered, seed);
-    const int backTextCol = out.backButton.x0 + (buttonW - buttonTextAreaW) / 2;
-    const int backTextRow = out.backButton.y0 + (buttonH - buttonTextAreaH) / 2;
-    DrawBigText(out.grid, cols, rows, backText, backTextCol, backTextRow, buttonTextScale, seed + 1000);
+    const bool buttonHovered[2] = { confirmHovered, backHovered };
+    for (int i = 0; i < buttonCount; ++i) {
+        DrawBox(out.grid, cols, rows, buttons[i].x0, buttons[i].y0, buttons[i].x1, buttons[i].y1,
+                buttonBorderThickness, buttonHovered[i], seed + i);
+        const int textW = BigTextWidth(buttonTexts[(size_t)i], buttonTextScale);
+        const int textCol = buttons[i].x0 + (buttonW - textW) / 2;
+        const int textRow = buttons[i].y0 + (buttonH - buttonTextAreaH) / 2;
+        DrawBigText(out.grid, cols, rows, buttonTexts[(size_t)i], textCol, textRow, buttonTextScale, seed + 1000 + i);
+    }
 
     return out;
 }
 
-// ================================================================
-// Экран настроек (SETTINGS) — открывается кнопкой SETTINGS и из
-// главного меню, и из паузы (main.cpp запоминает, куда вернуться, в
-// settingsReturnState). БЕЗ заголовка "SETTINGS" (сам факт, что мы на
-// этом экране, и так понятен по кнопке, которой сюда попали — лишний
-// текст только отнимает место) — сразу список настроек. Пока в списке
-// одна строка: "SENSITIVITY" слева (обычная подпись, БЕЗ своей рамки —
-// рамку получает только сам элемент управления, не название) и рядом
-// справа от неё framed-полоса с ASCII-бегунком чувствительности камеры.
-// Будущие настройки добавляются той же схемой — ещё одна строка на
-// том же leftMargin, ниже.
-// Кнопка BACK — единственный элемент, что остаётся отдельно и по
-// центру внизу, ПО-ПРЕЖНЕМУ через собственную рамку (DrawBox), как и
-// остальные кнопки меню — визуально она "кнопка", а не "поле настройки".
-//
-// sensitivity01 — текущее значение чувствительности, УЖЕ приведённое к
-// диапазону 0..1 (см. main.cpp: (sens - min) / (max - min)); эта функция
-// ничего не знает про физические единицы чувствительности камеры, только
-// про положение бегунка.
-// backHovered/sliderHovered — курсор сейчас над кнопкой BACK / над
-// рамкой бегунка (см. main.cpp), тот же hover-акцент, что и у обычных
-// кнопок меню.
+// The settings screen (from the main menu and from pause): no title; rows SENSITIVITY, SHARPNESS,
+// MUSIC, MASTER (sliders), COLOR, LENS (checkboxes) start at one shared column; only controls are
+// framed, BACK is centered at the bottom. Slider values are already 0..1: this function knows no
+// physical units.
 SettingsLayout BuildSettingsMenu(int cols, int rows, int seed,
                                           float sensitivity01,
                                           float sharpness01,
                                           int sharpnessValue,
+                                          float music01,
+                                          float master01,
                                           bool backHovered,
                                           bool sliderHovered,
                                           bool sharpnessSliderHovered,
+                                          bool musicSliderHovered,
+                                          bool masterSliderHovered,
                                           bool colorEnabled,
                                           bool colorCheckboxHovered,
                                           bool lensEnabled,
@@ -781,42 +566,45 @@ SettingsLayout BuildSettingsMenu(int cols, int rows, int seed,
     out.backButton = ButtonRect{};
     out.sliderPanel = ButtonRect{};
     out.sharpnessSliderPanel = ButtonRect{};
+    out.musicSliderPanel = ButtonRect{};
+    out.masterSliderPanel = ButtonRect{};
 
     if (cols <= 0 || rows <= 0) return out;
 
     sensitivity01 = std::clamp(sensitivity01, 0.0f, 1.0f);
     sharpness01 = std::clamp(sharpness01, 0.0f, 1.0f);
+    music01 = std::clamp(music01, 0.0f, 1.0f);
+    master01 = std::clamp(master01, 0.0f, 1.0f);
 
-    const bool pauseMenu = true; // тот же компактный стиль атмосферы, что у паузы (без факела снизу)
+    const bool pauseMenu = true; // the same compact atmosphere style as pause (no torch at the bottom)
 
     const float baseScale = ComputeMenuBaseScale(rows);
-    const float smallScale = baseScale * 0.5f; // тот же масштаб, что и у текста кнопок
+    const float smallScale = baseScale * 0.5f;
 
     const int borderThickness = 2;
     const int innerPadding = 1;
 
-    // ---- Отступы списка настроек от краёв экрана: не вплотную, но и не
-    // по центру — левый верхний угол с небольшим полем. ----
     const int topMargin = std::max(6, rows / 14);
     const int leftMargin = std::max(6, cols / 18);
 
-    // ---- Строка "SENSITIVITY": подпись слева + рамка бегунка справа ----
     const std::string sliderLabel = "SENSITIVITY";
     const int labelW = BigTextWidth(sliderLabel, smallScale);
     const int labelH = BigGlyphHeight(smallScale);
 
-    // УЛУЧШЕНИЕ ("каждый ползунок/чекбокс должен быть на одном уровне
-    // с другими — SHARPNESS ровно под SENSITIVITY, LENS ровно под
-    // COLOR") — раньше каждая строка сама считала, где у неё начинается
-    // рамка/чекбокс (labelCol + СВОЯ ширина подписи + gap), и так как
-    // "SENSITIVITY"/"SHARPNESS"/"COLOR"/"LENS" разной длины, элементы
-    // управления оказывались на разных X. Теперь все подписи считаются
-    // здесь же, ЗАРАНЕЕ, и все четыре элемента управления стартуют с
-    // ОДНОЙ и той же колонки — по самой широкой подписи (обычно
-    // SENSITIVITY).
+    // All sliders and checkboxes align at one column (SHARPNESS under SENSITIVITY, LENS under
+    // COLOR): the labels are measured up front and every control starts at the column set by the
+    // widest one (usually SENSITIVITY), not after its own label.
     const std::string sharpnessLabel = "SHARPNESS";
     const int sharpnessLabelW = BigTextWidth(sharpnessLabel, smallScale);
     const int sharpnessLabelH = BigGlyphHeight(smallScale);
+
+    const std::string musicLabel = "MUSIC";
+    const int musicLabelW = BigTextWidth(musicLabel, smallScale);
+    const int musicLabelH = BigGlyphHeight(smallScale);
+
+    const std::string masterLabel = "MASTER";
+    const int masterLabelW = BigTextWidth(masterLabel, smallScale);
+    const int masterLabelH = BigGlyphHeight(smallScale);
 
     const std::string colorLabel = "COLOR";
     const int colorLabelW = BigTextWidth(colorLabel, smallScale);
@@ -826,19 +614,13 @@ SettingsLayout BuildSettingsMenu(int cols, int rows, int seed,
     const int lensLabelW = BigTextWidth(lensLabel, smallScale);
     const int lensLabelH = BigGlyphHeight(smallScale);
 
-    // Промежуток между подписью и рамкой бегунка — по ширине экрана, но
-    // не меньше нескольких клеток, чтобы они визуально не слипались.
     const int labelToTrackGap = std::max(3, cols / 40);
 
-    // Общая колонка старта ВСЕХ элементов управления — считается от
-    // самой широкой из четырёх подписей, а не от подписи конкретно этой
-    // строки.
-    const int maxLabelW = std::max({ labelW, sharpnessLabelW, colorLabelW, lensLabelW });
+    // Shared start column for all controls, computed from the widest of all labels, not from this
+    // row's.
+    const int maxLabelW = std::max({ labelW, sharpnessLabelW, musicLabelW, masterLabelW, colorLabelW, lensLabelW });
     const int controlCol0 = leftMargin + maxLabelW + labelToTrackGap;
 
-    // Ширина самой линии бегунка — заметно шире, чем раньше (было
-    // clamp(cols/4, 24, 64)): чем больше клеток, тем плавнее
-    // перетаскивание (больше различимых промежуточных положений).
     const int trackW = std::clamp(cols / 3, 40, 100);
     const int trackH = 1;
 
@@ -849,10 +631,6 @@ SettingsLayout BuildSettingsMenu(int cols, int rows, int seed,
     const int labelCol = leftMargin;
 
     const int trackPanelCol0 = controlCol0;
-    // Рамка бегунка по вертикали центрируется относительно строки подписи
-    // (подпись обычно ниже, чем framed-рамка, — labelH меньше trackPanelH
-    // при мелком масштабе, поэтому центрируем именно так, а не подгоняем
-    // высоты друг под друга).
     const int trackPanelRow0 = labelRow + (labelH - trackPanelH) / 2;
     const int trackPanelRow1 = trackPanelRow0 + trackPanelH - 1;
     const int trackPanelCol1 = trackPanelCol0 + trackPanelW - 1;
@@ -868,23 +646,17 @@ SettingsLayout BuildSettingsMenu(int cols, int rows, int seed,
     out.trackX1 = trackX1;
     out.trackRow = trackRow;
 
-    // ---- Строка "SHARPNESS": ТОЧНО тот же размер виджета, что и у
-    // SENSITIVITY выше (та же trackW, та же высота панели — по прямому
-    // запросу "сделать размером с ползунок чувствительности мыши, как
-    // по длине так и по ширине так и по символам") — просто ещё одной
-    // строкой ниже, и с той же колонки старта (controlCol0 выше — по
-    // прямому запросу "SHARPNESS ровно под SENSITIVITY"). Число текущего
-    // значения рисуется ПОВЕРХ полосы трека, посередине, заметно мельче
-    // подписей (см. kSharpnessValueScaleDivisor ниже) — не увеличивает
-    // габариты самой панели ни на клетку.
-    const int sharpnessRowGap = std::max(2, rows / 30); // тот же промежуток, что и между остальными строками ниже
+    // The value is a 0..100 percentage drawn with PutText(), matching the track's
+    // one-glyph-per-cell font (the big font never fit that thin bar).
+    const std::string sensitivityValueText = std::to_string((int)std::lround(sensitivity01 * 100.0f));
+    const int sensitivityTrackCenterX = (trackX0 + trackX1) / 2;
+    const int sensitivityValueCol = sensitivityTrackCenterX - (int)sensitivityValueText.size() / 2;
+    const int sensitivityValueRow = trackRow;
+
+    const int sharpnessRowGap = std::max(2, rows / 30);
     const int sharpnessLabelRow = labelRow + std::max(labelH, trackPanelH) + sharpnessRowGap;
     const int sharpnessLabelCol = leftMargin;
 
-    // Панель и трек — БУКВАЛЬНО те же trackW/trackPanelW/trackPanelH, что
-    // и у SENSITIVITY (см. их вычисление выше), и та же колонка старта
-    // (controlCol0) — никакого отдельного "ширже под цифры" и никакого
-    // сдвига по X относительно SENSITIVITY больше нет.
     const int sharpnessTrackPanelCol0 = controlCol0;
     const int sharpnessTrackPanelRow0 = sharpnessLabelRow + (sharpnessLabelH - trackPanelH) / 2;
     const int sharpnessTrackPanelRow1 = sharpnessTrackPanelRow0 + trackPanelH - 1;
@@ -902,35 +674,69 @@ SettingsLayout BuildSettingsMenu(int cols, int rows, int seed,
     out.sharpnessTrackX1 = sharpnessTrackX1;
     out.sharpnessTrackRow = sharpnessTrackRow;
 
-    // Число текущего значения — заметно (в 2.5 раза) мельче подписи,
-    // рисуется ПОСЕРЕДИНЕ полосы трека, поверх нарисованных под ним
-    // #/./o (см. отрисовку ниже — рисуется ПОСЛЕ трека, поэтому
-    // перекрывает его в тех клетках, которые занимает). Не влияет на
-    // размер панели — трек по-прежнему нормально перетаскивается по
-    // всей своей длине, включая клетки под числом.
-    const float kSharpnessValueScaleDivisor = 2.5f;
-    const float sharpnessValueScale = smallScale / kSharpnessValueScaleDivisor;
+    // The value (cell size in px) is centered over the track and drawn after it, overlapping the
+    // cells beneath; the panel size and dragging are unaffected.
     const std::string sharpnessValueText = std::to_string(sharpnessValue);
-    const int sharpnessValueW = BigTextWidth(sharpnessValueText, sharpnessValueScale);
-    const int sharpnessValueH = BigGlyphHeight(sharpnessValueScale);
-
     const int sharpnessTrackCenterX = (sharpnessTrackX0 + sharpnessTrackX1) / 2;
-    const int sharpnessValueCol = sharpnessTrackCenterX - sharpnessValueW / 2;
-    const int sharpnessValueRow = sharpnessTrackRow - sharpnessValueH / 2;
+    const int sharpnessValueCol = sharpnessTrackCenterX - (int)sharpnessValueText.size() / 2;
+    const int sharpnessValueRow = sharpnessTrackRow;
 
-    // ---- Строка "COLOR": подпись слева + маленький квадрат-чекбокс
-    // справа, с той же колонки старта, что и остальные элементы
-    // (controlCol0 выше), одной строкой ниже SHARPNESS. Квадрат —
-    // фиксированного небольшого размера (не растягивается на всю
-    // ширину, как бегунок), т.к. это просто булевый переключатель, а не
-    // непрерывное значение. ----
-    const int colorRowGap = std::max(2, rows / 30); // промежуток между строкой SHARPNESS и COLOR
-    const int colorLabelRow = sharpnessLabelRow + std::max(sharpnessLabelH, trackPanelH) + colorRowGap;
+    const int musicRowGap = std::max(2, rows / 30);
+    const int musicLabelRow = sharpnessLabelRow + std::max(sharpnessLabelH, trackPanelH) + musicRowGap;
+    const int musicLabelCol = leftMargin;
+
+    const int musicTrackPanelCol0 = controlCol0;
+    const int musicTrackPanelRow0 = musicLabelRow + (musicLabelH - trackPanelH) / 2;
+    const int musicTrackPanelRow1 = musicTrackPanelRow0 + trackPanelH - 1;
+    const int musicTrackPanelCol1 = musicTrackPanelCol0 + trackPanelW - 1;
+
+    const ButtonRect musicTrackPanel{ musicTrackPanelCol0, musicTrackPanelRow0,
+                                       musicTrackPanelCol1, musicTrackPanelRow1 };
+    out.musicSliderPanel = musicTrackPanel;
+
+    const int musicTrackX0 = musicTrackPanelCol0 + borderThickness + innerPadding;
+    const int musicTrackX1 = musicTrackX0 + trackW - 1;
+    const int musicTrackRow = musicTrackPanelRow0 + borderThickness + innerPadding;
+
+    out.musicTrackX0 = musicTrackX0;
+    out.musicTrackX1 = musicTrackX1;
+    out.musicTrackRow = musicTrackRow;
+
+    const std::string musicValueText = std::to_string((int)std::lround(music01 * 100.0f));
+    const int musicTrackCenterX = (musicTrackX0 + musicTrackX1) / 2;
+    const int musicValueCol = musicTrackCenterX - (int)musicValueText.size() / 2;
+    const int musicValueRow = musicTrackRow;
+
+    const int masterRowGap = std::max(2, rows / 30);
+    const int masterLabelRow = musicLabelRow + std::max(musicLabelH, trackPanelH) + masterRowGap;
+    const int masterLabelCol = leftMargin;
+
+    const int masterTrackPanelCol0 = controlCol0;
+    const int masterTrackPanelRow0 = masterLabelRow + (masterLabelH - trackPanelH) / 2;
+    const int masterTrackPanelRow1 = masterTrackPanelRow0 + trackPanelH - 1;
+    const int masterTrackPanelCol1 = masterTrackPanelCol0 + trackPanelW - 1;
+
+    const ButtonRect masterTrackPanel{ masterTrackPanelCol0, masterTrackPanelRow0,
+                                        masterTrackPanelCol1, masterTrackPanelRow1 };
+    out.masterSliderPanel = masterTrackPanel;
+
+    const int masterTrackX0 = masterTrackPanelCol0 + borderThickness + innerPadding;
+    const int masterTrackX1 = masterTrackX0 + trackW - 1;
+    const int masterTrackRow = masterTrackPanelRow0 + borderThickness + innerPadding;
+
+    out.masterTrackX0 = masterTrackX0;
+    out.masterTrackX1 = masterTrackX1;
+    out.masterTrackRow = masterTrackRow;
+
+    const std::string masterValueText = std::to_string((int)std::lround(master01 * 100.0f));
+    const int masterTrackCenterX = (masterTrackX0 + masterTrackX1) / 2;
+    const int masterValueCol = masterTrackCenterX - (int)masterValueText.size() / 2;
+    const int masterValueRow = masterTrackRow;
+
+    const int colorRowGap = std::max(2, rows / 30);
+    const int colorLabelRow = masterLabelRow + std::max(masterLabelH, trackPanelH) + colorRowGap;
     const int colorLabelCol = leftMargin;
 
-    // Квадрат чекбокса: внутренняя область ровно 1x1 клетка (сам
-    // "флажок"), плюс рамка borderThickness с каждой стороны — тот же
-    // визуальный язык framed-панелей, что и у бегунка/кнопок.
     const int checkboxInner = 1;
     const int checkboxSize = checkboxInner + innerPadding * 2 + borderThickness * 2;
 
@@ -942,11 +748,7 @@ SettingsLayout BuildSettingsMenu(int cols, int rows, int seed,
     const ButtonRect checkboxRect{ checkboxCol0, checkboxRow0, checkboxCol1, checkboxRow1 };
     out.colorCheckbox = checkboxRect;
 
-    // ---- Строка "LENS": тот же паттерн, что и COLOR выше, ещё одной
-    // строкой ниже (не "FISHEYE" по ТЗ — линза уместнее вписывается в
-    // общий стиль подписей COLOR/SENSITIVITY), с той же колонки старта
-    // (controlCol0) — по прямому запросу "LENS ровно под COLOR". ----
-    const int lensRowGap = std::max(2, rows / 30); // тот же промежуток, что между SENSITIVITY и COLOR
+    const int lensRowGap = std::max(2, rows / 30);
     const int lensLabelRow = colorLabelRow + std::max(colorLabelH, checkboxSize) + lensRowGap;
     const int lensLabelCol = leftMargin;
 
@@ -958,9 +760,8 @@ SettingsLayout BuildSettingsMenu(int cols, int rows, int seed,
     const ButtonRect lensCheckboxRect{ lensCheckboxCol0, lensCheckboxRow0, lensCheckboxCol1, lensCheckboxRow1 };
     out.lensCheckbox = lensCheckboxRect;
 
-    // ---- Кнопка BACK — по центру внизу, НЕ зависит от раскладки строки
-    // выше (свой независимый вертикальный якорь), чтобы при добавлении
-    // новых строк настроек в будущем BACK не "прыгала" каждый раз. ----
+    // BACK: centered at the bottom with its own vertical anchor, independent of the rows above, so
+    // it does not jump when a settings row is added.
     const std::string backText = "BACK";
     const int backTextW = BigTextWidth(backText, smallScale);
     const int backTextH = BigGlyphHeight(smallScale);
@@ -968,7 +769,7 @@ SettingsLayout BuildSettingsMenu(int cols, int rows, int seed,
     const int backH = backTextH + innerPadding * 2 + borderThickness * 2;
 
     const int backCol = std::max(0, (cols - backW) / 2);
-    const int minBackRow = std::max({ trackPanelRow1, sharpnessTrackPanelRow1, checkboxRow1, lensCheckboxRow1 }) + 1 + std::max(4, rows / 10);
+    const int minBackRow = std::max({ trackPanelRow1, sharpnessTrackPanelRow1, musicTrackPanelRow1, masterTrackPanelRow1, checkboxRow1, lensCheckboxRow1 }) + 1 + std::max(4, rows / 10);
     const int preferredBackRow = (int)std::lround(rows * 0.70);
     const int backRow0 = std::clamp(preferredBackRow, minBackRow, std::max(minBackRow, rows - backH - 4));
     const int backRow1 = backRow0 + backH - 1;
@@ -976,25 +777,18 @@ SettingsLayout BuildSettingsMenu(int cols, int rows, int seed,
     const ButtonRect backRect{ backCol, backRow0, backCol + backW - 1, backRow1 };
     out.backButton = backRect;
 
-    // ---- Атмосфера ----
     AtmosphereBounds contentBounds;
     contentBounds.x0 = std::min(labelCol, backRect.x0);
     contentBounds.y0 = labelRow;
-    contentBounds.x1 = std::max({ trackPanel.x1, sharpnessTrackPanel.x1, checkboxRect.x1, lensCheckboxRect.x1, backRect.x1 });
+    contentBounds.x1 = std::max({ trackPanel.x1, sharpnessTrackPanel.x1, musicTrackPanel.x1, masterTrackPanel.x1, checkboxRect.x1, lensCheckboxRect.x1, backRect.x1 });
     contentBounds.y1 = backRect.y1;
     DrawDarkFantasyAtmosphere(out.grid, cols, rows, seed, pauseMenu, contentBounds, variantIndex);
 
-    // ---- Подпись SENSITIVITY — обычный текст, без своей рамки ----
     DrawBigText(out.grid, cols, rows, sliderLabel, labelCol, labelRow, smallScale, seed);
 
-    // ---- Рамка бегунка ----
     DrawBox(out.grid, cols, rows, trackPanel.x0, trackPanel.y0, trackPanel.x1, trackPanel.y1,
             borderThickness, sliderHovered, seed + 3000);
 
-    // Линия бегунка: заполненная часть слева от ручки — GLYPH_HASH,
-    // пустая справа — GLYPH_FLOOR (тот же "пол/пыль", что и в остальном
-    // UI), сама ручка — GLYPH_CIRCLE, тот же символ, что и навершие
-    // факела/рамка круга в остальном атласе — не вводим новых глифов.
     const int handleX = trackX0 + (int)std::lround(sensitivity01 * (float)(trackW - 1));
     for (int x = trackX0; x <= trackX1; ++x) {
         unsigned char g;
@@ -1004,7 +798,8 @@ SettingsLayout BuildSettingsMenu(int cols, int rows, int seed,
         PutGlyph(out.grid, cols, rows, x, trackRow, g);
     }
 
-    // ---- Подпись SHARPNESS + рамка бегунка + число текущего значения ----
+    PutText(out.grid, cols, rows, sensitivityValueCol, sensitivityValueRow, sensitivityValueText);
+
     DrawBigText(out.grid, cols, rows, sharpnessLabel, sharpnessLabelCol, sharpnessLabelRow, smallScale, seed + 9000);
 
     DrawBox(out.grid, cols, rows, sharpnessTrackPanel.x0, sharpnessTrackPanel.y0,
@@ -1020,27 +815,52 @@ SettingsLayout BuildSettingsMenu(int cols, int rows, int seed,
         PutGlyph(out.grid, cols, rows, x, sharpnessTrackRow, g);
     }
 
-    // Число текущего значения (размер ASCII-ячейки в пикселях) —
-    // поверх середины полосы трека, заметно мельче подписи (см.
-    // sharpnessValueScale выше) — "написано, какое число сейчас
-    // выставлено" по запросу, но не увеличивает саму панель.
-    DrawBigText(out.grid, cols, rows, sharpnessValueText, sharpnessValueCol, sharpnessValueRow, sharpnessValueScale, seed + 11000);
+    PutText(out.grid, cols, rows, sharpnessValueCol, sharpnessValueRow, sharpnessValueText);
 
-    // ---- Подпись COLOR + квадрат-чекбокс ----
+    DrawBigText(out.grid, cols, rows, musicLabel, musicLabelCol, musicLabelRow, smallScale, seed + 11000);
+
+    DrawBox(out.grid, cols, rows, musicTrackPanel.x0, musicTrackPanel.y0,
+            musicTrackPanel.x1, musicTrackPanel.y1,
+            borderThickness, musicSliderHovered, seed + 12000);
+
+    const int musicHandleX = musicTrackX0 + (int)std::lround(music01 * (float)(trackW - 1));
+    for (int x = musicTrackX0; x <= musicTrackX1; ++x) {
+        unsigned char g;
+        if (x == musicHandleX)      g = GLYPH_CIRCLE;
+        else if (x < musicHandleX)  g = GLYPH_HASH;
+        else                         g = GLYPH_FLOOR;
+        PutGlyph(out.grid, cols, rows, x, musicTrackRow, g);
+    }
+
+    PutText(out.grid, cols, rows, musicValueCol, musicValueRow, musicValueText);
+
+    DrawBigText(out.grid, cols, rows, masterLabel, masterLabelCol, masterLabelRow, smallScale, seed + 13000);
+
+    DrawBox(out.grid, cols, rows, masterTrackPanel.x0, masterTrackPanel.y0,
+            masterTrackPanel.x1, masterTrackPanel.y1,
+            borderThickness, masterSliderHovered, seed + 14000);
+
+    const int masterHandleX = masterTrackX0 + (int)std::lround(master01 * (float)(trackW - 1));
+    for (int x = masterTrackX0; x <= masterTrackX1; ++x) {
+        unsigned char g;
+        if (x == masterHandleX)      g = GLYPH_CIRCLE;
+        else if (x < masterHandleX)  g = GLYPH_HASH;
+        else                          g = GLYPH_FLOOR;
+        PutGlyph(out.grid, cols, rows, x, masterTrackRow, g);
+    }
+
+    PutText(out.grid, cols, rows, masterValueCol, masterValueRow, masterValueText);
+
     DrawBigText(out.grid, cols, rows, colorLabel, colorLabelCol, colorLabelRow, smallScale, seed + 6000);
 
     DrawBox(out.grid, cols, rows, checkboxRect.x0, checkboxRect.y0, checkboxRect.x1, checkboxRect.y1,
             borderThickness, colorCheckboxHovered, seed + 7000);
 
-    // Внутренняя клетка квадрата: галочка (GLYPH_X — единственный
-    // "крестовидный" символ в наборе, читается как чёткая пометка
-    // внутри маленькой рамки) когда цветной режим включён, иначе пусто.
     const int checkboxCenterX = checkboxRect.x0 + borderThickness + innerPadding;
     const int checkboxCenterY = checkboxRect.y0 + borderThickness + innerPadding;
     PutGlyph(out.grid, cols, rows, checkboxCenterX, checkboxCenterY,
              colorEnabled ? GLYPH_X : GLYPH_SPACE);
 
-    // ---- Подпись LENS + квадрат-чекбокс ----
     DrawBigText(out.grid, cols, rows, lensLabel, lensLabelCol, lensLabelRow, smallScale, seed + 8000);
 
     DrawBox(out.grid, cols, rows, lensCheckboxRect.x0, lensCheckboxRect.y0, lensCheckboxRect.x1, lensCheckboxRect.y1,
@@ -1051,7 +871,6 @@ SettingsLayout BuildSettingsMenu(int cols, int rows, int seed,
     PutGlyph(out.grid, cols, rows, lensCheckboxCenterX, lensCheckboxCenterY,
              lensEnabled ? GLYPH_X : GLYPH_SPACE);
 
-    // ---- Кнопка BACK ----
     DrawBox(out.grid, cols, rows, backRect.x0, backRect.y0, backRect.x1, backRect.y1,
             borderThickness, backHovered, seed + 4000);
     const int backTextCol = backCol + (backW - backTextW) / 2;
@@ -1061,5 +880,50 @@ SettingsLayout BuildSettingsMenu(int cols, int rows, int seed,
     return out;
 }
 
+
+// DrawHudIcons: torch/stone/diary count icons above the stamina bar. Three small square frames in a
+// row, each with an item glyph inside and a number right of its bottom corner; the whole group is
+// centered horizontally.
+void DrawHudIcons(std::vector<unsigned char>& grid, int cols, int rows,
+                   int torchCount, int stoneCount, int diaryCount,
+                   int bottomRow, int seed) {
+    if (cols <= 0 || rows <= 0) return;
+
+    const int boxSize = 3;
+    const int groupGap = 2; // between the three icons
+    const int numberMaxW = 2; // headroom for two-digit numbers (up to 99)
+    const int groupW = boxSize + numberMaxW;
+
+    struct IconDef { unsigned char glyph; int count; };
+    const IconDef icons[3] = {
+        { GLYPH_TORCH_ICON, torchCount },
+        { GLYPH_STONE_ICON, stoneCount },
+        { GLYPH_DIARY_ICON, diaryCount },
+    };
+
+    const int totalW = groupW * 3 + groupGap * 2;
+    int col = std::max(0, (cols - totalW) / 2);
+    const int boxRow0 = std::max(0, bottomRow - boxSize + 1);
+    const int boxRow1 = boxRow0 + boxSize - 1;
+
+    for (int i = 0; i < 3; ++i) {
+        const int boxCol0 = col;
+        const int boxCol1 = boxCol0 + boxSize - 1;
+
+        DrawBox(grid, cols, rows, boxCol0, boxRow0, boxCol1, boxRow1, 1, /*filled=*/false, seed + i * 100);
+        PutGlyph(grid, cols, rows, boxCol0 + boxSize / 2, boxRow0 + boxSize / 2, icons[i].glyph);
+
+        // The number sits beside the frame's bottom corner. The whole reserved area (numberMaxW
+        // cells) is cleared first: grid is a reusable buffer, so a number that got shorter ("12" ->
+        // "9") would otherwise leave an old digit behind.
+        for (int cx = 0; cx < numberMaxW; ++cx) {
+            PutGlyph(grid, cols, rows, boxCol1 + 1 + cx, boxRow1, GLYPH_SPACE);
+        }
+        const std::string countText = std::to_string(std::max(0, icons[i].count));
+        PutText(grid, cols, rows, boxCol1 + 1, boxRow1, countText);
+
+        col += groupW + groupGap;
+    }
+}
 
 } // namespace MainMenu

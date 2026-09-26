@@ -3,10 +3,6 @@
 #include "render/ShaderLoader.h"
 #include "render/ShaderProgram.h"
 
-// Однозаголовочная public-domain библиотека (см. third_party/stb_truetype.h,
-// авторства Sean Barrett — тот же автор, что и у stb_image.h/stb_image_write.h,
-// уже используемых в проекте) — implementation-блок собран только здесь, в
-// одной единице трансляции, тем же приёмом, что и WallTexture.cpp.
 #define STB_TRUETYPE_IMPLEMENTATION
 #include "stb_truetype.h"
 
@@ -15,12 +11,9 @@
 
 bool TextRenderer::create()
 {
-    // ---- 1. Читаем файл шрифта целиком в память ----
-    // VT323 (assets/fonts/VT323-Regular.ttf, OFL-лицензия — см.
-    // assets/fonts/OFL.txt) — моноширинный "CRT-терминал", часть
-    // репозитория Google Fonts. stb_truetype не умеет читать с диска
-    // само, нужен сырой буфер байт всего файла (см. usage example в
-    // самом stb_truetype.h).
+    // 1. Read the font file entirely into memory. VT323 is a monospace "CRT terminal" font from
+    // Google Fonts. stb_truetype cannot read from disk itself, it needs a raw byte buffer of the
+    // whole file.
     const std::string fullPath = AssetPath::Resolve("assets/fonts/VT323-Regular.ttf");
     if (fullPath.empty())
     {
@@ -46,15 +39,10 @@ bool TextRenderer::create()
         return false;
     }
 
-    // ---- 2. Запекаем атлас (простая однопроходная упаковка построчно,
-    // см. stbtt_BakeFontBitmap() в stb_truetype.h — этого достаточно для
-    // одного размера/одного шрифта, полноценный stbtt_PackFontRange с
-    // multi-size паковкой здесь избыточен) ----
-    // Размер в пикселях — заметно больше старого сеточного UI-шрифта
-    // (11px/символ, см. AsciiEffect::kMenuReferenceCellSize) — именно
-    // ради управляемого размера текста и затевался переход на TTF (см.
-    // обсуждение: "текст дневников нужно увеличить", старый шрифт не
-    // умел ничего, кроме фиксированной 1 клетки на символ).
+    // 2. Bake the atlas (a simple single-pass row-by-row packer, stbtt_BakeFontBitmap(): enough for
+    // one size and one font; a full stbtt_PackFontRange with multi-size packing would be overkill).
+    // The pixel size is noticeably larger than the grid UI font (11 px per character): a
+    // controllable text size was the whole point of using TTF.
     m_bakedPixelHeight = 40.0f;
     m_atlasW = 512;
     m_atlasH = 512;
@@ -70,23 +58,20 @@ bool TextRenderer::create()
     );
     if (bakeResult <= 0)
     {
-        // Отрицательный/нулевой результат = не все глифы влезли в атлас
-        // (см. комментарий у stbtt_BakeFontBitmap в stb_truetype.h) —
-        // атлас частично валиден (влезшие глифы запеклись нормально),
-        // поэтому не считаем это фатальной ошибкой инициализации, только
-        // предупреждаем в консоль.
+        // A negative/zero result means not all glyphs fit in the atlas. The atlas is still
+        // partially valid (the glyphs that fit baked fine), so this is not a fatal init error, only
+        // a console warning.
         std::fprintf(stderr, "[TextRenderer] warning: font atlas may be incomplete (bakeResult=%d)\n", bakeResult);
     }
 
-    // ---- 3. Заливаем атлас в GL-текстуру (1 канал — альфа-маска глифов,
-    // читается как .r в text.frag; GL_R8, не устаревший GL_ALPHA из
-    // usage-примера в stb_truetype.h, т.к. это core-профиль 3.3) ----
+    // 3. Upload the atlas as a GL texture (1 channel: a glyph alpha mask read as .r in text.frag;
+    // GL_R8, not the deprecated GL_ALPHA from stb_truetype.h's usage example, since this is core
+    // profile 3.3).
     glGenTextures(1, &m_atlasTexture);
     glBindTexture(GL_TEXTURE_2D, m_atlasTexture);
-    // Тот же баг/фикс, что и у WallTexture.cpp: ширина строки 1 байт/px
-    // не гарантированно кратна 4 (GL_UNPACK_ALIGNMENT по умолчанию),
-    // хотя здесь 512 и так кратно — оставлено для единообразия и на
-    // случай, если m_atlasW когда-нибудь станет не степенью двойки.
+    // Same fix as in WallTexture.cpp: a 1-byte-per-pixel row width is not guaranteed to be a
+    // multiple of 4 (the default GL_UNPACK_ALIGNMENT); 512 already is here, but it stays for
+    // consistency and in case m_atlasW ever is not a power of two.
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, m_atlasW, m_atlasH, 0, GL_RED, GL_UNSIGNED_BYTE, atlasBitmap.data());
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
@@ -95,7 +80,6 @@ bool TextRenderer::create()
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glBindTexture(GL_TEXTURE_2D, 0);
 
-    // ---- 4. Шейдер (см. assets/shaders/text.{vert,frag}) ----
     const std::string vertSrc = ShaderLoader::LoadSource("assets/shaders/text.vert");
     const std::string fragSrc = ShaderLoader::LoadSource("assets/shaders/text.frag");
     GLuint vs = ShaderProgram::CompileShader(GL_VERTEX_SHADER, vertSrc.c_str(), "TextRenderer");
@@ -108,10 +92,6 @@ bool TextRenderer::create()
         m_uniAtlasTex   = glGetUniformLocation(m_program, "fontAtlas");
     }
 
-    // ---- 5. Динамический VAO/VBO под батч квадов — пустой на старте,
-    // реально заполняется/растится в endFrame() по мере надобности (тот
-    // же buffer-growth приём, что и у остальных динамических буферов в
-    // движке — см. AsciiEffect::m_uiOverlayTex рядом с этим же кодом). ----
     glGenVertexArrays(1, &m_vao);
     glGenBuffers(1, &m_vbo);
     glBindVertexArray(m_vao);
@@ -157,7 +137,7 @@ float TextRenderer::textWidth(const std::string& markedUpText, float scale) cons
     float w = 0.0f;
     for (char c : markedUpText)
     {
-        if (c == '~') continue; // разметка испорченного слова — не отображаемый символ
+        if (c == '~') continue; // corrupted-word markup, not a displayed character
         w += charAdvance(c);
     }
     return w * scale;
@@ -165,10 +145,6 @@ float TextRenderer::textWidth(const std::string& markedUpText, float scale) cons
 
 std::vector<std::string> TextRenderer::wrapText(const std::string& raw, float maxWidthPx, float scale) const
 {
-    // Та же логика, что и у старой DungeonScene::WrapDiaryText() (перенос
-    // по пробелам, "~WORD~" — один неразрывный токен), только ширина
-    // считается настоящими пропорциональными продвижениями шрифта
-    // (charAdvance()), а не фиксированными колонками сетки.
     std::vector<std::string> lines;
     std::string currentLine;
     float currentWidth = 0.0f;
@@ -222,17 +198,16 @@ void TextRenderer::appendGlyphRun(const std::string& run, float originX, float b
     for (char c : run)
     {
         const int idx = (unsigned char)c - kFirstChar;
-        if (idx < 0 || idx >= kNumChars) continue; // незнакомый символ — просто пропускаем, курсор не двигаем
+        if (idx < 0 || idx >= kNumChars) continue; // unknown character — skip it, cursor doesn't move
 
         float dummyY = 0.0f;
         stbtt_aligned_quad q;
-        // stbtt_GetBakedQuad сама продвигает localCursorX на xadvance
-        // этого символа — тот же курсор общий на всю строку (см.
-        // комментарий у объявления в .h), поэтому соседние "обычный"/
-        // "испорченный" куски стыкуются без наложения и без зазоров.
+        // stbtt_GetBakedQuad advances localCursorX by this character's xadvance itself: the cursor
+        // is shared across the whole line, so adjacent normal/corrupted chunks join with no overlap
+        // and no gaps.
         stbtt_GetBakedQuad(bc, m_atlasW, m_atlasH, idx, &localCursorX, &dummyY, &q, 1);
 
-        if (c == ' ') continue; // курсор сдвинут, рисовать нечего
+        if (c == ' ') continue; // cursor advanced, nothing to draw
 
         const Vertex v0{ {originX + q.x0 * scale, baselineY + q.y0 * scale}, {q.s0, q.t0}, color, alpha, 0.0f };
         const Vertex v1{ {originX + q.x1 * scale, baselineY + q.y0 * scale}, {q.s1, q.t0}, color, alpha, 0.0f };
@@ -251,10 +226,9 @@ void TextRenderer::appendCorruptRun(const std::string& run, float originX, float
     if (!m_bakedChars || run.empty()) return;
     const stbtt_bakedchar* bc = (const stbtt_bakedchar*)m_bakedChars;
 
-    // Не рисуем реальные буквы вообще — только считаем, сколько места
-    // они бы заняли (те же xadvance, что и в appendGlyphRun выше), и
-    // рисуем один квад той ширины: процедурное "чернильное пятно" вместо
-    // текста (см. text.frag), а не читаемые символы.
+    // No real letters are drawn at all: only the room they would take (the same xadvance as in
+    // appendGlyphRun above), and one quad of that width is drawn, a procedural "ink stain" instead
+    // of text.
     const float startLocal = localCursorX;
     for (char c : run)
     {
@@ -267,13 +241,13 @@ void TextRenderer::appendCorruptRun(const std::string& run, float originX, float
 
     const float x0 = originX + startLocal * scale;
     const float x1 = originX + endLocal * scale;
-    // Приближённые ascent/descent относительно baseline — реальных
-    // метрик шрифта здесь не нужно, пятно не обязано пиксель-в-пиксель
-    // совпадать с высотой букв, только читаться "на месте слова".
+    // Approximate ascent/descent relative to the baseline: real font metrics are not needed, the
+    // stain does not have to match letter height pixel for pixel, only read as "in place of a
+    // word".
     const float y0 = baselineY - 0.80f * m_bakedPixelHeight * scale;
     const float y1 = baselineY + 0.22f * m_bakedPixelHeight * scale;
 
-    const glm::vec3 blotColor = color * 0.6f; // темнее обычного текста — пятно, не замена букв тем же тоном
+    const glm::vec3 blotColor = color * 0.6f;
 
     const Vertex v0{ {x0, y0}, {0.0f, 0.0f}, blotColor, alpha, 1.0f };
     const Vertex v1{ {x1, y0}, {0.0f, 0.0f}, blotColor, alpha, 1.0f };
@@ -293,9 +267,6 @@ void TextRenderer::drawLine(const std::string& markedUpLine, float x, float base
     bool corrupted = false;
     std::string run;
 
-    // Разбираем ~тильды~ на лету, стыкуя "обычные"/"испорченные" куски
-    // одним общим курсором (localCursorX) — см. комментарий у
-    // appendGlyphRun() в .h.
     for (char c : markedUpLine)
     {
         if (c == '~')
@@ -339,9 +310,8 @@ void TextRenderer::endFrame()
     const GLsizeiptr neededBytes = (GLsizeiptr)(m_batch.size() * sizeof(Vertex));
     if (neededBytes > m_vboCapacityBytes)
     {
-        // Растим буфер с запасом (x1.5), а не ровно под текущий кадр —
-        // чтобы не перевыделять VBO каждый раз, когда следующий открытый
-        // дневник чуть длиннее предыдущего.
+        // Grow the buffer with headroom (x1.5), not exactly to fit the current frame: it avoids
+        // reallocating the VBO every time the next opened diary is slightly longer than the last.
         m_vboCapacityBytes = (GLsizeiptr)((double)neededBytes * 1.5);
         glBufferData(GL_ARRAY_BUFFER, m_vboCapacityBytes, nullptr, GL_DYNAMIC_DRAW);
     }
@@ -353,9 +323,8 @@ void TextRenderer::endFrame()
     glBindTexture(GL_TEXTURE_2D, m_atlasTexture);
     if (m_uniAtlasTex >= 0) glUniform1i(m_uniAtlasTex, 0);
 
-    // Текст — плоский экранный оверлей поверх уже готового кадра (тот же
-    // принцип, что и у Compass, см. большой комментарий в TextRenderer.h)
-    // — глубина ему не нужна и не должна ни от чего зависеть.
+    // Text is a flat screen overlay on top of the already finished frame (like Compass): no depth
+    // is needed, and it must not depend on any depth state.
     const GLboolean depthWasEnabled = glIsEnabled(GL_DEPTH_TEST);
     glDisable(GL_DEPTH_TEST);
     glEnable(GL_BLEND);

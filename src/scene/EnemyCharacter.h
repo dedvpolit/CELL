@@ -5,46 +5,18 @@
 #include <vector>
 #include "render/SkinnedModel.h"
 
-// ============================================================================
-// EnemyCharacter — держит ССЫЛКУ на общую (одну на всех существ,
-// см. DungeonScene::m_enemySharedModel) загруженную SkinnedModel + СВОЮ
-// собственную позицию/поворот в мире + СВОЁ текущее анимационное
-// состояние. НЕ содержит ИИ (погоню, восприятие игрока и т.д.) — это
-// чисто "тело + анимация", та же роль, что у PlayerTorchViewmodel для
-// факела: сначала инфраструктура, поведение — отдельным, следующим шагом.
-//
-// БАГФИКС/ОПТИМИЗАЦИЯ (жалоба "игра жрёт 160-190 МБ ОЗУ"): раньше КАЖДЫЙ
-// EnemyCharacter (dev-манекен + все kEnemyCount настоящих врагов, т.е. 8
-// штук) грузил СВОЙ СОБСТВЕННЫЙ независимый экземпляр SkinnedModel из
-// ОДНОГО И ТОГО ЖЕ файла (the_wrapped.glb) — 8 независимых копий меша и
-// анимационных клипов на CPU, 8 отдельных VAO/VBO/EBO и 8 отдельных
-// диффузных текстур на GPU, хотя все 8 существ визуально идентичны
-// (отличаются только позицией/ИИ-состоянием). Теперь модель грузится
-// РОВНО ОДИН РАЗ (см. DungeonScene::m_enemySharedModel), а каждый
-// EnemyCharacter лишь ссылается на неё через attachSharedModel() —
-// экономит ~7/8 памяти, которую раньше тратил враг, ничего не меняя
-// визуально (SkinnedModel::draw()/sampleAnimation() и так были
-// логически "только для чтения" операциями над общими данными — общий
-// указатель на них ничего не ломает, отдельным остаётся только
-// per-инстансный m_boneMatrices ниже, который и должен быть свой у
-// каждого).
-//
-// Состояния были явно поименованы по названиям клипов в THE WRAPPED
-// (Codyanka, CC0): Idle_Watchful, Walk_Nervous, Run_Frantic, Attack_Lunge,
-// Wall_slam, "Scream.lol". Если у другой модели имена клипов другие —
-// поменять только setClipNames() ниже, остальной код не привязан к
-// конкретным строкам.
-// ============================================================================
+// Body + animation of one creature: a reference to the shared SkinnedModel
+// (DungeonScene::m_enemySharedModel), its own position/rotation and animation state, no AI. All
+// creatures look the same, so mesh, clips and GPU buffers are loaded once; the only per-instance
+// state is m_boneMatrices. Clip names follow THE WRAPPED (Idle_Watchful, Walk_Nervous, Run_Frantic,
+// Attack_Lunge, Wall_slam, Scream); other models only need setClipName().
 class EnemyCharacter {
 public:
-    // Присоединяет уже загруженную ОБЩУЮ модель (см.
-    // DungeonScene::m_enemySharedModel) — сам EnemyCharacter ничего не
-    // грузит и не владеет GPU-ресурсами модели, только держит указатель
-    // на неё. sharedModel == nullptr (модель не удалось загрузить, либо
-    // намеренно ещё не готова) — тогда персонаж просто не рисуется (см.
-    // isLoaded()/draw()), как раньше при неудачном load().
+    // Attaches an already loaded shared model: EnemyCharacter loads nothing and does not own the
+    // model's GPU resources, it just holds a pointer. sharedModel == nullptr (failed to load, or
+    // not ready yet) means the character is simply not drawn (see isLoaded()/draw()).
     void attachSharedModel(const SkinnedModel* sharedModel);
-    void destroy(); // сбрасывает указатель/состояние; GPU-ресурсы САМОЙ модели не трогает (см. выше)
+    void destroy(); // resets the pointer/state; the shared model's GPU resources stay untouched
 
     enum class State {
         Idle,
@@ -55,54 +27,49 @@ public:
         Scream
     };
 
-    // Явное сопоставление состояние -> имя клипа в файле — один раз при
-    // инициализации, чтобы не хардкодить строки внутри update()/draw().
+    // Explicit state -> clip name mapping, set once at init, so update()/draw() do not hardcode
+    // strings.
     void setClipName(State state, const std::string& clipName);
 
-    void setState(State state); // мгновенно — используется setState + update() ниже для плавного блендинга между позами
+    void setState(State state); // instant; used with update() below for smooth pose blending
     void update(float deltaTime);
 
     void setPosition(const glm::vec3& pos) { m_position = pos; }
     void setYawDegrees(float yaw) { m_yawDegrees = yaw; }
     glm::vec3 position() const { return m_position; }
 
-    // uModel/uBoneMatrices — те же имена uniform'ов, что в enemy.vert.
     void draw(GLint uModelLoc, GLint uBoneMatricesLoc) const;
 
     bool isLoaded() const { return m_loaded; }
 
-    // Проброс к текстуре модели (см. SkinnedModel::hasDiffuseTexture()) —
-    // для DungeonScene, чтобы забиндить перед отрисовкой. Гвард на
-    // m_model==nullptr — до attachSharedModel()/при неудачной загрузке.
+    // Passthrough to the model's texture, for DungeonScene to bind before drawing. Guarded against
+    // m_model == nullptr (before attachSharedModel() or after a failed load).
     GLuint diffuseTexture() const { return m_model ? m_model->diffuseTexture() : 0; }
     bool hasDiffuseTexture() const { return m_model && m_model->hasDiffuseTexture(); }
 
 private:
-    // Указатель на ОБЩУЮ модель (см. большой комментарий в начале файла
-    // и DungeonScene::m_enemySharedModel) — НЕ владеющий, ничего не
-    // освобождает в деструкторе/destroy(). Может быть nullptr (модель не
-    // загружена/не присоединена) — везде ниже это обязано проверяться
-    // через m_loaded ДО разыменования.
+    // Pointer to the shared model (see the class comment): non-owning, frees nothing in the
+    // destructor/destroy(). It can be nullptr (model not loaded/attached), so every use below must
+    // check m_loaded before dereferencing.
     const SkinnedModel* m_model = nullptr;
     bool m_loaded = false;
 
-    std::string m_clipNames[6]; // индекс — тот же порядок, что в enum State
+    std::string m_clipNames[6]; // index matches the State enum order
 
     State m_currentState = State::Idle;
     State m_previousState = State::Idle;
-    float m_stateTime = 0.0f;      // время внутри ТЕКУЩЕГО состояния — для блендинга
+    float m_stateTime = 0.0f;      // time within the current state, for blending
     float m_currentClipTime = 0.0f;
     float m_previousClipTime = 0.0f;
 
     glm::vec3 m_position{ 0.0f };
     float m_yawDegrees = 0.0f;
 
-    // УЛУЧШЕНИЕ ("враг скользит, а не идёт") — см. большой комментарий в
-    // update() (.cpp): для Walk/Run клип двигается по фактически
-    // пройденному расстоянию, а не по реальному времени — нужна позиция
-    // на КОНЕЦ предыдущего кадра, чтобы посчитать дельту.
+    // For Walk/Run the clip advances by the distance actually traveled rather than by real time
+    // (see update() in the .cpp), which needs the position at the end of the previous frame to
+    // compute a delta.
     glm::vec3 m_lastUpdatePosition{ 0.0f };
     bool m_lastUpdatePositionInit = false;
 
-    std::vector<glm::mat4> m_boneMatrices; // переиспользуемый буфер — не аллоцировать каждый кадр
+    std::vector<glm::mat4> m_boneMatrices; // reusable buffer — not allocated every frame
 };

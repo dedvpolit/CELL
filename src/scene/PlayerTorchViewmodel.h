@@ -4,46 +4,16 @@
 #include <vector>
 #include "SceneGeometry.h" // Vertex, AddCylinder, AddSphere
 
-// ============================================================================
-// PlayerTorchViewmodel — факел в левой руке игрока: длинная рукоять +
-// пламя на конце, следует за камерой (как оружие-"viewmodel" в шутерах).
-//
-// АРХИТЕКТУРА (после двух неудачных попыток вручную считать "право"/"верх"
-// из направления взгляда, что дважды приводило к вырождению векторов на
-// экстремальных углах — см. историю правок): геометрия строится ОДИН раз,
-// в init(), напрямую в системе координат КАМЕРЫ (например "0.3 влево,
-// 0.6 вниз, 0.4 вперёд" — фиксированные числа, ничего не пересчитывается
-// каждый кадр). Настоящая мировая позиция/нормаль восстанавливаются уже в
-// шейдере (assets/shaders/scene.vert, uIsViewmodelDraw) через ОБРАТНУЮ
-// матрицу вида — а она всегда корректно определена (view — это твёрдое
-// движение: поворот+перенос, обратное для него существует всегда, в
-// отличие от cross() двух почти параллельных векторов). Раз мы используем
-// ТУ ЖЕ матрицу вида, что и вся остальная сцена, факел автоматически
-// следует за ЛЮБЫМ поворотом камеры — yaw, pitch, покачивание при ходьбе —
-// без единой строчки отдельной анимации и без единого способа "вырождения".
-//
-// Из этого следует приятный побочный эффект: раз сама геометрия в системе
-// координат камеры ПОСТОЯННА между кадрами, VBO/EBO строятся один раз и
-// больше не перезаливаются каждый кадр вообще (в отличие от предыдущей
-// версии) — дешевле и даже проще.
-// ============================================================================
+// The hand torch: a handle with a flame that follows the camera like a shooter viewmodel. Geometry
+// is built once in camera space; scene.vert reconstructs world position/normal via the inverse view
+// matrix (uIsViewmodelDraw), which is always well defined, unlike a cross()-based basis that
+// degenerated at extreme angles. It therefore follows yaw, pitch and bob without extra animation
+// code; the VBO/EBO are never re-uploaded.
 class PlayerTorchViewmodel {
 public:
     void init();
     void destroy();
 
-    // Мировая позиция пламени в ЭТОМ кадре — нужна для playerLightPos в
-    // DungeonScene::render() (сам факел неподвижен в системе координат
-    // камеры, но в МИРОВЫХ координатах перемещается вместе с ней).
-    // invView — обратная матрица вида, УЖЕ посчитанная один раз в
-    // render() для этого кадра (и переиспользуемая как uInvView в
-    // scene.vert) — не пересчитываем её здесь ещё раз.
-    glm::vec3 worldFlamePos(const glm::mat4& invView) const;
-
-    // Рисует уже собранный (статический) меш — сама геометрия не зависит
-    // от кадра, но перед вызовом нужно выставить uniform uIsViewmodelDraw
-    // = true в шейдере (см. DungeonScene::render()) и вернуть обратно
-    // false после отрисовки.
     void draw() const;
 
 private:
@@ -52,16 +22,12 @@ private:
     GLuint m_ebo = 0;
     GLsizei m_indexCount = 0;
 
-    // Частицы-пепел (см. init()) — те же 3 "слота" на факел, что и у
-    // настенных (SceneGeometry.cpp::AddTorchMesh), лежат в том ЖЕ VBO
-    // сразу после вершин рукояти/пламени, но рисуются ОТДЕЛЬНО — не
-    // через EBO/индексы (glDrawElements), а напрямую по диапазону вершин
-    // (glDrawArrays(GL_POINTS, ...)), поэтому нужен только начальный
-    // индекс и количество.
+    // Ash particles: the same 3 slots per torch as wall torches (SceneGeometry.cpp::AddTorchMesh),
+    // living in the same VBO right after the handle/flame vertices but drawn separately: not via
+    // EBO/indices (glDrawElements) but directly over a vertex range (glDrawArrays(GL_POINTS, ...)),
+    // so only a start index and a count are needed.
     GLint m_particleFirstVertex = 0;
     GLsizei m_particleCount = 0;
 
-    // Локальная (в системе координат камеры) позиция пламени — center
-    // сферы, см. init(). Используется в worldFlamePos() вместе с view.
     glm::vec3 m_localFlamePos{ 0.0f };
 };

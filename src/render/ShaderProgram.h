@@ -1,31 +1,16 @@
 #pragma once
 #include <GL/glew.h>
 
-// ============================================================================
-// ShaderProgram — общая компиляция/линковка GLSL-шейдеров.
-//
-// До рефакторинга одна и та же пара функций (компилировать шейдер, слинковать
-// программу, вывести лог ошибки в stderr, удалить промежуточные шейдер-объекты
-// после линковки) была продублирована ТРИ РАЗА почти дословно:
-//   - AsciiEffect::compileShader() / linkProgram()
-//   - DungeonScene::compileShader() / linkProgram()      (сцена + debug-карта)
-//   - DungeonScene::compileCompassShader() / linkCompassProgram()
-// Единственная содержательная разница между копиями — текст префикса в
-// сообщении об ошибке (чтобы в консоли было видно, какая подсистема не
-// скомпилировалась) и размер буфера лога (1024 vs 2048 байт). Оба этих
-// отличия сохранены здесь как параметр debugLabel и увеличенный до 2048
-// (безопасный супернабор) размер буфера — поведение при ошибке не меняется,
-// только устраняется дублирование самого кода.
-// ============================================================================
+// Shared GLSL compile/link, used by AsciiEffect, DungeonScene (scene, debug map) and the compass.
+// The only per-caller differences are the error-message prefix (debugLabel) and the shared
+// 2048-byte log buffer.
 namespace ShaderProgram {
 
-// debugLabel используется только в сообщении об ошибке компиляции
-// (например, "AsciiEffect", "DungeonScene", "Compass") — не влияет на
-// сам шейдер.
+// Both functions throw std::runtime_error with the GL info log on failure; main() reports it.
+// debugLabel (e.g. "AsciiEffect") only prefixes that message.
 GLuint CompileShader(GLenum type, const char* src, const char* debugLabel);
 
-// Линкует и линкует шейдеры в программу, удаляет промежуточные shader-объекты
-// (glDeleteShader) после линковки — как и было в исходных копиях.
+// Links shaders into a program and deletes the intermediate shader objects.
 GLuint LinkProgram(GLuint vertexShader, GLuint fragmentShader, const char* debugLabel);
 
 } // namespace ShaderProgram

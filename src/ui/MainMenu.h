@@ -1,23 +1,6 @@
 #pragma once
-// ============================================================================
-// MainMenu.h — тонкий фасад поверх модулей меню (см. ниже), сохраняющий
-// прежний namespace MainMenu и все имена типов/функций для main.cpp.
-//
-// До рефакторинга это был один файл на 2585 строк (header-only), смешивающий
-// низкоуровневые примитивы записи в grid, шрифт заголовка, ~25 генераторов
-// фоновых dark-fantasy деталей, анимацию разрушения "CELL" и сборку экранов
-// меню. Теперь это отдельные модули (каждый со своей зоной ответственности):
-//
-//   UiGlyphs.h      — общие GLYPH_*-константы и мелкие хэш-утилиты
-//   TextGrid.h/.cpp — CharToGlyph/PutGlyph/PutText/DrawBox
-//   BigFont.h/.cpp  — 5x7 dot-matrix буквы заголовка/кнопок
-//   Atmosphere.h/.cpp   — процедурные фоновые dark-fantasy детали
-//   TitleBreakup.h/.cpp — анимация разрушения заголовка "CELL"
-//   MenuLayouts.h/.cpp  — сборка экранов (главное меню/пауза/настройки)
-//
-// main.cpp по-прежнему обращается только к MainMenu::X — этот файл достаточно
-// подключить, ничего в main.cpp менять не пришлось.
-// ============================================================================
+// Facade over the menu modules (UiGlyphs, TextGrid, BigFont, Atmosphere, TitleBreakup,
+// MenuLayouts): keeps the MainMenu namespace and names that Application uses.
 #include "UiGlyphs.h"
 #include "TextGrid.h"
 #include "BigFont.h"

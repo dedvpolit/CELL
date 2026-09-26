@@ -3,11 +3,9 @@
 namespace Columns {
 
 namespace {
-// Тот же splitmix64-приём, что и в WallShapes.cpp — здесь решает, стать
-// ли ЭТОМУ конкретному eligible-кандидату колонной, когда задан
-// columnProbabilityAt (см. Zoning.h). Соль отличается от WallShapes,
-// чтобы решение "срез угла" и решение "колонна" не были жёстко
-// скоррелированы для одной и той же клетки/seed.
+// Same splitmix64 trick as WallShapes.cpp: decides whether this eligible candidate becomes a column
+// when columnProbabilityAt is given. The salt differs from WallShapes so the "chamfer corner" and
+// "place column" decisions are not tightly correlated for the same cell/seed.
 float HashUnitFloat(unsigned int seed, int x, int z) {
     uint64_t h = (uint64_t)seed * 0x9E3779B97F4A7C15ull;
     h ^= (uint64_t)(uint32_t)x * 0xC2B2AE3D27D4EB4Full;
@@ -37,22 +35,10 @@ std::vector<glm::vec2> BuildColumns(
         return map[(size_t)z * mapW + x] == 1;
     };
 
-    // Собираем кандидатов ПЕРЕД мутацией map — иначе, обходя строку за
-    // строкой, только что превращённая в пол клетка сама открыла бы
-    // соседнюю клетку с ещё одной стороны и могла бы неверно "заразить"
-    // соседа как ещё один столб на том же проходе (тот же класс бага, что
-    // и in-place-мутация сетки во время её же обхода в целом).
-    //
-    // Два вида кандидатов:
-    //  - "изолированный" (isTShape=false) — все 4 ортогональных соседа
-    //    открыты, колонна полностью свободностоящая (как было изначально).
-    //  - "T-образный зуб" (isTShape=true) — открыты РОВНО 3 стороны, одна
-    //    грань клетки всё ещё физически примыкает к более длинному
-    //    участку стены (см. Columns.h). Геометрия та же самая — обычный
-    //    цилиндр (см. AddColumnMesh в SceneGeometry.cpp): его часть со
-    //    стороны закрытой грани просто уходит внутрь соседней сплошной
-    //    стены и никогда не видна игроку (тот угол и так стена) — не
-    //    нужно отдельной "полу-колонны" геометрии ради этого случая.
+    // Collect candidates before mutating: a cell just turned into floor would otherwise open a
+    // neighbor and wrongly infect it in the same pass. Isolated (all 4 sides open) and T-shaped (3
+    // open, one face against a longer wall) candidates share one cylinder mesh; the part inside the
+    // neighboring wall is never visible.
     struct Candidate { int x, z; bool isTShape; };
     std::vector<Candidate> candidates;
     for (int z = 0; z < mapH; ++z) {
@@ -74,18 +60,14 @@ std::vector<glm::vec2> BuildColumns(
     centers.reserve(candidates.size());
     for (const auto& c : candidates) {
         const float baseProbability = columnProbabilityAt ? columnProbabilityAt(c.x, c.z) : 1.0f;
-        // T-образные кандидаты встречаются НАМНОГО чаще изолированных
-        // (клетка с 3 открытыми сторонами — почти любой тупиковый выступ
-        // стены, а не редкий полностью окружённый "зуб"), поэтому берём
-        // ту же вероятность региона, но приглушённую фиксированным
-        // множителем — иначе при том же columnProbability карта
-        // покрылась бы колоннами гораздо гуще, чем предполагает Zoning
-        // (там диапазон настроен исходя из редкости изолированного
-        // случая, см. Zoning.h).
+        // T-shaped candidates are much more common than isolated ones (a cell with 3 open sides is
+        // almost any dead-end wall stub, not a rare fully surrounded "tooth"), so the region's
+        // probability is dampened by a fixed multiplier; otherwise the same columnProbability would
+        // cover the map in far more columns than Zoning's range assumes.
         const float probability = c.isTShape ? baseProbability * kTShapeAcceptanceMultiplier : baseProbability;
-        if (HashUnitFloat(seed, c.x, c.z) >= probability) continue; // этот регион "отклонил" кандидата
+        if (HashUnitFloat(seed, c.x, c.z) >= probability) continue; // this region "rejected" the candidate
 
-        map[(size_t)c.z * mapW + c.x] = 2; // теперь пол — колонна стоит НА нём
+        map[(size_t)c.z * mapW + c.x] = 2; // now floor — the column stands on it
         centers.emplace_back((float)c.x + 0.5f, (float)c.z + 0.5f);
     }
 

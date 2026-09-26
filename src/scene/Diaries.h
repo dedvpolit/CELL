@@ -6,45 +6,21 @@
 #include <iterator>
 #include <glm/glm.hpp>
 
-// ============================================================================
-// Diaries — лор-записки, разбросанные по маленьким safe-зонам лабиринта
-// (см. MapGenerator.cpp::smallSafeZoneCenters — те же 12 карманов, что уже
-// используются для расстановки факелов). Один дневник на карман: сколько
-// карманов, столько и дневников на конкретный забег — см. kDiariesPerRun.
-//
-// Дневник остаётся лежать на месте и после того, как игрок его прочитал —
-// это не расходуемый предмет, а декорация + запись в "прочитано" (см.
-// SaveSystem-интеграцию — TODO). Взаимодействие (E рядом с моделью дневника)
-// только открывает/закрывает экран чтения, геометрию мира не меняет.
-//
-// В отличие от Zoning.h, этот модуль СОЗНАТЕЛЬНО тянет glm — pocketCenters
-// приходит прямо из MapGenerator.h (там уже std::vector<glm::ivec2>), и
-// заводить параллельный x/z-only тип ради независимости от glm здесь не
-// оправдано (Diaries не участвует в геометрии/рендере напрямую, только
-// хранит и выбирает координаты кармана).
-// ============================================================================
+// Lore notes in the maze's small safe zones: one diary per pocket (kDiariesPerRun). A diary stays
+// in the world after reading (decoration plus a "read" flag); interacting only opens the reading
+// screen. Unlike Zoning.h this module uses glm because pocketCenters comes straight from
+// MapGenerator.
 namespace Diaries {
 
-// Сколько дневников физически лежит в мире за один забег — ровно по числу
-// маленьких safe-зон (см. MapGenerator.cpp: smallSafeCount). Если это число
-// когда-нибудь снова поменяют, дневники не нужно трогать: SelectForSeed()
-// сам подстраивается под фактическое количество карманов на карте (см. его
-// параметр pocketCount) — здесь это просто документирующая константа для
-// текстов выше/комментариев, не жёсткая зависимость кода.
+// How many diaries physically exist in the world per run: matches the number of small safe zones.
+// If that number changes, diaries do not need touching: SelectForSeed() adapts to the map's actual
+// pocket count. This is a documenting constant, not a hard code dependency.
 constexpr int kDiariesPerRun = 12;
 
-// Полный пул текстов, из которого на конкретный seed выбирается подмножество
-// (см. SelectForSeed) — так на разных запусках/сидах игрок видит разный
-// набор из общего пула, а на одном и том же сиде (см. "Продолжить") — всегда
-// один и тот же набор в одних и тех же карманах.
-//
-// Слово в тильдах (~СЛОВО~) — намеренно "испорченное" слово: при раскладке
-// на экране чтения (см. DungeonScene/AsciiEffect — TODO) каждая буква внутри
-// тильд заменяется шумовым узором из тех же "плотных" глифов, что рисуют
-// крупные ASCII-буквы заголовка меню (см. UiGlyphs.h::kDenseFillGlyphs),
-// сохраняя длину слова — как будто чернила/память уже частично стёрлись.
-// От 1 до 3 таких слов на текст, позиция (начало/середина/конец фразы)
-// специально вперемешку, без системы — см. обсуждение содержимого.
+// The pool a per-seed subset is drawn from (SelectForSeed): the same seed (CONTINUE) always gets
+// the same subset in the same pockets. A word in tildes (~WORD~) is drawn as a procedural ink stain
+// of the same width instead of letters (see TextRenderer); 1-3 per text at deliberately varied
+// positions.
 constexpr const char* kPool[] = {
     "THE ~TORCHES~ KEEP IT BACK. NOT AWAY - BACK. THERE'S A ~DIFFERENCE~, AND I ONLY LEARNED IT ONCE. WHEN ONE GOES OUT, IT DOESN'T RUSH IN. IT WAITS TO SEE IF I'LL RELIGHT IT MYSELF. I ALWAYS DO. I DON'T KNOW WHY THAT FEELS LIKE ~LOSING~.",
     "SOMEONE CARVED LINES INTO THIS WALL BEFORE ME. TWELVE OF ~THEM~. I HAVE STARTED MY OWN COUNT BESIDE THEIRS. MINE IS LONGER NOW, AND I DON'T REMEMBER MAKING HALF OF THEM. THE OLDEST LINES ARE DEEPER THAN THE STONE SHOULD ALLOW. I STOPPED CARVING TWO DAYS AGO. THE COUNT KEEPS ~GROWING~ ANYWAY.",
@@ -82,26 +58,18 @@ constexpr const char* kPool[] = {
 };
 constexpr int kPoolCount = sizeof(kPool) / sizeof(kPool[0]);
 
-// Один выбранный на этот забег дневник: сырой текст из kPool (с тильдами,
-// ещё не размеченный на строки/испорченные буквы — этим займётся раскладка
-// экрана чтения) + позиция кармана, в котором он лежит (см. вызывающий код:
-// MapGenerator::Generate()::result.smallSafeZoneCenters[i]).
+// One diary chosen for this run: the raw text from kPool (with tildes, not yet laid out into
+// lines/corrupted letters: that is the reading screen's job) plus the position of the pocket it
+// sits in.
 struct PlacedDiary {
-    int poolIndex = -1;      // индекс в kPool — стабильный id для SaveSystem
-    std::string text;        // == kPool[poolIndex], скопировано для удобства
-    int pocketCellX = 0;     // мировая клетка кармана (см. RegionCenter в Zoning.h
-    int pocketCellZ = 0;     // для аналогии — тут просто int, Diaries.h тоже не тянет glm)
+    int poolIndex = -1;      // index into kPool — a stable id for SaveSystem
+    std::string text;        // == kPool[poolIndex], copied for convenience
+    int pocketCellX = 0;     // pocket's world cell
+    int pocketCellZ = 0;
 };
 
-// Выбирает pocketCount разных (без повторов) записей из kPool тем же rng,
-// что строит остальной лабиринт (тот же seed => тот же набор при
-// "Продолжить"), и раскладывает их по carmанам pocketCenters 1:1 — один
-// дневник на карман, без дополнительного отбора подмножества карманов.
-//
-// Explicitly random-WITHOUT-REPLACEMENT pick (std::sample), а не "перемешать
-// весь пул и взять срез" — тот же результат по факту (равномерный случайный
-// набор без дублей), но так это читается в коде однозначно как "выбрать N
-// разных", а не как побочный эффект среза после шафла.
+// Picks pocketCount distinct entries from kPool with the maze's rng (same seed, same set on
+// CONTINUE) and assigns them to pocketCenters 1:1 (std::sample: random without replacement).
 template <typename Rng>
 std::vector<PlacedDiary> SelectForSeed(const std::vector<glm::ivec2>& pocketCenters, Rng& rng) {
     std::vector<PlacedDiary> result;

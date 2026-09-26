@@ -3,13 +3,9 @@
 #include <string>
 #include "UiGlyphs.h"
 
-// ============================================================================
-// TitleBreakup — анимация постепенного разрушения ASCII-заголовка "CELL"
-// (клики -> осыпающиеся частицы -> перекос -> полное падение всей надписи).
-// Состояние (TitleBreakupState) хранится отдельно от раскладки меню,
-// поэтому кнопки и их hover-рамки не зависят от анимации заголовка.
-// Вынесено из MainMenu.h при разбиении монолита на модули.
-// ============================================================================
+// Animation of the ASCII title "CELL" gradually breaking apart (clicks -> crumbling particles ->
+// tilt -> the whole word falling). The state (TitleBreakupState) is kept separate from the menu
+// layout, so buttons and their hover frames do not depend on the title animation.
 
 namespace MainMenu {
 
@@ -47,8 +43,6 @@ void ResetTitleBreakup(TitleBreakupState& state);
 
 float LerpAngle(float current, float target, float speed, float dt);
 
-// Обновляет нелинейное движение осыпавшихся ASCII-частей и самой надписи.
-// Скорость падения задаётся через ускорение (не линейна).
 void UpdateTitleBreakup(TitleBreakupState& state, float deltaTime);
 
 bool HasActiveTitleAnimation(const TitleBreakupState& state);
@@ -60,15 +54,11 @@ struct TitleCell {
     bool removed = false;
 };
 
-// Пишет во ВНЕШНИЙ буфер (не аллоцирует каждый кадр) — используется в
-// горячем пути DrawBrokenTitle(), вызываемом каждый кадр во время анимации.
 void CollectTitleCells(
     std::vector<TitleCell>& outCells,
     const std::string& text, int originCol, int originRow, float scale,
     const TitleBreakupState& state);
 
-// Удобная обёртка для вызывающих ВНЕ горячего пути (например, ApplyTitleClick()
-// — вызывается один раз на клик, не каждый кадр), возвращает вектор.
 std::vector<TitleCell> CollectTitleCells(
     const std::string& text, int originCol, int originRow, float scale,
     const TitleBreakupState& state);
@@ -78,16 +68,11 @@ void DrawRotatedCell(
     int cellX, int cellY, unsigned char glyph,
     float pivotX, float pivotY, float angle, float offsetY);
 
-// Рисует CELL с тем же ASCII-артом, но как "лист", который можно постепенно
-// ронять, наклонять на одну сторону и в финале полностью сорвать вниз.
 void DrawBrokenTitle(
     std::vector<unsigned char>& grid, int cols, int rows,
     const std::string& text, int originCol, int originRow,
     float scale, const TitleBreakupState& state);
 
-// Одно нажатие по CELL срывает небольшой случайный набор клеток. Для
-// первых четырёх нажатий число разрушенных символов разное; на третьем
-// добавляется перекос на одну сторону, на пятом падает весь логотип.
 void ApplyTitleClick(TitleBreakupState& state,
                       int cols, int rows,
                       const std::string& text,

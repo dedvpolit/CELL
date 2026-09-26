@@ -7,6 +7,7 @@
 #include <array>
 #include <cstdint>
 #include "audio/FootstepAudio.h"
+#include "audio/GameplayMusic.h"
 #include "WallTexture.h"
 #include "MinimapFog.h"
 #include "DebugMapOverlay.h"
@@ -24,12 +25,10 @@
 #include "DiagonalCorridors.h"
 #include "Lighting.h"
 #include "PlayerController.h"
+#include "audio/EnemyAudio.h"
 
-// ---- Необязательные дев-инструменты (N/M/+/-/H/J), см. DevTools.h ----
-// Подключается через __has_include, поэтому удаление или отсутствие
-// DevTools.h НЕ ЛОМАЕТ сборку — просто HAS_DEV_TOOLS не определится, и
-// весь блок дев-клавиш в processInput() окажется в неактивной ветке
-// #ifdef, а обычный игрок не получит дев-возможностей.
+// Optional dev tools, see DevTools.h. Included via __has_include, so a missing file does not break
+// the build: HAS_DEV_TOOLS is then undefined and the dev-key blocks are compiled out.
 #if __has_include("dev/DevTools.h")
 #include "dev/DevTools.h"
 #endif
@@ -44,77 +43,81 @@ public:
 
     void processInput(GLFWwindow* window, float deltaTime);
 
-    // ---- Экран чтения дневника / журнал (см. Diaries.h) ----
-    // Application.cpp опрашивает это, чтобы решить, звать ли
-    // processInput() (обычное движение) или tickReadingOverlayInput()
-    // (E/Tab/стрелки внутри открытого экрана) — тот же принцип, что и
-    // AppState::PAUSED, только решение принимается на уровне сцены, а не
-    // отдельным состоянием Application (экран чтения — надстройка над
-    // PLAYING, не отдельный AppState).
+    // True while the diary reading screen or the journal is open. It is an overlay on top of
+    // PLAYING, so Application uses this to route input to tickReadingOverlayInput().
     bool isReadingOverlayOpen() const { return m_openDiaryIndex != -1 || m_journalOpen; }
 
-    // Сколько дневников уже прочитано — нужно и PlayerController (гейт
-    // кнопки победы, см. PlayerController::kMinDiariesToWin), и
-    // Application.cpp (текст сообщения "нужно ещё N").
+    // Number of diaries read: used by PlayerController (win button gate, kMinDiariesToWin) and by
+    // Application for the "need N more" message.
     int diariesReadCount() const {
         int n = 0;
         for (bool read : m_diariesRead) if (read) ++n;
         return n;
     }
 
-    // true короткое время после неудачной попытки нажать кнопку победы
-    // с недостаточным числом прочитанных дневников (см.
-    // PlayerController::consumeWinBlockedRequest()) — Application.cpp
-    // показывает по этому сообщение в центре экрана.
+    // True briefly after a failed press of the win button without enough diaries read (see
+    // PlayerController::consumeWinBlockedRequest()); Application shows a message meanwhile.
     bool showWinBlockedMessage() const { return m_winBlockedMessageTimer > 0.0f; }
 
-    // Индекс дневника в радиусе E прямо сейчас (-1 = ни один) — публичный
-    // геттер над m_nearbyDiaryIndex (обновляется в processInput()), нужен
-    // Application.cpp только для подсказки "[E] READ DIARY" на HUD, пока
-    // сам экран чтения ещё не открыт.
+    // Index of an unpicked wall torch within E range (see m_nearbyWallTorchIndex); used for the
+    // "[E] TAKE TORCH" hint.
+    int nearbyWallTorchIndex() const { return m_nearbyWallTorchIndex; }
+
+    bool showTorchEmptyMessage() const { return m_torchEmptyMessageTimer > 0.0f; }
+
+    int playerTorchInventoryCount() const { return m_player.torchInventoryCount(); }
+    int playerStoneCount() const { return m_player.stoneCount(); }
+
+    // "Unreliable vision": anomalies that intensify with time spent in the run
+    // (m_glitchElapsedTime, advanced only during unpaused gameplay). 90 s: flickering wall glyph;
+    // 180 s: the nearest torch trembles; 300 s: deceptive sound; 420 s: flickering enemy silhouette
+    // and more frequent effects.
+    int glitchStage() const
+    {
+        const float t = m_glitchElapsedTime;
+        if (t >= 420.0f) return 4;
+        if (t >= 300.0f) return 3;
+        if (t >= 180.0f) return 2;
+        if (t >= 90.0f)  return 1;
+        return 0;
+    }
+
+    // Effect 1 (wall glyph) is the only one drawn outside DungeonScene::render(): it lives in the
+    // ASCII post-process owned by Application, so it is the only one with public state getters.
+    bool glyphGlitchActive() const { return m_glyphGlitchActiveTimer > 0.0f; }
+    glm::vec2 glyphGlitchUV() const { return m_glyphGlitchUV; }
+    float glyphGlitchRadiusCells() const { return m_glyphGlitchRadiusCells; }
+
+    // Index of the diary in E range (-1 = none), updated in processInput(); used for the "[E] READ
+    // DIARY" hint before the reading screen opens.
     int nearbyDiaryIndex() const { return m_nearbyDiaryIndex; }
 
-    // Закрывает то, что сейчас открыто (сам дневник — приоритетнее
-    // журнала, если открыты оба, что на практике не бывает: журнал
-    // сворачивается, когда открываешь конкретную запись). Вызывается из
-    // Application.cpp по Escape — той же клавишей, что закрывает любой
-    // другой экран в игре, вместо того чтобы учить эту клавишу новому
-    // смыслу только здесь.
+    // Closes whatever is open. The diary takes priority over the journal (both open at once should
+    // not happen: opening an entry collapses the journal). Application calls it on Escape.
     void closeDiaryOrJournal() {
         if (m_openDiaryIndex != -1) m_openDiaryIndex = -1;
         else m_journalOpen = false;
     }
 
-    // Опрашивает E (закрыть текущий дневник / открыть выделенную запись
-    // из журнала), Tab (закрыть журнал) и стрелки вверх/вниз (навигация
-    // по списку журнала) — вызывается ВМЕСТО processInput(), пока
-    // isReadingOverlayOpen() истинно.
+    // Polls E (close the diary / open the highlighted journal entry), Tab (close the journal) and
+    // the up/down arrows (list navigation). Called instead of processInput() while
+    // isReadingOverlayOpen().
     void tickReadingOverlayInput(GLFWwindow* window);
 
-    // Строит grid для ascii.setUIOverlay() — сам текст дневника (с
-    // испорченными ~словами~ и потёками) либо список журнала, в
-    // зависимости от того, что сейчас открыто. Возвращает false (и
-    // оставляет grid пустым), если ничего открыто не было — вызывающий
-    // код просто не показывает оверлей в этом случае.
+    // Builds the grid for ascii.setUIOverlay(): the diary frame or the journal list, depending on
+    // what is open. Returns false and leaves the grid empty if nothing is open.
     bool buildReadingOverlayGrid(std::vector<unsigned char>& grid, int cols, int rows) const;
 
-    // Те же границы рамки, что рисует buildReadingOverlayGrid() (в
-    // клетках сетки меню) — Application.cpp пересчитывает их в пиксели
-    // (см. AsciiEffect::kMenuReferenceCellSize), чтобы разместить
-    // TextRenderer-текст (см. ui/TextRenderer.h) ровно внутри этой же
-    // рамки, а не рассинхронизировать два независимых вычисления.
+    // Same frame bounds as buildReadingOverlayGrid() (in menu-grid cells). Application converts
+    // them to pixels (AsciiEffect::menuCellSizeForWindow()) to place TextRenderer text inside the
+    // frame.
     void getReadingBoxBounds(int cols, int rows, int& x0, int& y0, int& x1, int& y1) const;
 
-    // Открытый сейчас дневник (для рендера прозы TextRenderer'ом в
-    // Application.cpp) — nullptr, если ничего не открыто.
     const Diaries::PlacedDiary* openDiary() const {
         return (m_openDiaryIndex != -1 && m_openDiaryIndex < (int)m_diaries.size())
             ? &m_diaries[(size_t)m_openDiaryIndex] : nullptr;
     }
 
-    // Журнал открыт И ничего конкретного не читается (т.е. сейчас должен
-    // рисоваться именно список, а не текст одной записи) — см.
-    // buildReadingOverlayGrid() выше, та же проверка.
     bool isJournalListMode() const { return m_journalOpen && m_openDiaryIndex == -1; }
 
     int diariesTotalCount() const { return (int)m_diaries.size(); }
@@ -123,121 +126,63 @@ public:
 
     void processMouse(double xpos, double ypos);
 
-    // Сбрасывает только базовую точку mouse-look. Yaw/pitch и позиция камеры
-    // не изменяются. Нужен при повторном захвате GLFW_CURSOR_DISABLED
-    // после паузы, чтобы первое событие курсора не считалось огромным dx/dy.
+    // Resets only the mouse-look baseline; yaw, pitch and position are unchanged. Needed when
+    // re-capturing GLFW_CURSOR_DISABLED after a pause, so the first cursor event is not read as a
+    // huge dx/dy.
     void resetMouseLook() { m_player.resetMouseLook(); }
 
-    // Статичный вид камеры для фона стартового меню (см. main.cpp) — НЕ
-    // вращается, просто фиксирует небольшой наклон вниз (pitch), чтобы
-    // факелы на стенах стартовой safe-zone попадали в кадр. yaw не
-    // трогается — камера смотрит в том же направлении, что и обычный
-    // спавн игрока. Вызывается ТОЛЬКО пока processInput()/processMouse()
-    // ещё не активны (игрок не управляет персонажем). Название метода
-    // сохранено ради минимальных изменений в main.cpp; deltaTime сейчас
-    // не используется (раньше был нужен для скорости вращения).
-    void tickMenuCameraSpin(float deltaTime);
     void tickPauseCameraIdle(float deltaTime);
 
-    // gameplayActive — то же самое понятие, что и в Application.cpp
-    // (PLAYING/FADE_TO_GAME) — пока false (пауза/меню), враг (см.
-    // m_enemyAI.update() внутри) не двигается и не атакует, хотя
-    // по-прежнему рисуется в своей последней позе/позиции (сцена не
-    // "исчезает" под меню — просто застывает, как и всё остальное).
-    // БАГФИКС: раньше m_enemyAI.update() вызывался БЕЗУСЛОВНО каждый
-    // кадр вне зависимости от паузы/меню — враг продолжал преследовать
-    // и атаковать игрока, даже когда игра казалась "на паузе", что при
-    // поимке во время паузы приводило к вечному зависанию (см. историю:
-    // последовательность смерти запускалась, но переход в меню был
-    // gated по AppState::PLAYING и никогда не срабатывал).
+    // Gameplay ambience (audio/GameplayMusic.h): the track plus the diary-read volume duck. Called
+    // every frame by Application::tick() and not folded into processInput(), which is skipped while
+    // the reading overlay is open, while the duck must keep tracking diariesReadCount().
+    void tickAmbientMusic(float deltaTime, bool active)
+    {
+        m_ambientMusic.update(deltaTime, active, diariesReadCount());
+    }
+
+    // gameplayActive is false during pause/menu, when the AI must not update: a catch would start
+    // the death sequence, but the transition is gated on PLAYING and would never fire.
     void render(int viewportWidth, int viewportHeight, bool gameplayActive);
 
-    // Draws the compass directly to the currently bound framebuffer.
-    // Must be called AFTER AsciiEffect::end(), not inside begin()/end(),
-    // so the compass isn't re-processed by the ASCII post-effect.
+    // Draws the compass into the currently bound framebuffer. Call it after AsciiEffect::end(), not
+    // inside begin()/end(), so the ASCII post-process does not reprocess it.
     void renderCompassOverlay(int viewportWidth, int viewportHeight);
 
-    // Debug/beta-test full map overlay, toggled with M. Draws the whole
-    // maze (unfogged) as a small panel on the left half of the screen,
-    // with a marker for the player's position/orientation. Must be called
-    // AFTER AsciiEffect::end(), same as renderCompassOverlay(). No-ops
-    // when the overlay is hidden.
+    // Debug full-map overlay (M key): the whole maze, unfogged, as a panel with the player's
+    // position and orientation. Call after AsciiEffect::end(), like renderCompassOverlay(). Does
+    // nothing while hidden.
     void renderDebugMap(int viewportWidth, int viewportHeight);
 
-    // Цветной ASCII-режим (Settings -> COLOR, см. AsciiEffect::setColorEnabled()).
-    // Компас/мини-карта (renderCompassOverlay -> renderCompass) рисуются
-    // СВОИМ, отдельным от AsciiEffect шейдером (m_compassProgram) — он не
-    // проходит через основной ASCII-постпроцесс (см. комментарий у
-    // renderCompassOverlay() выше), поэтому тонировку компаса нужно
-    // включать здесь отдельно, тем же флагом, что main.cpp передаёт в
-    // ascii.setColorEnabled(). Ничего не делает с самой геометрией/
-    // символами компаса — как и в AsciiEffect, влияет только на цвет
-    // уже выбранного глифа.
+    // Color ASCII mode (Settings -> COLOR). The compass has its own shader outside the ASCII
+    // post-process, so its tint is enabled separately with the same flag.
     void setColorEnabled(bool enabled) { m_colorEnabled = enabled; }
-    bool isColorEnabled() const { return m_colorEnabled; }
 
-    // ---- Perf diagnostics (see Application::tick()'s [perf] fps log) ----
-    // Snapshot of what render() actually submitted to the GPU LAST frame
-    // — lets us tell whether an fps dip lines up with more geometry, more
-    // particles, or more active torches (the expensive per-fragment
-    // shadow raymarch scales with this last one), instead of guessing.
+    // Perf diagnostics (Application::tick()'s [perf] log): what render() submitted last frame, to
+    // tell whether an fps dip matches more geometry, more particles or more active torches (the
+    // per-fragment shadow raymarch scales with the latter).
     int getLastVisibleTriangles() const { return m_lastVisibleTriangles; }
     int getLastVisibleParticles() const { return m_lastVisibleParticles; }
 
-    // Ближняя/дальняя плоскость последнего кадра (см. render(),
-    // glm::perspective()) — раньше читались Application'ом для
-    // TorchAsciiEffect'а (линеаризация depth), который убран (см.
-    // историю правок, жалоба "игра жрёт слишком много ОЗУ"). Сейчас
-    // никем не используются — оставлены как есть (два float, ничего не
-    // стоят), вдруг понадобятся другому дебаг-инструменту позже.
-    float getNearPlane() const { return m_lastNearPlane; }
-    float getFarPlane() const { return m_lastFarPlane; }
     int getLastActiveTorchCount() const { return m_lastActiveTorchCount; }
     int getLastVisibleChunks() const { return m_lastVisibleChunkCount; }
 
-    static const int MAX_TORCHES = 1024; // увеличено в 2 раза (было 512) — см. также PARTICLE_ID_SCALE в шейдере
-    // Perf: lowered back down from 32. Each active torch costs a full
-    // per-fragment DDA shadow raymarch in scene.frag (shadowedByWall()) —
-    // on weak hardware (this engine's actual target) that loop is the
-    // single biggest fragment-shader cost, and it scales linearly with
-    // this number for every lit pixel on screen, every frame. Left at the
-    // original 20 (not lowered further) — the actual fix for "FPS drops
-    // in torch-dense rooms" this round is cutting the PIXEL count instead
-    // (see Application.h::m_normalSceneW/H), so torch quality doesn't
-    // need to be sacrificed. If that alone isn't enough, THIS constant is
-    // still the next lever to pull — it directly multiplies
-    // shadowedByWall()'s cost (confirmed via GPU timing to be the single
-    // most expensive part of the frame) with zero change to the lighting
-    // algorithm itself.
+    static const int MAX_TORCHES = 1024; // must stay consistent with PARTICLE_ID_SCALE in the shader
+    // Every active torch costs a full DDA shadow raymarch per fragment in scene.frag: the first
+    // lever to pull for FPS drops in torch-dense rooms.
     static const int MAX_ACTIVE_TORCHES = 20;
 
-    // Размер мини-карты в клетках (нечётное число — центр всегда клетка
-    // игрока), см. MinimapFog.h.
-
-    // Нужно для AsciiEffect: текстура мини-карты для отрисовки
-    // на компасе (0=неразведано, wall/floor/torch — см. MinimapFog::updateMinimap()).
-    GLuint getMinimapTexture() const { return m_minimapFog.minimapTexture(); }
-    int getMinimapSize() const { return MinimapFog::kMinimapSize; }
-    float getYaw() const { return m_player.yaw(); }
-
-    // 0..1, для полосы энергии/стамины (см. AsciiEffect::setStamina()).
     float getStaminaFraction() const { return m_player.staminaFraction(); }
 
-    // 0..1, здоровье игрока (см. AsciiEffect::setHealth()). Пока нет
-    // источников урона — источник правды на будущее для боевой системы;
-    // на данный момент меняется только временными debug-клавишами
-    // H/J в PlayerController::processInput() (см. комментарий там).
     float getHealthFraction() const { return m_player.healthFraction(); }
 
-    // true, если активен debug-noclip (клавиша N, см. DevTools.h). Нужен
-    // снаружи (main.cpp), чтобы на время noclip прятать полосу стамины
-    // и переключать AsciiEffect в кинематографичный режим для трейлера.
-    // Без DevTools.h (или при DEV_TOOLS_ENABLED=0) всегда false.
+    // True while debug noclip is active (N key, see DevTools.h). main.cpp uses it to hide the
+    // stamina bar and switch AsciiEffect to cinematic mode. Always false without DevTools.h or with
+    // DEV_TOOLS_ENABLED=0.
     bool isNoclipEnabled() const { return m_player.noclipEnabled(); }
 
-    // Множитель дальности обзора (1.0 у обычного игрока), см. DevTools.h.
-    // Используется в render() для RENDER_DISTANCE-uniform'а шейдера, для
-    // дальней плоскости проекции и для радиуса отбора активных факелов.
+    // View distance multiplier (1.0 for a regular player, see DevTools.h). Used in render() for the
+    // shader's RENDER_DISTANCE, the far projection plane and the active-torch selection radius.
     float getViewDistanceMultiplier() const {
 #ifdef HAS_DEV_TOOLS
         return DevTools::GetViewDistanceMultiplier();
@@ -246,9 +191,8 @@ public:
 #endif
     }
 
-    // Кинематографичный буст разрешения/детализации (клавиша C, см.
-    // DevTools.h) — включаем ли его вообще, когда активен noclip. Без
-    // DevTools.h (или если C выключил его) — всегда false, буста нет.
+    // Whether the cinematic resolution/detail boost (C key, DevTools.h) applies while noclip is on.
+    // Always false without DevTools.h.
     bool isCinematicResolutionEnabled() const {
 #ifdef HAS_DEV_TOOLS
         return DevTools::IsCinematicResolutionEnabled();
@@ -257,12 +201,8 @@ public:
 #endif
     }
 
-    // Параметры кинематографичного режима — константы вынесены в
-    // DevTools.h, чтобы весь дев-тюнинг настраивался в одном месте.
-    // Без DevTools.h возвращают обычные (не увеличенные) значения —
-    // не то чтобы это должно когда-либо использоваться, раз
-    // isCinematicResolutionEnabled() в этом случае всегда false, но так
-    // геттеры остаются осмысленными сами по себе.
+    // Cinematic mode parameters; the constants live in DevTools.h. Without it these return regular
+    // values, which keeps the getters meaningful on their own.
     int getCinematicSceneWidth() const {
 #ifdef HAS_DEV_TOOLS
         return DevTools::kCinematicSceneW;
@@ -285,263 +225,249 @@ public:
 #endif
     }
 
-    void setCompassMinimapFont(
+    void setCompassUiFont(
         GLuint texture,
         int glyphCount
     );
 
-    // true, если игрок уже нажал кнопку победы в финишной safe-zone.
-    // Само закрытие окна происходит внутри processInput() в момент нажатия,
-    // геттер оставлен для возможного использования снаружи (HUD и т.п.).
     bool hasWon() const { return m_player.hasWon(); }
-    // См. PlayerController::isDying()/consumeDeathFadeTrigger() — для
-    // Application.cpp (последовательность смерти -> переход в меню).
     bool isDying() const { return m_player.isDying(); }
     bool consumeDeathFadeTrigger() { return m_player.consumeDeathFadeTrigger(); }
     void tickDeathFade(float deltaTime) { m_player.tickDeathFade(deltaTime); }
 
-    // ---- Чувствительность камеры (экран SETTINGS, см. MainMenu.h/main.cpp) ----
-    // Диапазон подобран вручную: kMinMouseSensitivity — заметно медленнее
-    // дефолта, но ещё управляемо, kMaxMouseSensitivity — быстро, но камеру
-    // ещё можно контролировать. Бегунок настроек хранит только позицию
-    // 0..1 и сам пересчитывает её в это значение (см. main.cpp).
+    // Camera sensitivity range for the SETTINGS screen, picked by hand: the minimum is noticeably
+    // slower than default but controllable, the maximum is fast but still controllable. The slider
+    // stores only a 0..1 position and converts it itself.
     static constexpr float kMinMouseSensitivity = PlayerController::kMinMouseSensitivity;
     static constexpr float kMaxMouseSensitivity = PlayerController::kMaxMouseSensitivity;
 
     float getMouseSensitivity() const { return m_player.mouseSensitivity(); }
     void setMouseSensitivity(float sensitivity) { m_player.setMouseSensitivity(sensitivity); }
 
-    // ---- NEW GAME / CONTINUE (см. save/SaveSystem.h, ui/MenuLayouts.h) ----
+    void generateMenuBackgroundMaze();
 
-    // Новый случайный лабиринт: полная перегенерация карты/факелов/GL-
-    // геометрии, полный сброс игрока (позиция/здоровье/стамина/туман
-    // войны) и НОВЫЙ активный слот сохранения (см. SaveSystem::
-    // PickSlotForNewGame()) — сохраняется в него сразу же, чтобы экран
-    // CONTINUE увидел эту игру, даже если игрок ещё не сделал ни шага.
-    // Вызывается и из init() (самая первая карта сессии), и по клику
-    // NEW GAME в уже запущенном приложении — во втором случае безопасно
-    // пересобирает уже существующую GL-геометрию (см. .cpp).
-    void newGame();
+    // A fresh random maze and a full player reset; the active slot is saved immediately so CONTINUE
+    // sees it. explicitSlot >= 0 uses that slot and name as given; otherwise
+    // SaveSystem::PickSlotForNewGame() chooses and the name is empty (death path).
+    void newGame(int explicitSlot = -1, const std::string& explicitName = std::string());
 
-    // Загружает сохранённый слот (0..SaveSystem::kSlotCount-1). Тот же
-    // seed, что был сохранён, детерминированно восстанавливает ТОЧНО тот
-    // же лабиринт и расстановку факелов (см. MapGenerator.h) — поверх
-    // них накатывается сохранённое состояние игрока и туман войны.
-    // Возвращает false, если слот пуст/повреждён — вызывающий код
-    // (Application.cpp) не должен был предлагать такой слот в UI (пустые
-    // слоты не кликабельны), но проверка здесь не лишняя.
+    // Loads a saved slot (0..SaveSystem::kSlotCount-1): the saved seed rebuilds the exact maze and
+    // torch layout, then the saved player state and fog of war are applied on top. Returns false if
+    // the slot is empty or corrupted.
     bool loadSlot(int slotIndex);
 
-    // Перезаписывает ТЕКУЩИЙ активный слот (см. activeSlot()) актуальным
-    // состоянием — используется для автосохранения прогресса (см.
-    // Application.cpp: периодически во время игры и перед выходом в
-    // меню). Ничего не делает, если активного слота нет.
+    // Overwrites the active slot (m_activeSlot) with the current state: autosave, and before
+    // exiting to the menu. No-op without an active slot.
     void saveActiveSlot();
 
-    // Сохраняет ТЕКУЩЕЕ состояние игры В УКАЗАННЫЙ слот под ЗАДАННЫМ
-    // именем (см. AppState::SAVE_NAME_ENTRY в Application.cpp — игрок сам
-    // вводит имя, до save/SaveSystem.h::kNameMaxLen символов) и делает
-    // этот слот новым активным (см. activeSlot() ниже) — так что
-    // дальнейшее автосохранение (периодическое и при выходе в меню)
-    // продолжит писать именно в этот, только что вручную выбранный,
-    // слот под тем же именем, а не в тот, с которого началась/была
-    // загружена сессия.
+    // Saves the current state to the given slot under the given name (typed in
+    // AppState::SAVE_NAME_ENTRY, up to SaveSystem::kNameMaxLen chars) and makes it the active slot,
+    // so autosaves continue there.
     void saveToSlot(int slotIndex, const std::string& name) {
         m_activeSlot = slotIndex;
         m_saveName = name;
         saveActiveSlot();
     }
 
-    // Слот, к которому привязана текущая игровая сессия — -1, пока не
-    // было ни newGame(), ни loadSlot() (не должно случаться после init(),
-    // см. комментарий у newGame() выше).
-    int activeSlot() const { return m_activeSlot; }
-
 private:
-    // Vertex/GeoChunk перенесены в SceneGeometry.h (нужны и там, и в
-    // render() ниже для чтения m_geometry.chunks()).
 
-    // [comment corrupted in source file - original text lost/unrecoverable]
     int m_mapW = 0, m_mapH = 0;
     std::vector<int> m_map;
 
-    // ---- Срезанные углы стен (WallShapes.h, Шаг 1 "неровные стены") ----
-    // Строится один раз в generateMap() детерминированно по тому же seed,
-    // что и сам лабиринт (см. WallShapes::BuildCornerCuts) — размер
-    // m_mapW*m_mapH, тот же индекс z*m_mapW+x, что и m_map. Читается и
-    // геометрией (m_geometry.build(), для формы меша), и коллизией
-    // (wallCornerCut() ниже, передаётся в PlayerController) — одна и та
-    // же таблица для обоих, чтобы силуэт и коллизия не могли разойтись.
+    // Copy of m_map with column cells also marked as wall, used only for enemy pathfinding.
+    // Computed once in loadMapAndGeometry() and shared by all enemies by pointer (EnemyAI::init()).
+    std::vector<int> m_pathfindingMapWithColumns;
+
+    // Chamfered wall corners (WallShapes.h), built once in generateMap() from the maze seed; size
+    // m_mapW*m_mapH, indexed z*m_mapW+x like m_map. Geometry and collision (wallCornerCut()) read
+    // this one table, so silhouette and collision cannot drift apart.
     std::vector<WallShapes::CornerCut> m_wallCornerCuts;
 
-    // ---- Размер среза угла поклеточно (WallShapes.h) ----
-    // Обычно WallShapes::kChamferSize (мелкий скос), но клетки
-    // диагональных "лестниц" (см. m_diagonalChainMask ниже) получают
-    // WallShapes::kChamferSizeChain (почти половина клетки) — без этого
-    // цепочка среза выглядит как ряд едва заметных царапин на прямых
-    // углах, а не как связная диагональная стена (см. историю правок —
-    // реальный скриншот в игре показал именно эту проблему). Читается и
-    // геометрией (m_geometry.build()), и коллизией (wallChamferSize()
-    // ниже) — те же индексы, что и m_wallCornerCuts.
     std::vector<float> m_chamferSizes;
 
-    // ---- Свободностоящие колонны (Columns.h, Шаг 2 "неровные стены") ----
-    // Мировые XZ-центры — строится в generateMap() (см. Columns::BuildColumns)
-    // ДО m_wallCornerCuts (см. комментарий в Columns.h про порядок вызовов:
-    // мутация map под колонны должна случиться раньше, чтобы соседние стены
-    // могли получить органичные срезы у новых открытых граней).
+    // Free-standing columns (Columns.h): world XZ centers. Currently always empty: column
+    // generation is disabled in generateMap().
     std::vector<glm::vec2> m_columnCentersXZ;
 
-    // ---- Зонирование (Zoning.h) ----
-    // В отличие от m_wallCornerCuts/m_columnCentersXZ (нужны каждый кадр
-    // геометрии/коллизии), сама сетка секторов больше нигде не читается
-    // после generateMap() — НО хранится здесь же (не как локальная
-    // переменная), чтобы debug-карта (клавиша M, renderDebugMap()) могла
-    // нарисовать границы/профиль секторов; без этого поля зонирование
-    // было бы вообще не проверить на глаз, см. историю правок.
+    // Zoning (Zoning.h). The sector grid is not read again after generateMap(); it is a member only
+    // so the debug map (M key) can draw sector boundaries and profiles.
     Zoning::ZoneGrid m_zoneGrid;
 
-    // ---- Ширина коридоров (CorridorWidth.h) ----
-    // Битовая маска mapW*mapH: 0/1 — стала ли эта клетка полом ИМЕННО от
-    // расширения коридора (а не изначально от MapGenerator). Как и
-    // m_zoneGrid, нужна только debug-карте (клавиша M) для визуализации —
-    // сама геометрия/коллизия читают уже финальный m_map и не различают,
-    // откуда взялась конкретная floor-клетка.
+    // Corridor width (CorridorWidth.h): mapW*mapH mask, 1 if the cell became floor through corridor
+    // widening rather than from MapGenerator. Only the debug map needs it.
     std::vector<unsigned char> m_corridorWidened;
 
-    // ---- Палитра по зоне (Zoning.h, GetZonePalette в SceneGeometry.cpp) ----
-    // ГОТОВЫЙ цвет стены/пола поклеточно (mapW*mapH), а не индекс палитры —
-    // уже смешанный между двумя ближайшими регионами вблизи Voronoi-границы
-    // (см. BlendedZoneColor() в .cpp) — баг: раньше цвет резко скакал между
-    // палитрами двух соседних регионов без перехода. Строится вместе с
-    // остальными поклеточными массивами в generateMap().
+    // Final wall/floor color per cell (mapW*mapH), not a palette index: already blended between the
+    // two nearest zones near a border (BlendedZoneColor() in the .cpp). Built with the other
+    // per-cell arrays in generateMap(). See Zoning.h and GetZonePalette in SceneGeometry.cpp.
     std::vector<glm::vec3> m_paletteWallColors;
     std::vector<glm::vec3> m_paletteFloorColors;
 
-    // ---- Диагональные "лестницы" (DiagonalCorridors.h) ----
-    // Битовая маска mapW*mapH: 1, если эта клетка входит в достаточно
-    // длинную цепочку eligible-срезов одного типа (см. DiagonalCorridors::
-    // DetectChains) — их срез форсируется через wallCornerCutProbabilityAt
-    // в generateMap(), а не отдаётся на волю обычной вероятности региона.
-    // Как и m_zoneGrid/m_corridorWidened, хранится только ради
-    // debug-карты (клавиша M) — сама генерация читает её один раз внутри
-    // generateMap() и дальше не нуждается.
+    // Diagonal chains (DiagonalCorridors.h): mapW*mapH mask, 1 for cells in a long enough chain of
+    // same-type eligible chamfers (DiagonalCorridors::DetectChains); their chamfer is forced in
+    // generateMap(). Kept afterward only for the debug map.
     std::vector<unsigned char> m_diagonalChainMask;
 
-    // ---- Финишная safe-zone (противоположный угол карты) ----
-    // Границы прямоугольника, заполненные в generateMap(); используются
-    // также в placeTorches(), чтобы расставить в этой комнате свои
-    // факелы и не дублировать их из общего прохода по лабиринту.
+    // Finish safe zone (opposite corner): bounds set in generateMap(); placeTorches() places its
+    // own torches there.
     int m_endSafeX0 = 0, m_endSafeZ0 = 0, m_endSafeX1 = 0, m_endSafeZ1 = 0;
 
-    // ---- Маленькие safe-зоны (карманы) внутри лабиринта ----
-    // Центры и радиус заполняются в generateMap(); используются в
-    // placeTorches(), чтобы гарантированно поставить по 3 факела в
-    // каждом кармане (а не полагаться на случайный проход по лабиринту).
+    // Small safe zones (pockets): centers set in generateMap(); placeTorches() guarantees torches
+    // in each pocket.
     std::vector<glm::ivec2> m_smallSafeZoneCenters;
     int m_smallSafeZoneRadius = 0;
 
-    // ---- Дневники (см. Diaries.h) ----
-    // Один на карман, тот же индекс i в обоих векторах: m_diaries[i]
-    // лежит физически в m_smallSafeZoneCenters[i]. m_diariesRead[i] —
-    // прочитан ли (влияет только на UI/сейв, геометрия/меш не меняются —
-    // дневник остаётся лежать в мире и после прочтения).
+    // Diaries (Diaries.h): one per pocket, m_diaries[i] sits at m_smallSafeZoneCenters[i].
+    // m_diariesRead[i] says whether it has been read (affects UI and saves only; the diary stays in
+    // the world).
     std::vector<Diaries::PlacedDiary> m_diaries;
     std::vector<bool> m_diariesRead;
-    // Индекс дневника, к которому игрок сейчас достаточно близко, чтобы
-    // читать по E (-1 = ни один не в радиусе) — считается в processInput(),
-    // используется и подсказкой "[E] READ DIARY", и самим экраном чтения.
+
+    // Gameplay ambience (GameplayMusic.h). Not reset on newGame()/loadSlot(): a stale replay timer
+    // is harmless and the duck target is recomputed every frame.
+    GameplayMusic m_ambientMusic;
     int m_nearbyDiaryIndex = -1;
-    // -1 = экран чтения закрыт; иначе — индекс открытого дневника (см.
-    // m_diaries) в m_diaries, читается прямо сейчас (E на месте или из
-    // журнала по Tab — см. m_journalOpen).
+    // -1 = reading screen closed; otherwise the index into m_diaries of the diary being read
+    // (opened in place with E, or from the journal, see m_journalOpen).
     int m_openDiaryIndex = -1;
-    // Журнал (Tab) — отдельный от m_openDiaryIndex экран со списком уже
-    // прочитанных дневников для перечитывания в любой момент, не только
-    // стоя рядом с карманом.
     bool m_journalOpen = false;
-    int m_journalSelectedIndex = 0; // какая строка списка подсвечена
-    // Edge-tracking для tickReadingOverlayInput() — отдельные от
-    // PlayerController-овских m_eKeyWasDown/m_tabKeyWasDown, т.к. эта
-    // функция вызывается ВМЕСТО processInput(), не вместе с ним (см.
-    // Application.cpp: gameplayActive-ветка).
+    int m_journalSelectedIndex = 0;
+    // Edge tracking for tickReadingOverlayInput(). Separate from PlayerController's E/Tab trackers
+    // because that function is called instead of processInput().
     bool m_overlayEKeyWasDown = false;
+    bool m_overlayEnterKeyWasDown = false;
     bool m_overlayTabKeyWasDown = false;
     bool m_overlayUpKeyWasDown = false;
+
+    // Throwable stones (a distraction mechanic): 1-2 per safe zone (m_smallSafeZoneCenters),
+    // auto-picked up on approach with no key and no HUD hint (see tryAutoPickupStones()).
+    std::vector<glm::vec3> m_stoneWorldPositions;
+    std::vector<unsigned char> m_stonePickedUp;     // same indexing as above — 0/1
+
+    // Dynamic mesh of pickable (lying) stones, rebuilt rarely (on pickup, see
+    // rebuildStonePickupMesh()), unlike m_thrownStone*, which is rebuilt every frame while any
+    // stone is in flight.
+    GLuint m_stonePickupVao = 0, m_stonePickupVbo = 0, m_stonePickupEbo = 0;
+    GLsizei m_stonePickupIndexCount = 0;
+
+    // Active thrown stones (updateThrownStones()): simple parabolic flight (gravity, no spin or
+    // bounce), tested every frame against walls/floor (EnemyAI::notifyNoiseEvent()) and against
+    // enemies (EnemyAI::forceAggroFromImpact()).
+    struct ThrownStone {
+        glm::vec3 pos;
+        glm::vec3 vel;
+        float life = 0.0f; // seconds in flight (safety cap)
+    };
+    std::vector<ThrownStone> m_thrownStones;
+
+    GLuint m_thrownStoneVao = 0, m_thrownStoneVbo = 0, m_thrownStoneEbo = 0;
+    GLsizei m_thrownStoneIndexCount = 0;
+
+    // Places stones (1-2 per pocket, deterministic from the seed) and builds the initial pickup
+    // mesh. Called from loadMapAndGeometry() right after placeTorches().
+    void placeStones(unsigned int seed);
+
+    void tryAutoPickupStones();
+
+    void rebuildStonePickupMesh();
+
+    // Ticks physics for m_thrownStones (wall collision -> EnemyAI::notifyNoiseEvent(), enemy
+    // collision -> EnemyAI::forceAggroFromImpact()) and rebuilds the thrown-stone mesh. Called from
+    // render(), which has this frame's enemy positions (see m_enemyAIs about the one-frame lag).
+    void updateThrownStones(float deltaTime);
+
+    void updateGlitchEffects(float deltaTime);
+
+    // Elapsed real (unpaused) gameplay time of the current playthrough; the only input of
+    // glitchStage(). Reset in loadMapAndGeometry().
+    float m_glitchElapsedTime = 0.0f;
+
+    float m_glyphGlitchCooldown = 6.0f;   // short pause after level load
+    float m_glyphGlitchActiveTimer = 0.0f;
+    glm::vec2 m_glyphGlitchUV{ 0.5f, 0.5f };
+    float m_glyphGlitchRadiusCells = 4.0f;
+
+    // Effect 2: nearest torch trembles; read directly in render() (scene.vert), no public getter.
+    float m_torchGlitchCooldown = 12.0f;
+    double m_torchGlitchUntilTime = -1.0; // absolute glfwGetTime(), compared with uTime in the shader
+    int m_torchGlitchIndex = -1;
+
+    // Effect 4 (stage 4, 420 s+): flickering silhouette, read directly in render() (drawn as
+    // another EnemyCharacter).
+    float m_silhouetteCooldown = 45.0f;
+    float m_silhouetteActiveTimer = 0.0f;
+    EnemyCharacter m_glitchGhost; // shares m_enemySharedModel with the real enemies
+
+    // Stage 3 (300 s+): a fake enemy moan, or mismatched fake footsteps for 2-4 s (walk sound while
+    // running or vice versa). The variant that would overlap the player's real steps is excluded.
+    float m_soundGlitchCooldown = 30.0f;
+    EnemyAudio m_glitchAudio;
+
+    // Fake-footsteps sub-effect (two of the three variants share this timer). While > 0,
+    // updateGlitchEffects() calls m_player.playFakeWalkFootstep() or playFakeRunFootstep() (per
+    // m_fakeFootstepsIsRun) every step interval, counted down by m_fakeFootstepsNextStepIn.
+    float m_fakeFootstepsTimer = 0.0f;
+    float m_fakeFootstepsNextStepIn = 0.0f;
+    bool m_fakeFootstepsIsRun = false; // which sound/cadence this active window uses
+
     bool m_overlayDownKeyWasDown = false;
-    // Таймер показа сообщения "нужно ещё N дневников" (секунды, считает
-    // вниз до 0 в processInput()) — см. showWinBlockedMessage() выше.
+    // Timer for the "need N more diaries" message; counts down to 0 in processInput() (see
+    // showWinBlockedMessage()).
     float m_winBlockedMessageTimer = 0.0f;
 
-    // Позиция кнопки победы в центре финишной safe-zone (см. generateMap()
-    // и addWinButtonMesh()). Игрок нажимает E рядом с ней (см. PlayerController).
+    // Win button position at the center of the finish safe zone (see generateMap() and
+    // addWinButtonMesh()); the player presses E next to it.
     glm::vec3 m_winButtonPos{ 0.0f, 0.0f, 0.0f };
 
-    // ---- Debug: полная карта лабиринта по кнопке M ----
-    // Только для бета-тестирования: показывает весь m_map целиком, без
-    // fog of war, поверх всего экрана (вызывается после AsciiEffect::end(),
-    // как и renderCompassOverlay()). Само рисование вынесено в
-    // DebugMapOverlay (см. DebugMapOverlay.h) — видимость/переключение
-    // клавишей M теперь состояние PlayerController (см. m_player ниже).
+    // Debug full-map overlay (M key), testing only: the whole m_map without fog of war, drawn after
+    // AsciiEffect::end() like renderCompassOverlay(). Drawing lives in DebugMapOverlay; visibility
+    // is PlayerController state.
     DebugMapOverlay m_debugMapOverlay;
 
-    // ---- Fog of war / мини-карта (см. MinimapFog.h) ----
-    // m_map остаётся здесь (будущий MapGenerator), а сама логика тумана
-    // войны и связанные GL-текстуры (полная карта + мини-карта) вынесены
-    // в MinimapFog — она принимает нужные данные параметрами, а не
-    // владеет ими сама (см. комментарий в MinimapFog.h).
+    // Fog of war and minimap (MinimapFog.h). m_map stays here; MinimapFog owns the fog logic and
+    // the related GL textures (full map and minimap) and receives the data it needs as parameters.
     MinimapFog m_minimapFog;
 
-    // [comment corrupted in source file - original text lost/unrecoverable]
     std::vector<glm::vec3> m_torchWallBase;
     std::vector<glm::vec3> m_torchNormal;
     std::vector<glm::vec3> m_torchFlamePos;
     std::vector<glm::vec3> m_torchColor;
     std::vector<float>     m_torchIntensity;
 
-    // O(1) "is there a torch on this map cell" lookup used by
-    // MinimapFog::updateMinimap(). Built once in placeTorches() (see
-    // buildTorchCellLookup()) instead of the old approach, which
-    // linearly rescanned the ENTIRE torch list (up to MAX_TORCHES) for
-    // every single one of the kMinimapSize*kMinimapSize cells, every
-    // single frame.
+    // O(1) "is there a torch on this cell" lookup for MinimapFog::updateMinimap(), built once in
+    // placeTorches() (see MapGenerator::PlaceTorches()/buildTorchCellLookup()) instead of
+    // rescanning the torch list for every minimap cell each frame.
     std::vector<unsigned char> m_torchCellLookup; // size m_mapW*m_mapH, 0/1
-    // Строится внутри placeTorches() (см. MapGenerator::PlaceTorches()).
 
-    // ---- Геометрия (см. SceneGeometry.h) ----
+    // Chunked geometry (owned by SceneGeometry): chunk AABBs are tested against the frustum and
+    // render distance, so only visible chunks are drawn.
     SceneGeometry m_geometry;
 
-    // ---- Текстура стен (см. WallTexture.h) ----
-    // Загружается в init() через m_wallTex.load(WallTexture::kDefaultName).
-    // Чтобы поставить другую стеновую текстуру, ДОСТАТОЧНО положить нужный
-    // файл в assets/textures/walls/ и поменять WallTexture::kDefaultName —
-    // сам шейдер/пайплайн трогать не нужно.
+    // Wall texture (WallTexture.h), loaded in init() via m_wallTex.load(WallTexture::kDefaultName).
+    // To use another texture, drop the file into assets/textures/walls/ and change
+    // WallTexture::kDefaultName; the shader and pipeline stay untouched.
     WallTexture m_wallTex;
 
     GLuint m_program = 0;
 
-    // ---- Cached uniform locations for m_program ----
-    // glGetUniformLocation() does a name lookup in the driver; doing this
-    // ~15 times every single frame (as render() used to) is wasted CPU
-    // work since the locations never change after linking. Resolved once
-    // in init() (see cacheUniformLocations()) and reused every frame.
+    // Cached uniform locations for m_program. glGetUniformLocation() is a driver name lookup, so
+    // they are resolved once in init() (cacheUniformLocations()) instead of every frame.
     GLint m_uniView = -1;
     GLint m_uniProjection = -1;
     GLint m_uniCamPos = -1;
 
-    // ---- Факел в руке игрока (см. scene.frag) ----
     GLint m_uniPlayerLightPos = -1;
     GLint m_uniPlayerLightDir = -1;
     GLint m_uniPlayerLightColor = -1;
     GLint m_uniPlayerLightIntensity = -1;
     GLint m_uniIsViewmodelDraw = -1;
+    GLint m_uniViewmodelTorchFuel = -1;
+    GLint m_uniGlitchTorchIndex = -1, m_uniGlitchTorchUntilTime = -1;
 
-    // ---- Dev-tools: статичные направленные фонарики (клавиша L) ----
     GLint m_uniDevLightPos = -1;
     GLint m_uniDevLightDir = -1;
     GLint m_uniDevLightCount = -1;
 
-    // ---- Dev-tools: перебор цветовых гамм (клавиша G) ----
     GLint m_uniDevPaletteOverride = -1;
     GLint m_uniInvView = -1;
     GLint m_uniViewmodelSway = -1;
@@ -551,58 +477,152 @@ private:
     GLint m_uniWallTex = -1;
     GLint m_uniWallTexEnabled = -1;
     GLint m_uniWallTexContrast = -1;
+
+    // Torch pickup state, parallel to m_torchWallBase (same index). The light is killed by
+    // m_torchIntensity[i] = 0; the visible flame is baked into the static chunk mesh, so it is
+    // hidden through a small lookup texture (uTorchLitMask in scene.frag) updated with one
+    // glTexSubImage2D.
+    std::vector<unsigned char> m_torchTaken; // size == m_torchWallBase.size(), 0/1
+
+    static constexpr int kTorchLitMaskDim = 32; // 32*32 = 1024 >= MAX_TORCHES
+    GLuint m_torchLitMaskTex = 0;
+    GLint m_uniTorchLitMask = -1;
+
+    // Wall torch (index into m_torchWallBase) the player stands next to and has not taken, -1 if
+    // none. Computed every frame in processInput(); used for the "[E] TAKE TORCH" hint.
+    int m_nearbyWallTorchIndex = -1;
+
+    float m_torchEmptyMessageTimer = 0.0f;
+
+    // Extinguishes wall torch i (light and flame) and adds +1 to the inventory. Rebuilds
+    // m_torchCellLookup in full: it runs at most once per E press.
+    void pickupWallTorch(int torchIndex);
+
+    // Landmark torches (indices >= this, added by placeLandmarks()) have a blue flame and cannot be
+    // picked up: m_torchTaken is set for them only to suppress the pickup prompt. -1 = none.
+    // saveActiveSlot() must exclude them from torchTakenIndices or they would be extinguished on
+    // load.
+    int m_firstGuideTorchIndex = -1;
+
+    // Visit order of the pockets (a nearest-neighbor tour over m_smallSafeZoneCenters built in
+    // placeLandmarks()); each link gets 2-3 landmark torches along the first cells of its path.
+    std::vector<int> m_safeZoneChainOrder;
+
+    // Walls drawn blue on the compass minimap (pocket perimeters, the path toward the next pocket,
+    // landmark torch walls); mapW*mapH, indexed like m_torchCellLookup. Separate from it because
+    // that one excludes taken torches and landmarks always count as taken.
+    std::vector<unsigned char> m_guideTorchCellLookup;
+
+    // Perimeter walls of pockets whose diary was read are drawn purple on the minimap as a trail.
+    // Dynamic, unlike m_guideTorchCellLookup: see rebuildDiaryReadWallLookup() (also called after a
+    // load).
+    std::vector<unsigned char> m_diaryReadWallLookup;
+
+    void rebuildDiaryReadWallLookup();
+
+    // Places landmark torches and m_guideTorchCellLookup, deterministic from the seed. Must run
+    // before m_geometry.build(), which bakes torches into the static mesh.
+    void placeLandmarks(unsigned int seed);
+
+    // Decorative props (cairn/obelisk/tripod/cross, see AddCairnProp() etc. in the .cpp), built
+    // once in placeLandmarks() into a separate static VAO; never rebuilt, unlike m_stonePickupVao.
+    GLuint m_landmarkPropVao = 0, m_landmarkPropVbo = 0, m_landmarkPropEbo = 0;
+    GLsizei m_landmarkPropIndexCount = 0;
+    std::vector<glm::vec2> m_landmarkPropPositionsXZ; // for the debug map (M), see DebugMapOverlay
+
+    // Final win sequence (monument dissolves -> spinning torus -> prompt). It has its own dynamic
+    // VAO because this geometry changes during play and cannot live in a baked chunk.
+    enum class WinSequenceState { None, Dissolving, Spinning };
+    WinSequenceState m_winSequenceState = WinSequenceState::None;
+    // seconds since the current phase (Dissolving or Spinning) started; resets on transition
+    float m_winSequenceTimer = 0.0f;
+    float m_torusAngleA = 0.0f; // two independent rotation angles: the donut tumbles on both at once
+    float m_torusAngleB = 0.0f;
+    GLuint m_winMonumentVao = 0, m_winMonumentVbo = 0, m_winMonumentEbo = 0;
+    GLsizei m_winMonumentIndexCount = 0;
+    bool m_winMonumentBuiltOnce = false;
+    // see uMonumentFadeAlpha in scene.frag, computed in updateWinSequence()
+    float m_winMonumentFadeAlpha = 1.0f;
+    GLint m_uniMonumentFadeAlpha = -1;
+
+    // Reusable scratch buffers for updateWinSequence(): the torus phase can last indefinitely if
+    // the player just watches, so a fresh std::vector every frame would allocate continuously.
+    std::vector<Vertex> m_winMonumentVertsScratch;
+    std::vector<GLuint> m_winMonumentIndicesScratch;
+
+    static constexpr float kWinDissolveDuration = 0.8f; // pedestal dissolve time, seconds
+    // seconds of spinning before the donut can be pressed
+    static constexpr float kWinSpinBeforePressable = 5.0f;
+
+    // Whether the win sequence has been requested (E pressed at the pedestal with enough diaries);
+    // a consumable flag, like m_diaryOpenRequested and similar ones in PlayerController.h.
+    bool m_winSequenceRequested = false;
+
+public:
+    // What Application shows: in the Spinning phase, after kWinSpinBeforePressable seconds, "[E]
+    // PRESS TO WIN".
+    bool winReadyToPressE() const
+    {
+        return m_winSequenceState == WinSequenceState::Spinning &&
+               m_winSequenceTimer >= kWinSpinBeforePressable;
+    }
+    bool winSequenceActive() const { return m_winSequenceState != WinSequenceState::None; }
+
+    // "End of game" (see PlayerController::m_creditsRequested). Application calls this every frame
+    // during PLAYING (same consume pattern as the other requests).
+    bool consumeCreditsRequest() { return m_player.consumeCreditsRequest(); }
+
+    void teleportCameraForCredits() { m_player.teleportCameraOutOfBounds(); }
+
+    // Shows the [E] ACTIVATE hint on approach (with enough diaries), not only after a press; same
+    // radius as the press check in PlayerController::processInput().
+    bool nearWinMonumentReadyToActivate() const
+    {
+        if (winSequenceActive() || diariesReadCount() < PlayerController::kMinDiariesToWin)
+            return false;
+        const glm::vec3 camPos = m_player.camPos();
+        const float dx = m_winButtonPos.x - camPos.x;
+        const float dz = m_winButtonPos.z - camPos.z;
+        const float kWinInteractRadius = 1.4f; // matches PlayerController.cpp
+        return (dx * dx + dz * dz) <= kWinInteractRadius * kWinInteractRadius;
+    }
+
+private:
+    void updateWinSequence(float deltaTime);
+
+    // Restoring from a save: extinguishes the listed torches without crediting the inventory (the
+    // spare count is restored by PlayerController::restoreTorchState()). Rebuilds m_torchCellLookup
+    // once for the whole list.
+    void restoreTorchPickups(const std::vector<int>& takenIndices);
+
+    void extinguishTorchVisualAndLight(int torchIndex);
+    void rebuildTorchCellLookupFromTaken();
+
+    void resetTorchLitMask();
     GLint m_uniTorchPos = -1;
     GLint m_uniTorchColor = -1;
     GLint m_uniTorchIntensity = -1;
     GLint m_uniTorchCount = -1;
-    // Колонны (Шаг 2) — нужны шейдеру для ray-vs-circle теста в тенях
-    // (см. assets/shaders/scene.frag: shadowedByWall()), т.к. клетка
-    // колонны теперь пол в mapTex и сама по себе тени не давала бы (см.
-    // историю правок про "тени как от квадратов"/отсутствие тени у колонн).
+    // Columns: the shader needs them for the ray-vs-circle shadow test (shadowedByWall() in
+    // assets/shaders/scene.frag), since a column cell is floor in mapTex and would not cast a
+    // shadow by itself.
     GLint m_uniColumnPos = -1;
     GLint m_uniColumnCount = -1;
     GLint m_uniColumnRadius = -1;
 
-    // ---- Тени от врагов (см. большой комментарий в shadowedByWall(),
-    // assets/shaders/scene.frag) — точный ray-vs-cylinder тест, тем же
-    // приёмом, что и колонны выше (columnPos/columnCount/columnRadius),
-    // просто с дополнительной проверкой по высоте (враг не бесконечно
-    // высокий, как колонна). ПЕРВАЯ версия этой фичи использовала
-    // отдельную растеризованную карту глубины (общий "shadow map",
-    // 1024x1024 FBO, ортокамера над игроком) — откачена: сэмплирование
-    // луча в нескольких точках регулярно "проскакивало" мимо тонкого
-    // (радиус ~0.3) силуэта врага между сэмплами, что на практике давало
-    // едва заметные, беспорядочные пятна вместо тени, плюс не нужный
-    // здесь лишний FBO/текстура/шейдер/меш. Аналитический тест точен по
-    // построению (как и у колонн) и не требует GPU-ресурсов вообще.
+    // Enemy shadows in shadowedByWall(): an exact ray-vs-cylinder test with a height check, like
+    // the columns. No shadow map or extra GPU resources needed.
     GLint m_uniEnemyOccluderPosXZ = -1;
     GLint m_uniEnemyOccluderCount = -1;
     GLint m_uniEnemyOccluderRadius = -1;
     GLint m_uniEnemyOccluderHeight = -1;
     void cacheUniformLocations();
 
-    // ---- Освещение (кэш активных факелов, см. Lighting.h) ----
     Lighting m_lighting;
 
-    // ---- Chunked geometry for frustum/distance culling ----
-    // The maze is 128x128 cells; without culling the ENTIRE mesh (walls,
-    // floor, torches, win-button pedestal) is transformed and rasterized
-    // every frame regardless of what the player can actually see, which
-    // wastes GPU vertex-processing time and fill-rate. Geometry is instead
-    // bucketed at build time into chunks (см. SceneGeometry.h — построение
-    // геометрии, PVS и владение GL-буферами вынесены туда, т.к. render()
-    // ниже читает их каждый кадр); at render time each chunk's AABB is
-    // tested against the camera frustum and render distance, and only
-    // chunks that can actually be seen are drawn.
-
-    // ---- Item 1 (review): zero-allocation render loop ----
-    // These used to be local std::vectors freshly heap-allocated and freed
-    // every single call to render() (per-frame malloc/free — exactly what
-    // Quake's Zone/Hunk allocators exist to avoid). They're now persistent
-    // fields, sized once via reserveRenderScratchBuffers() (called from
-    // init(), right after m_geometry.build()), and reused every frame via
-    // .clear() + push_back(), which does not reallocate as long as
-    // capacity (reserved up front) is sufficient.
+    // Persistent per-frame scratch buffers: sized once by reserveRenderScratchBuffers() (called
+    // from init() after m_geometry.build()) and reused with clear() + push_back(), which does not
+    // reallocate while the reserved capacity suffices. This avoids a malloc/free every render().
     std::vector<char>          m_chunkVisible;
     std::vector<GLsizei>       m_mainCounts;
     std::vector<const GLvoid*> m_mainOffsets;
@@ -610,49 +630,29 @@ private:
     std::vector<GLsizei>       m_particleCounts;
     void reserveRenderScratchBuffers();
 
-    // Переиспользуемый буфер XZ-позиций врагов на этот кадр, для
-    // enemyOccluderPosXZ (см. scene.frag::shadowedByWall()) — собирается
-    // заново в render() каждый кадр, но без переаллокации (см. общий
-    // комментарий "zero-allocation render loop" выше).
+    // Reusable buffer of this frame's enemy XZ positions for enemyOccluderPosXZ (see
+    // scene.frag::shadowedByWall()); rebuilt every frame without reallocation.
     std::vector<glm::vec2> m_enemyOccluderScratch;
 
-    // ---- Perf diagnostics (see getLastVisibleTriangles() etc. above) ----
     int m_lastVisibleTriangles = 0;
     int m_lastVisibleParticles = 0;
     int m_lastActiveTorchCount = 0;
     int m_lastVisibleChunkCount = 0;
 
-    // ---- Игрок (камера/движение/коллизии/здоровье/стамина/шаги, см.
-    // PlayerController.h) ----
     PlayerController m_player;
 
-    // ---- Цветной ASCII-режим компаса (см. setColorEnabled() выше) ----
     bool m_colorEnabled = false;
 
-    // Текущая дальность прорисовки/тумана (обычно 16.0, см. render()).
-    // Пересчитывается каждый кадр в render() и используется там же для
-    // uniform'а шейдера renderDistance, дальней плоскости проекции и
-    // радиуса отбора активных факелов (см. render()).
+    // Current draw/fog distance (usually 16.0), recomputed every frame in render() and used for the
+    // shader's renderDistance uniform, the far projection plane and the active-torch selection
+    // radius.
     float m_currentRenderDistance = 16.0f;
-    // Последние near/far, использованные в glm::perspective() (см.
-    // render()) — раньше нужны были только TorchAsciiEffect'у (убран, см.
-    // getNearPlane()/getFarPlane() выше), сейчас не потреблены никем.
-    float m_lastNearPlane = 0.05f;
-    float m_lastFarPlane = 50.0f;
 
-    // ---- 3D compass / right arm (см. Compass.h) ----
     Compass m_compass;
     PlayerTorchViewmodel m_playerTorch;
 
-    // ---- Враг (см. EnemyCharacter.h/SkinnedModel.h) ----
-    // ОПТИМИЗАЦИЯ ПАМЯТИ (жалоба "160-190 МБ ОЗУ") — модель ("THE
-    // WRAPPED") грузится СЮДА, РОВНО ОДИН РАЗ на весь процесс: раньше
-    // m_testEnemy и каждый из kEnemyCount m_enemies[] грузили СВОЙ
-    // собственный экземпляр SkinnedModel из одного и того же файла — 8
-    // независимых копий меша/анимаций/текстуры. Теперь единственный
-    // владелец GPU/CPU-ресурсов модели — этот member; m_testEnemy и
-    // m_enemies[] ниже лишь ссылаются на него (см.
-    // EnemyCharacter::attachSharedModel()).
+    // The single shared model ("THE WRAPPED"): this member owns its resources, m_testEnemy and
+    // m_enemies[] only reference it. Loaded without the diffuse texture (see init()).
     SkinnedModel m_enemySharedModel;
     GLuint m_enemyProgram = 0;
     GLint m_uEnemyView = -1, m_uEnemyProjection = -1, m_uEnemyModel = -1, m_uEnemyBoneMatrices = -1;
@@ -665,99 +665,40 @@ private:
     GLint m_uEnemyRenderDistance = -1;
     GLint m_uEnemyDiffuseTex = -1, m_uEnemyHasDiffuseTex = -1;
     void cacheEnemyUniformLocations();
-    EnemyCharacter m_testEnemy; // dev-tools манекен (клавиша K) — см. spawnDevDummyEnemyAtPlayerView()
-    EnemyAI m_enemyAI;          // AI-состояние манекена (реально не используется, только позиция/поворот/Idle)
+    EnemyCharacter m_testEnemy; // dev-tools dummy (K key), see spawnDevDummyEnemyAtPlayerView()
+    EnemyAI m_enemyAI;          // the dummy's AI state (only position, rotation and Idle are used)
 
-    // ============================================================================
-    // Настоящие враги (Шаг 3, см. запрос "добавить 4 врага, которые
-    // появляются по всей карте в отдельных местах") — независимые
-    // экземпляры, каждый со своим ИИ (m_enemyAIs[i]) и своей стартовой
-    // позицией (см. spawnEnemiesAcrossMap() — по одному в каждой
-    // четверти карты, подальше друг от друга и от старта игрока), но
-    // ссылающиеся на ОДНУ ОБЩУЮ модель (m_enemySharedModel выше, см.
-    // EnemyCharacter::attachSharedModel()) — GL-ресурсы модели ТЕПЕРЬ
-    // общие (раньше каждый инстанс грузил и владел своими собственными,
-    // см. историю правок и большой комментарий в EnemyCharacter.h про
-    // оптимизацию памяти).
-    //
-    // m_testEnemy/m_enemyAI выше — ОТДЕЛЬНЫЙ, самостоятельный манекен
-    // dev-tools, не входит в этот массив и не путается с ним: реальные 4
-    // врага активно патрулируют/преследуют, манекен — просто стоит.
-    // ============================================================================
-    static constexpr int kEnemyCount = 7; // было 4 — "очень долго гулял и особо никого не встречал"
+    // Real enemies: independent AI instances (m_enemyAIs[i]), one per map sector, all referencing
+    // the shared model. m_testEnemy above is a separate dev dummy that only stands there.
+    static constexpr int kEnemyCount = 7;
     std::array<EnemyCharacter, kEnemyCount> m_enemies;
     std::array<EnemyAI, kEnemyCount> m_enemyAIs;
 
-    // УЛУЧШЕНИЕ ("на мини-карте — если ИГРОК увидел врага, а не
-    // наоборот") — FOV-конус (примерно соответствующий реальному FOV
-    // камеры рендера, см. glm::perspective(63°,...) в render()) + прямая
-    // видимость (переиспользует LightBaking::HasLineOfSight, ту же
-    // функцию, что и восприятие самого ИИ, просто с камерой игрока в
-    // роли наблюдателя) + разумная дальность. Считается отдельно для
-    // КАЖДОГО врага (см. render() — вызывается по одному разу на
-    // enemyAI перед update()).
-    //
-    // БАГФИКС/ОПТИМИЗАЦИЯ ("заверни под тот же таймер, дёшево сделать
-    // сейчас") — сама функция ниже осталась как была (честный рейкаст
-    // каждый вызов), но ВЫЗЫВАЕТСЯ теперь не каждый кадр, а по тому же
-    // таймеру, что и восприятие самого ИИ (kPerceptionInterval=0.2с в
-    // EnemyAI.cpp) — см. m_playerVisibilityCheckTimers/
-    // m_cachedPlayerCanSeeEnemy ниже и место вызова в render(). При 7
-    // врагах и 60 FPS разница — 420 рейкастов/сек против 35: мини-карте
-    // мгновенная реакция не нужна вообще (маркер и так гаснет плавно
-    // несколько секунд), а вот раскладке при бОльшем числе врагов на
-    // менее мощном железе — уже может быть заметна.
+    // Whether the PLAYER can see an enemy (for the minimap marker): FOV cone, direct LOS with the
+    // camera as the observer, sane range. It raycasts, so it runs on the AI perception timer
+    // (kPerceptionInterval) instead of every frame.
     bool isEnemyVisibleToPlayer(const glm::vec3& enemyPos) const;
 
-    // Свой независимый таймер и закэшированный результат НА КАЖДОГО
-    // врага (см. isEnemyVisibleToPlayer() выше) — кэш обязан быть
-    // отдельным для каждого (у каждого свой результат), а раз кэш и так
-    // отдельный, удобнее держать и таймер рядом с ним, а не городить
-    // общий таймер + массив кэшей раздельно.
+    // Independent timer and cached result per enemy (see isEnemyVisibleToPlayer()); the cache has
+    // to be per enemy anyway, so the timer lives next to it.
     std::array<float, kEnemyCount> m_playerVisibilityCheckTimers{};
     std::array<bool, kEnemyCount> m_cachedPlayerCanSeeEnemy{};
 
-    // Раскладывает kEnemyCount врагов по отдельным непересекающимся
-    // секторам сетки (не рядом друг с другом) — см. .cpp, размер сетки
-    // считается от kEnemyCount автоматически (не захардкожено на "2x2
-    // четверти" — это ломалось бы при kEnemyCount, для которого 4
-    // ячеек мало). Вызывается один раз на каждую новую карту/новую
-    // игру, после генерации геометрии (там же, где раньше стояла
-    // одна-единственная точка спавна m_enemyAI).
+    // Spreads kEnemyCount enemies over separate, non-overlapping grid sectors. The sector grid is
+    // derived from kEnemyCount. Called once per new map/new game, after geometry generation.
     void spawnEnemiesAcrossMap(uint32_t seed);
 
-    // ============================================================================
-    // Dev-tools (см. src/dev/DevTools.h) — три новых инструмента по
-    // отдельному запросу:
-    //
-    //   L — заспавнить статичный направленный "фонарик" там, где стоит
-    //       игрок, светящий туда, куда он СЕЙЧАС смотрит. В отличие от
-    //       обычного факела в руке, дальше не двигается и не
-    //       поворачивается вместе с игроком — застывает на месте (см.
-    //       devLightPos/Dir[8] в scene.frag/enemy.frag).
-    //   K — заспавнить (или переставить, если уже стоит) манекена врага
-    //       перед игроком, лицом к нему — стоит на месте, никакого ИИ,
-    //       только Idle-анимация (см. m_devDummyEnemyActive ниже — та
-    //       же модель/EnemyCharacter, что и раньше был "настоящий"
-    //       враг, просто без EnemyAI::update() вообще).
-    //   U — отменить последнее из двух действий выше (история — см.
-    //       m_devActionHistory).
-    //
-    // Реализовано через уже загруженные m_testEnemy/m_enemyAI, а не
-    // отдельный список независимых манекенов — не нужно парсить .glb
-    // ещё раз, и рендер-цикл (m_testEnemy.draw(...) в render()) не
-    // пришлось переделывать в цикл по массиву. Ограничение по дизайну:
-    // манекен ОДИН — повторное нажатие K переставляет его на новое
-    // место, а не добавляет второго.
-    // ============================================================================
+    // Dev tools (src/dev/DevTools.h): L spawns a static spotlight at the player, K spawns or
+    // repositions a single enemy dummy (m_testEnemy, no AI), U undoes the last L/K
+    // (m_devActionHistory), P cycles the environment palette (m_devPaletteOverride).
 
     struct DevSpotlight
     {
         glm::vec3 position;
-        glm::vec3 direction; // нормализованное
+        glm::vec3 direction;
     };
-    // Предел 8 — совпадает с devLightPos[8]/devLightDir[8] в шейдерах;
-    // spawnDevLightAtPlayerView() молча не добавляет сверх лимита.
+    // The limit of 8 matches devLightPos[8]/devLightDir[8] in the shaders;
+    // spawnDevLightAtPlayerView() silently ignores calls past it.
     std::vector<DevSpotlight> m_devSpotlights;
 
     bool m_devDummyEnemyActive = false;
@@ -766,14 +707,8 @@ private:
     struct DevAction
     {
         DevActionType type;
-        // Только для SpawnDummyEnemy — было ли активно ДО этого
-        // действия; undo просто возвращает как было (see
-        // undoLastDevAction()) — не нужно помнить старую позицию
-        // манекена отдельно, т.к. "было" всегда означает либо "его не
-        // было вовсе" (false), либо "стоял, но не важно где именно"
-        // (undo одного re-spawn'а не обязано восстанавливать точную
-        // предыдущую позицию — это dev-инструмент, а не полноценная
-        // система отмены с точной историей трансформаций).
+        // Only for SpawnDummyEnemy: whether the dummy was active before. Undo just restores that
+        // state, not its exact previous position: this is a dev tool, not a full undo system.
         bool dummyWasActiveBefore = false;
     };
     std::vector<DevAction> m_devActionHistory;
@@ -786,14 +721,9 @@ private:
     void spawnDevDummyEnemyAtPlayerView();
     void undoLastDevAction();
 
-    // Перебор цветовых гамм окружения (клавиша G) — см. большой
-    // комментарий у uniform devPaletteOverride в scene.frag. -1 —
-    // выключено (обычная запечённая по вершинам палитра зон), 0..4 —
-    // конкретная гамма из Zoning::kPaletteCount принудительно для ВСЕЙ
-    // видимой геометрии сразу (глобально, без плавных переходов между
-    // зонами, которые есть у обычного зонирования — это инструмент для
-    // "посмотреть на всю сцену в этой гамме", а не часть игрового
-    // зонирования).
+    // Environment palette cycling (P key), see the devPaletteOverride uniform in scene.frag. -1 =
+    // off (the regular baked zone palette); 0..Zoning::kPaletteCount-1 forces one palette onto all
+    // visible geometry, without zone transitions: a "view the whole scene in this palette" tool.
     int m_devPaletteOverride = -1;
     bool m_devPaletteKeyWasDown = false;
     void cycleDevPalette();
@@ -801,29 +731,18 @@ private:
     double m_lastEnemyUpdateTime = 0.0;
     bool m_enemyUpdateInit = false;
 
-    // ---- Покачивание факела в руке (см. scene.vert: uViewmodelSway) ----
-    // Простое сглаживание yaw ("факел отстаёт при резком повороте и
-    // плавно догоняет") — чистая скалярная арифметика, без базисов/
-    // cross(), см. render(). Инициализируется текущим yaw при первом
-    // кадре (m_playerTorchLagInit), а не нулём, чтобы не дёргало при
-    // самой первой отрисовке уровня.
+    // Hand torch sway (uViewmodelSway in scene.vert): yaw smoothing so the torch lags behind a
+    // sharp turn and catches up, in plain scalar arithmetic (see render()). Initialized to the
+    // current yaw on the first frame (m_playerTorchLagInit) so it does not jump.
     float m_playerTorchLagYaw = 0.0f;
     bool m_playerTorchLagInit = false;
     double m_playerTorchLastSwayTime = 0.0;
-    // Второй этап сглаживания — см. render(): без него САМ выходной сдвиг
-    // мог измениться скачком за один кадр при очень резком движении мыши
-    // ("телепортируется"), даже с ограничением амплитуды (kMaxSway) —
-    // клампинг ограничивает МАКСИМУМ, но не гарантирует ПЛАВНОСТЬ пути к
-    // нему. Эта переменная — фактическое, гарантированно непрерывное
-    // визуальное смещение; "сырая" цель (из разницы yaw) используется
-    // только как ориентир, к которому она плавно стремится.
+    // Second smoothing stage: clamping (kMaxSway) bounds the sway but not its rate, so this
+    // continuous offset chases the raw target to avoid jumps on sharp mouse moves.
     float m_playerTorchSwayVisual = 0.0f;
 
-    // ---- Покачивание при ходьбе/беге (см. render()) ----
-    // Отдельный накопитель фазы (не тот же, что у камеры,
-    // PlayerController::m_bobPhase) — так частота бега/ходьбы для
-    // факела настраивается независимо, без риска дёрнуть чем-то ещё,
-    // что уже завязано на камерный m_bobPhase.
+    // Walk/run bob (see render()): a phase accumulator separate from the camera's
+    // PlayerController::m_bobPhase, so the torch's frequency can be tuned independently.
     float m_playerTorchBobPhase = 0.0f;
     float m_playerTorchMoveBlend = 0.0f;
 
@@ -831,49 +750,37 @@ private:
 
     bool isWall(int x, int z) const;
     bool isFloor(int x, int z) const;
-    // Срезан ли угол этой клетки стены (WallShapes::CornerCut::None, если
-    // клетка обычная/не стена/вне грида) — см. m_wallCornerCuts выше.
+    // Whether this wall cell's corner is chamfered (CornerCut::None for a regular cell, a non-wall
+    // or out of grid); see m_wallCornerCuts.
     WallShapes::CornerCut wallCornerCut(int x, int z) const;
-    // Размер среза для этой клетки (см. m_chamferSizes выше) — 0.0 для
-    // клеток без данных (не должно использоваться, т.к. вызывающий код
-    // сначала проверяет wallCornerCut()!=None).
+    // Chamfer size for this cell (see m_chamferSizes); meaningless for cells with no data, callers
+    // check wallCornerCut() != None first.
     float wallChamferSize(int x, int z) const;
 
-    // seed — см. NEW GAME / CONTINUE выше: тот же seed, переданный сюда и
-    // в placeTorches() ниже, детерминированно даёт тот же самый лабиринт/
-    // расстановку факелов (см. MapGenerator.h).
+    // The seed deterministically produces the same maze and torch layout (the same seed goes to
+    // placeTorches()).
     void generateMap(unsigned int seed);
     void placeTorches(unsigned int seed);
 
-    // Общая часть newGame()/loadSlot()/init(): генерирует карту заданным
-    // seed'ом, грузит текстуру карты на GPU, расставляет факелы,
-    // (пере)строит GL-геометрию и PVS. НЕ трогает игрока/активный слот/
-    // туман войны — это по-разному решают вызывающие методы (newGame()
-    // сбрасывает игрока и туман с нуля, loadSlot() восстанавливает их из
-    // файла). Безопасно вызывать повторно (не только при первом init()) —
-    // m_geometry.destroy() перед build() корректно освобождает уже
-    // существующие GL-буферы.
+    // Shared by newGame()/loadSlot()/init(): generates the map for a seed, places torches and
+    // rebuilds GL geometry and PVS. It does not touch the player, the slot or the fog of war:
+    // callers decide that.
     void loadMapAndGeometry(unsigned int seed);
 
-    // Слот, к которому привязана текущая сессия (см. activeSlot() выше),
-    // и seed, которым была построена текущая карта (нужен saveActiveSlot()
-    // — читать его из MapGenerator::GenerateResult на каждый автосейв
-    // избыточно, он не меняется, пока не вызваны newGame()/loadSlot()).
+    // Shared by newGame()/generateMenuBackgroundMaze(): map and GL geometry regeneration plus a
+    // full player reset, with no interaction with the save system.
+    void generateFreshMapAndPlayer();
+
+    // The slot the session is bound to (-1 until newGame() or loadSlot() has run; the menu
+    // background does not bind one) and the seed of the current map, kept for saveActiveSlot();
+    // neither changes until newGame()/loadSlot() runs.
     int m_activeSlot = -1;
     unsigned int m_currentSeed = 0;
 
-    // Имя текущего сохранения (см. saveToSlot() выше) — введённое игроком
-    // вручную при явном SAVE, либо пустая строка, если сессия началась
-    // через NEW GAME и ещё ни разу не была сохранена вручную (тогда
-    // автосейв в newGame() тоже пишет пустое имя — экран выбора слота
-    // в этом случае показывает generic "SLOT", см. Application.cpp).
-    // Загрузка (loadSlot()) переносит сюда имя ИЗ файла — чтобы
-    // последующие автосейвы не затирали его пустой строкой.
+    // Current save name (see saveToSlot()): typed on an explicit SAVE, or empty if the session
+    // started via NEW GAME and was not saved manually (the slot picker then shows a generic label).
+    // loadSlot() copies it from the file so later autosaves keep it.
     std::string m_saveName;
-
-    // Построение геометрии (addQuad/addCylinder/addSphere/addTorchMesh/
-    // addWinButtonMesh/buildFloorAndWallsGreedy/build) полностью вынесено
-    // в SceneGeometry — см. m_geometry.build(...) в init().
 
     GLuint compileShader(GLenum type, const char* src);
     GLuint linkProgram(GLuint vs, GLuint fs);

@@ -1,15 +1,21 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <climits>
 #include <cstdint>
 #include <cstring>
+#include <cwctype>
 #include <cmath>
 #include <fstream>
 #include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
+
+// See src/audio/Mp3Decoder.cpp for why the implementation lives in its own translation unit: this
+// include only declares the functions (mp3dec_load_w() etc.).
+#include "minimp3_ex.h"
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -19,97 +25,36 @@
 #include <mmsystem.h>
 #endif
 
-// ============================================================================
-// AudioMixer — ОБЩИЙ на весь процесс пул из нескольких независимых
-// "голосов" поверх WinMM (waveOut*), а не PlaySoundW.
+// Process-wide pool of independent voices on WinMM (waveOut*), used instead of PlaySoundW, which is
+// a single channel per process and silently dropped sounds requested while another played.
+// kVoiceCount HWAVEOUTs are opened once in init(); play() takes a free voice or steals the least
+// important one.
 //
-// ПОЧЕМУ ЭТОТ ФАЙЛ ПОЯВИЛСЯ (баг из живого теста с 7 врагами, см.
-// DungeonScene::kEnemyCount): PlaySoundW — это ОДИН системный "канал" на
-// весь процесс (см. старые комментарии в FootstepAudio.h/EnemyAudio.h —
-// ограничение было известно и заявлено как приемлемое для РЕДКИХ, КОРОТКИХ
-// реплик ОДНОГО врага). Как только в игре оказалось 7 врагов + сам игрок,
-// все они дёргают ОДИН и тот же общий канал PlaySoundW — с флагом
-// SND_NOSTOP это значит, что пока играет чей-то один звук (особенно шаги
-// с их 1.2-1.3с эхо-хвостом, см. README_AUDIO.txt), ЛЮБОЙ другой запрос —
-// шаги другого врага, шаги игрока, рык, крик обнаружения — просто молча
-// НЕ проигрывается. Ровно это и наблюдалось: "шаги только у одного",
-// "крика иногда нет вообще" (сработал в момент, когда канал был занят
-// чьими-то шагами).
+// Volume is applied in software into a per-voice buffer (Voice::scaledBuffer): waveOutSetVolume()
+// is not used because many drivers apply it to the whole device. The format is fixed at mono /
+// 16-bit / 48000 Hz (other WAVs are converted on load); decoded SFX are cached for the process
+// lifetime and shared read-only between voices.
 //
-// РЕШЕНИЕ — свой пул из kVoiceCount РЕАЛЬНО независимых `HWAVEOUT`
-// (открыты один раз, не на каждый Play — открытие устройства не бесплатно
-// по времени). Windows позволяет открыть НЕСКОЛЬКО waveOut-хендлов на
-// устройство по умолчанию одновременно — микс делает сама ОС, честно и
-// одновременно, без ограничения "один канал". Каждый Play() ищет
-// свободный голос (или, если все заняты, "крадёт" самый старый по
-// круговому счётчику, а не молча отбрасывает новый звук — лучше оборвать
-// давно играющий эффект, чем не дать прозвучать новому крику/шагу).
-//
-// ДИНАМИЧЕСКАЯ ГРОМКОСТЬ ПО ДИСТАНЦИИ — ради этого явно принимается
-// float volume (0..1) в play(), а не только имя файла: PlaySoundW вообще
-// не даёт регулировать громкость отдельного проигрывания. Значит нужен
-// СВОЙ, программный способ регулировать громкость каждого проигрывания
-// НЕЗАВИСИМО от остальных — см. большой БАГФИКС ниже про то, почему это
-// НЕ waveOutSetVolume.
-//
-// БАГФИКС ("когда игрок начинает ходить — громкость звука врага скачет
-// вверх, хотя расстояние до игрока не менялось") — первая версия этого
-// файла регулировала громкость через waveOutSetVolume(hwo, volume) на
-// каждый голос отдельно, предполагая, что это per-handle настройка
-// (так документировано формально). НА ПРАКТИКЕ на многих реальных
-// Windows-драйверах (особенно через WAVE_MAPPER на обычных встроенных
-// звуковых картах) waveOutSetVolume регулирует громкость всего
-// устройства/аппаратного микшера ЦЕЛИКОМ, а не конкретного открытого
-// хэндла — то есть вызов на ОДНОМ голосе (например, шаги игрока на
-// полной громкости 1.0) реально задирал общую громкость устройства, и
-// ЛЮБОЙ другой звук, УЖЕ игравший в этот момент тише (например, дальний
-// враг) — резко становился громче вместе с ним, хотя его собственные
-// параметры не менялись.
-//
-// РЕШЕНИЕ — громкость больше НЕ трогает устройство вообще: каждый
-// play() масштабирует САМИ САМПЛЫ (PCM) под нужную громкость программно,
-// в свой собственный, привязанный к конкретному голосу буфер (см. Voice::
-// scaledBuffer ниже), и отдаёт WinMM уже готовый, отмасштабированный
-// звук. Раз устройство никогда не получает команду "стань громче/тише"
-// — громкость одного голоса физически не может повлиять на другой.
-// Цена — по сравнению с прежним подходом (общий read-only буфер на все
-// голоса) каждый Play() один раз проходит по своим сэмплам и умножает
-// их (для файла в пару секунд на 48kHz это доли миллисекунды, незаметно
-// даже при частых шагах).
-//
-// ФОРМАТ — фиксированный: моно/16-бит/48000 Гц. Это ровно формат ВСЕХ
-// текущих ассетов (assets/audio/footsteps и assets/audio/enemy, см.
-// README_AUDIO.txt) — голоса открываются с этим форматом один раз при
-// init(), а не пересоздаются под формат каждого файла. WAV-файлы иного
-// формата (другая частота/битность/стерео) на лету конвертируются в этот
-// же формат при первой загрузке (см. LoadAndConvertWav()) — так что
-// новый ассет "неправильного" формата не сломает микшер, просто получит
-// небольшую (обычно неразличимую на слух) деградацию качества от
-// ресемплинга.
-//
-// КЭШ PCM — декодированные сэмплы каждого файла держатся в памяти на всё
-// время жизни процесса (по пути к файлу как ключ) — иначе каждый шаг
-// каждого из 7 врагов заново читал бы и парсил WAV с диска, десятки раз
-// в секунду. Данные разделяются МЕЖДУ голосами (WAVEHDR::lpData
-// указывает на общий, доступный только для чтения буфер) — это безопасно,
-// т.к. WinMM только читает из буфера во время проигрывания, не пишет.
-//
-// На не-Windows платформах — как и везде в audio/ — безопасный no-op:
-// isAvailable()==false, play() ничего не делает, движок собирается без
-// платформенной звуковой зависимости.
-// ============================================================================
+// On non-Windows platforms it is a no-op (isAvailable() == false).
 class AudioMixer {
 public:
+    // Identifies one play() call so it can be stopped early via stop() without silencing an
+    // unrelated sound that later reused the same voice slot. startOrder is a generation check: if
+    // the slot was recycled it will not match and stop() does nothing.
+    struct VoiceHandle {
+        int index = -1;
+        std::uint64_t startOrder = 0;
+    };
+
     static AudioMixer& instance()
     {
         static AudioMixer mixer;
         return mixer;
     }
 
-    // Идемпотентно — вызывается из каждого EnemyAudio::init() (по одному
-    // на врага, см. EnemyAI::init()) и из FootstepAudio::init() (игрок).
-    // Реально открывает голоса только один раз; повторные вызовы, пока
-    // уже доступен, сразу возвращают true.
+    // Idempotent: called from every EnemyAudio::init() (one per enemy) and from
+    // FootstepAudio::init() (player). It opens the voices only once; repeat calls while available
+    // just return true.
     bool init()
     {
 #ifdef _WIN32
@@ -156,6 +101,13 @@ public:
             return false;
         }
 
+        // A dedicated handle for the streamed music channel (see MusicChannel), separate from the
+        // SFX pool so a long ambient track can never be evicted by voice stealing. Failing to open
+        // it is not fatal: SFX still work and music just does not play.
+        m_music = MusicChannel{};
+        const MMRESULT musicOpenResult = m_waveOutOpen(&m_music.handle, WAVE_MAPPER, &fmt, 0, 0, CALLBACK_NULL);
+        m_music.opened = (musicOpenResult == MMSYSERR_NOERROR);
+
         m_winmm = winmm;
         m_available = true;
         return true;
@@ -177,53 +129,49 @@ public:
             v = Voice{};
         }
 
+        if (m_music.opened) {
+            m_waveOutReset(m_music.handle);
+            for (int i = 0; i < 2; ++i) {
+                if (m_music.chunkQueued[i])
+                    m_waveOutUnprepareHeader(m_music.handle, &m_music.headers[i], sizeof(WAVEHDR));
+            }
+            m_waveOutClose(m_music.handle);
+        }
+        m_music = MusicChannel{};
+
         if (m_winmm)
             FreeLibrary(m_winmm);
         m_winmm = nullptr;
         m_available = false;
-        // Кэш PCM НЕ чистим — данные маленькие, а следующий init() (новый
-        // уровень) избежит повторного чтения/парсинга с диска.
+        // The PCM cache is not cleared: the data is small, and the next init() (a new level) skips
+        // re-reading and parsing from disk.
 #endif
     }
 
-    // absolutePath — уже разрешённый путь к файлу (см. locateAsset() в
-    // FootstepAudio.h/EnemyAudio.h — они по-прежнему сами ищут файл
-    // относительно .exe/cwd, сюда передаётся готовый результат).
-    // volume — 0..1, вычисляется СНАРУЖИ (обычно по дистанции до
-    // слушателя, см. EnemyAI.cpp) — микшер сам ничего не знает ни о
-    // позициях, ни о камере.
-    // priority — см. большой комментарий класса выше про "некоторые
-    // звуки не проигрываются": используется ТОЛЬКО когда все голоса
-    // заняты (см. reclaimFinishedVoices()/поиск свободного голоса ниже)
-    // — тогда вытесняется занятый голос с НАИМЕНЬШИМ приоритетом (при
-    // равенстве — начатый раньше остальных), а не случайный/по кругу.
-    // Так частые малозначимые звуки (шаги) уступают место редким важным
-    // (крик обнаружения, удар о стену), а не наоборот. Если приоритет
-    // НОВОГО звука ниже, чем у ВСЕГО, что сейчас играет (пул забит
-    // важными звуками) — жертвуем новым, не обрываем что-то важное ради
-    // ещё одного шага. Условные уровни (см. вызывающий код): 0 —
-    // частые/фоновые (шаги врага), 1 — редкие атмосферные (шаги игрока,
-    // стон), 2 — важные разовые события (крик обнаружения, удар о
-    // стену).
-    void play(const std::wstring& absolutePath, float volume, int priority)
+    // volume (0..1) is computed by the caller; the mixer knows nothing about positions. When the
+    // pool is full the lowest-priority voice is evicted (ties: oldest), and a new sound below
+    // everything playing is dropped. Priorities: 0 ambient/frequent, 1 atmospheric, 2 important
+    // one-offs. The returned VoiceHandle is needed only to stop() this exact sound; scaled by
+    // MASTER only (music never uses this pool).
+    VoiceHandle play(const std::wstring& absolutePath, float volume, int priority)
     {
 #ifdef _WIN32
         if (!m_available || absolutePath.empty())
-            return;
+            return VoiceHandle{};
+
+        volume *= m_masterVolume;
 
         if (volume < 0.0f) volume = 0.0f;
         if (volume > 1.0f) volume = 1.0f;
-        // Ниже порога слышимости — не тратим голос на звук, который всё
-        // равно никто не услышит (см. дистанционное затухание в
-        // EnemyAI.cpp — там своя "дальняя" граница, это отдельный,
-        // более низкий технический порог на случай крошечных отличных
-        // от нуля значений).
+        // Below the audibility threshold: do not spend a voice on a sound nobody would hear
+        // (distance falloff has its own far cutoff in EnemyAI.cpp; this is a separate, lower
+        // technical floor for tiny nonzero values).
         if (volume <= 0.002f)
-            return;
+            return VoiceHandle{};
 
         const std::shared_ptr<std::vector<int16_t>> pcm = getOrLoadPcm(absolutePath);
         if (!pcm || pcm->empty())
-            return;
+            return VoiceHandle{};
 
         reclaimFinishedVoices();
 
@@ -236,12 +184,9 @@ public:
         }
 
         if (chosen < 0) {
-            // Все голоса заняты — ищем среди занятых наименее важный
-            // (приоритет, при равенстве — самый старый по startOrder),
-            // а не первый попавшийся по кругу (см. большой комментарий
-            // у параметра priority выше — именно это раньше приводило
-            // к тому, что случайные звуки, включая важные, терялись
-            // одинаково часто, как и шаги).
+            // All voices busy: find the least important one (by priority, ties broken by the oldest
+            // startOrder) instead of taking the next one round-robin, which dropped important
+            // sounds as often as footsteps.
             int worstIdx = -1;
             int worstPriority = INT_MAX;
             std::uint64_t worstOrder = UINT64_MAX;
@@ -258,10 +203,12 @@ public:
             }
 
             if (worstIdx < 0)
-                return; // ни один голос вообще не открылся — не должно происходить
+                return VoiceHandle{}; // no voice ever opened at all — shouldn't happen
 
             if (priority < worstPriority)
-                return; // новый звук менее важен, чем вообще всё, что сейчас играет — жертвуем им, не обрываем важное
+                // the new sound is less important than everything playing: drop it instead of
+                // cutting off something important
+                return VoiceHandle{};
 
             chosen = worstIdx;
             Voice& stolen = m_voices[chosen];
@@ -273,15 +220,11 @@ public:
 
         Voice& v = m_voices[chosen];
         if (!v.opened)
-            return;
+            return VoiceHandle{};
 
-        // Громкость — программно, в СВОЙ буфер этого голоса (см. большой
-        // БАГФИКС-комментарий класса выше про то, почему НЕ через
-        // waveOutSetVolume). pcm — общий, доступный только для чтения
-        // оригинал; v.scaledBuffer принадлежит конкретно этому голосу и
-        // безопасно перезаписывается здесь же — WinMM в этот момент уже
-        // точно не читает из него (голос либо был свободен, либо мы
-        // только что сами его остановили выше через waveOutReset).
+        // Volume is applied into this voice's own buffer (pcm is the shared read-only original); it
+        // is safe to overwrite because WinMM is not reading it (the voice was free or was just
+        // reset).
         v.scaledBuffer.resize(pcm->size());
         for (size_t i = 0; i < pcm->size(); ++i) {
             float sample = (float)(*pcm)[i] * volume;
@@ -295,20 +238,167 @@ public:
         v.header.dwBufferLength = (DWORD)(v.scaledBuffer.size() * sizeof(int16_t));
 
         if (m_waveOutPrepareHeader(v.handle, &v.header, sizeof(WAVEHDR)) != MMSYSERR_NOERROR)
-            return;
+            return VoiceHandle{};
 
         if (m_waveOutWrite(v.handle, &v.header, sizeof(WAVEHDR)) != MMSYSERR_NOERROR) {
             m_waveOutUnprepareHeader(v.handle, &v.header, sizeof(WAVEHDR));
-            return;
+            return VoiceHandle{};
         }
 
         v.priority = priority;
         v.startOrder = m_playCounter++;
         v.busy = true;
+        return VoiceHandle{ chosen, v.startOrder };
 #else
         (void)absolutePath;
         (void)volume;
         (void)priority;
+        return VoiceHandle{};
+#endif
+    }
+
+    // Stops one playback early, identified by the handle play() returned. A stale handle (already
+    // finished, or the slot recycled for another sound) is a no-op instead of silencing whatever
+    // plays there now.
+    void stop(VoiceHandle handle)
+    {
+#ifdef _WIN32
+        if (!m_available || handle.index < 0 || handle.index >= (int)m_voices.size())
+            return;
+
+        Voice& v = m_voices[handle.index];
+        if (!v.opened || !v.busy || v.startOrder != handle.startOrder)
+            return; // already finished on its own, or this voice moved on to something else
+
+        m_waveOutReset(v.handle);
+        m_waveOutUnprepareHeader(v.handle, &v.header, sizeof(WAVEHDR));
+        v.busy = false;
+#else
+        (void)handle;
+#endif
+    }
+
+    // Scales every sound the mixer plays, the SFX pool and the music channel alike. Applied lazily
+    // (per play() call for SFX, per chunk for music), never retroactively to audio already handed
+    // to WinMM.
+    void setMasterVolume(float volume01)
+    {
+        m_masterVolume = std::clamp(volume01, 0.0f, 1.0f);
+    }
+    float masterVolume() const { return m_masterVolume; }
+
+    // Scales the music channel only, on top of the master volume; plain SFX are unaffected.
+    void setMusicVolume(float volume01)
+    {
+        m_musicVolume = std::clamp(volume01, 0.0f, 1.0f);
+    }
+    float musicVolume() const { return m_musicVolume; }
+
+    // Streamed music channel: play() scales a whole clip once, so a later volume change cannot
+    // reach it. This channel streams double-buffered chunks (kMusicChunkSamples) re-scaled from the
+    // current volume, which lets the diary duck fade smoothly. One track, no looping; GameplayMusic
+    // decides what plays next. A dedicated HWAVEOUT keeps it immune to voice stealing.
+
+    // Starts a new track, replacing the current one; false if the channel is unavailable or
+    // decoding fails. The whole file is decoded synchronously on the calling thread (about 0.2 s
+    // for the current track at -O2), so it stalls the frame. It decodes into the reused m_music.pcm
+    // buffer, which stopMusicInternal() deliberately leaves intact.
+    bool playMusic(const std::wstring& absolutePath)
+    {
+#ifdef _WIN32
+        if (!m_available || !m_music.opened || absolutePath.empty())
+            return false;
+
+        // Stop first: the decode below writes into m_music.pcm, which may still be the buffer being
+        // played. On decode failure outSamples is never touched (both decoders write only on
+        // success), so stale data there is harmless.
+        stopMusicInternal();
+
+        if (!LoadAndConvertAudioFile(absolutePath, m_music.pcm) || m_music.pcm.empty())
+            return false;
+
+        m_music.cursorSample = 0;
+        m_music.active = true;
+
+        // Prime both chunks immediately so playback starts at once instead of waiting for the first
+        // update() to notice an empty buffer.
+        fillAndQueueMusicChunk(0);
+        fillAndQueueMusicChunk(1);
+        return true;
+#else
+        (void)absolutePath;
+        return false;
+#endif
+    }
+
+    // Stops the streamed channel immediately (not a fade: for that, ramp setMusicDuckTarget() down
+    // and let the track finish on its own, then do not start another). Safe to call when nothing is
+    // playing.
+    void stopMusic()
+    {
+#ifdef _WIN32
+        stopMusicInternal();
+#endif
+    }
+
+    // True while the streamed channel still has audio to play (false once the track has run past
+    // its last sample and both chunks have drained). GameplayMusic polls this to know when to
+    // schedule the next random track.
+    bool isMusicPlaying() const
+    {
+#ifdef _WIN32
+        return m_music.active;
+#else
+        return false;
+#endif
+    }
+
+    // Sets where the duck ramp (see update()) is headed; it is not an instant jump. update() moves
+    // the actual multiplier toward this at kMusicDuckRampPerSecond, giving a gradual fade rather
+    // than a cut.
+    void setMusicDuckTarget(float duck01)
+    {
+        m_musicDuckTarget = std::clamp(duck01, 0.0f, 1.0f);
+    }
+
+    // Per-frame maintenance: advances the duck ramp and refills finished chunks. Call it every
+    // frame unconditionally, even while gameplay is paused (e.g. the diary overlay).
+    void update(float deltaTime)
+    {
+#ifdef _WIN32
+        if (deltaTime > 0.0f) {
+            const float maxStep = kMusicDuckRampPerSecond * deltaTime;
+            if (m_musicDuckCurrent < m_musicDuckTarget)
+                m_musicDuckCurrent = std::min(m_musicDuckTarget, m_musicDuckCurrent + maxStep);
+            else if (m_musicDuckCurrent > m_musicDuckTarget)
+                m_musicDuckCurrent = std::max(m_musicDuckTarget, m_musicDuckCurrent - maxStep);
+        }
+
+        if (!m_available || !m_music.opened || !m_music.active)
+            return;
+
+        bool anyStillActive = false;
+        for (int i = 0; i < 2; ++i) {
+            if (!m_music.chunkQueued[i]) {
+                continue;
+            }
+            if (m_music.headers[i].dwFlags & WHDR_DONE) {
+                m_waveOutUnprepareHeader(m_music.handle, &m_music.headers[i], sizeof(WAVEHDR));
+                m_music.chunkQueued[i] = false;
+                if (m_music.cursorSample < m_music.pcm.size())
+                    fillAndQueueMusicChunk(i);
+            }
+            if (m_music.chunkQueued[i])
+                anyStillActive = true;
+        }
+
+        if (!anyStillActive && m_music.cursorSample >= m_music.pcm.size()) {
+            // Both chunks drained and no more source data: the track ended. m_music.pcm is
+            // intentionally kept (reused buffer) so the next play does not reallocate it.
+            m_music.active = false;
+        }
+#else
+        (void)deltaTime;
 #endif
     }
 
@@ -320,8 +410,18 @@ private:
     AudioMixer(const AudioMixer&) = delete;
     AudioMixer& operator=(const AudioMixer&) = delete;
 
-    static constexpr int kVoiceCount = 24; // с запасом: 7 врагов × шаги с длинным эхо-хвостом друг поверх друга + стоны/крики + игрок
+    // headroom for overlapping long-echo footsteps of all enemies plus moans/screams and the player
+    static constexpr int kVoiceCount = 24;
     static constexpr unsigned long kSampleRate = 48000;
+
+    float m_masterVolume = 1.0f;
+    float m_musicVolume = 1.0f;
+
+    float m_musicDuckTarget = 1.0f;
+    float m_musicDuckCurrent = 1.0f;
+    // A 0.2 step takes 0.2 / 0.08 = 2.5 s to settle: audible as a fade, not instant, without
+    // feeling stuck.
+    static constexpr float kMusicDuckRampPerSecond = 0.08f;
 
 #ifdef _WIN32
     struct Voice {
@@ -331,44 +431,128 @@ private:
         bool busy = false;
         int priority = 0;
         std::uint64_t startOrder = 0;
-        // Собственный, отмасштабированный под конкретную громкость этого
-        // проигрывания буфер (см. большой БАГФИКС-комментарий класса
-        // выше) — НЕ общий с кэшем m_pcmCache.
+        // Own buffer, scaled to this playback's volume (see the class comment); not shared with the
+        // m_pcmCache entries.
         std::vector<int16_t> scaledBuffer;
     };
 
-    // БАГФИКС ("игра стала есть на 15-20 МБ ОЗУ больше, чем до аудио-
-    // системы") — resize() у std::vector НИКОГДА не освобождает уже
-    // выделенную память при уменьшении размера, только растит capacity.
-    // Голоса переиспользуются под РАЗНЫЕ файлы (маленький шаг сейчас,
-    // большой стон через минуту, снова маленький шаг после) — без явного
-    // освобождения буфер каждого голоса рос бы до размера САМОГО
-    // большого файла, который он хоть раз проиграл (moan_3.wav — 550КБ),
-    // и оставался бы таким навсегда, даже играя дальше только шаги.
-    // При 24 голосах, каждый из которых со временем нахватывает хотя бы
-    // один стон, этореально ~24×500КБ ≈ 12МБ мёртвого груза. Здесь, как
-    // только голос НАВЕРНЯКА закончил играть (и какое-то время будет
-    // простаивать — до следующего Play() в него), сразу отдаём память
-    // обратно: пиковое потребление теперь отслеживает РЕАЛЬНО играющие
-    // прямо сейчас звуки, а не исторический максимум по каждому голосу.
+    // Marks finished voices free. Voice::scaledBuffer is deliberately not shrunk: it settles at the
+    // largest file played and is reused, avoiding allocation churn on frequent footsteps.
     void reclaimFinishedVoices()
     {
         for (auto& v : m_voices) {
             if (v.opened && v.busy && (v.header.dwFlags & WHDR_DONE)) {
                 m_waveOutUnprepareHeader(v.handle, &v.header, sizeof(WAVEHDR));
                 v.busy = false;
-                v.scaledBuffer.clear();
-                v.scaledBuffer.shrink_to_fit();
             }
         }
     }
 
-    // Читает WAV-файл (канонический PCM RIFF/WAVE, 8 или 16 бит, моно
-    // или стерео, любая частота) и конвертирует в формат голосов
-    // (моно/16-бит/48000) — те же приёмы (усреднение каналов, линейная
-    // интерполяция при ресемплинге), что использовались при подготовке
-    // самих ассетов (см. README_AUDIO.txt), только теперь встроены в
-    // движок на случай, если когда-нибудь добавится файл другого формата.
+    struct MusicChannel {
+        HWAVEOUT handle = nullptr;
+        bool opened = false;
+        WAVEHDR headers[2]{};
+        std::vector<int16_t> chunkBuffers[2];
+        bool chunkQueued[2] = { false, false };
+        // Reused across plays (see playMusic()) instead of freed: one heap allocation for the
+        // process lifetime.
+        std::vector<int16_t> pcm;
+        size_t cursorSample = 0;
+        bool active = false; // a track is loaded/playing (may be inaudible if duck has faded it to 0)
+    };
+
+    // ~100 ms per chunk: short enough for a duck/volume change to read as a smooth fade, long
+    // enough that refilling once per frame normally keeps WinMM fed. A frame stall longer than the
+    // two queued chunks (~200 ms) would underrun.
+    static constexpr size_t kMusicChunkSamples = kSampleRate / 10;
+
+    // Copies the next chunk of samples from m_music.pcm into chunkBuffers[idx] at the current
+    // combined volume (master x music x duck) and submits it to WinMM. A short final chunk is
+    // padded with silence instead of being special-cased.
+    void fillAndQueueMusicChunk(int idx)
+    {
+        MusicChannel& m = m_music;
+        if (!m.opened || m.pcm.empty())
+            return;
+
+        const float volume = std::clamp(m_masterVolume * m_musicVolume * m_musicDuckCurrent, 0.0f, 1.0f);
+
+        std::vector<int16_t>& buf = m.chunkBuffers[idx];
+        buf.assign(kMusicChunkSamples, 0);
+
+        const size_t remaining = (m.cursorSample < m.pcm.size()) ? (m.pcm.size() - m.cursorSample) : 0;
+        const size_t toCopy = std::min(remaining, kMusicChunkSamples);
+        for (size_t i = 0; i < toCopy; ++i) {
+            float sample = (float)m.pcm[m.cursorSample + i] * volume;
+            if (sample > 32767.0f) sample = 32767.0f;
+            if (sample < -32768.0f) sample = -32768.0f;
+            buf[i] = (int16_t)sample;
+        }
+        m.cursorSample += toCopy;
+
+        m.headers[idx] = WAVEHDR{};
+        m.headers[idx].lpData = reinterpret_cast<LPSTR>(buf.data());
+        m.headers[idx].dwBufferLength = (DWORD)(buf.size() * sizeof(int16_t));
+
+        if (m_waveOutPrepareHeader(m.handle, &m.headers[idx], sizeof(WAVEHDR)) != MMSYSERR_NOERROR)
+            return;
+        if (m_waveOutWrite(m.handle, &m.headers[idx], sizeof(WAVEHDR)) != MMSYSERR_NOERROR) {
+            m_waveOutUnprepareHeader(m.handle, &m.headers[idx], sizeof(WAVEHDR));
+            return;
+        }
+        m.chunkQueued[idx] = true;
+    }
+
+    // Shared teardown for playMusic() and stopMusic(): resets the channel to idle. It leaves
+    // m_music.pcm's contents untouched; that buffer is reused between plays, not freed.
+    void stopMusicInternal()
+    {
+        if (!m_music.opened)
+            return;
+        m_waveOutReset(m_music.handle); // marks any queued headers WHDR_DONE and stops audio immediately
+        for (int i = 0; i < 2; ++i) {
+            if (m_music.chunkQueued[i]) {
+                m_waveOutUnprepareHeader(m_music.handle, &m_music.headers[i], sizeof(WAVEHDR));
+                m_music.chunkQueued[i] = false;
+            }
+        }
+        m_music.cursorSample = 0;
+        m_music.active = false;
+    }
+
+    // Shared tail of both loaders below: mono float samples in [-1, 1] at srcSampleRate -> int16
+    // samples at the mixer's fixed kSampleRate, by linear interpolation (good enough for game
+    // audio). Both formats go through the same resampling path.
+    static void DownmixedToOutputSamples(const std::vector<float>& mono, unsigned int srcSampleRate,
+                                          std::vector<int16_t>& outSamples)
+    {
+        if (srcSampleRate == kSampleRate) {
+            outSamples.resize(mono.size());
+            for (size_t i = 0; i < mono.size(); ++i) {
+                float v = mono[i];
+                if (v > 1.0f) v = 1.0f;
+                if (v < -1.0f) v = -1.0f;
+                outSamples[i] = (int16_t)(v * 32767.0f);
+            }
+            return;
+        }
+
+        const size_t outCount = (size_t)((double)mono.size() * (double)kSampleRate / (double)srcSampleRate);
+        outSamples.resize(outCount);
+        for (size_t i = 0; i < outCount; ++i) {
+            const double srcPos = (double)i * (double)srcSampleRate / (double)kSampleRate;
+            const size_t i0 = (size_t)srcPos;
+            const size_t i1 = (i0 + 1 < mono.size()) ? i0 + 1 : i0;
+            const float frac = (float)(srcPos - (double)i0);
+            float v = mono[i0] * (1.0f - frac) + mono[i1] * frac;
+            if (v > 1.0f) v = 1.0f;
+            if (v < -1.0f) v = -1.0f;
+            outSamples[i] = (int16_t)(v * 32767.0f);
+        }
+    }
+
+    // Reads a canonical PCM WAV (8/16 bit, mono/stereo, any rate) and converts it to the voice
+    // format: channel averaging plus linear resampling.
     static bool LoadAndConvertWav(const std::wstring& path, std::vector<int16_t>& outSamples)
     {
         std::ifstream file(path.c_str(), std::ios::binary);
@@ -417,7 +601,7 @@ private:
         if (!haveFmt || dataChunk.empty() || channels == 0 || sampleRate == 0)
             return false;
         if (bitsPerSample != 8 && bitsPerSample != 16)
-            return false; // 24/32-бит редкие ассеты уже сконвертированы заранее в pipeline подготовки
+            return false; // rare 24/32-bit assets are already converted ahead of time in the prep pipeline
 
         const size_t bytesPerSample = bitsPerSample / 8;
         const size_t frameCount = dataChunk.size() / (bytesPerSample * channels);
@@ -440,42 +624,67 @@ private:
             mono[i] = sum / (float)channels;
         }
 
-        if (sampleRate == kSampleRate) {
-            outSamples.resize(mono.size());
-            for (size_t i = 0; i < mono.size(); ++i) {
-                float v = mono[i];
-                if (v > 1.0f) v = 1.0f;
-                if (v < -1.0f) v = -1.0f;
-                outSamples[i] = (int16_t)(v * 32767.0f);
-            }
-            return true;
-        }
-
-        // Линейная интерполяция под фиксированную частоту голосов —
-        // достаточно для коротких игровых эффектов (не музыка).
-        const size_t outCount = (size_t)((double)mono.size() * (double)kSampleRate / (double)sampleRate);
-        outSamples.resize(outCount);
-        for (size_t i = 0; i < outCount; ++i) {
-            const double srcPos = (double)i * (double)sampleRate / (double)kSampleRate;
-            const size_t i0 = (size_t)srcPos;
-            const size_t i1 = (i0 + 1 < mono.size()) ? i0 + 1 : i0;
-            const float frac = (float)(srcPos - (double)i0);
-            float v = mono[i0] * (1.0f - frac) + mono[i1] * frac;
-            if (v > 1.0f) v = 1.0f;
-            if (v < -1.0f) v = -1.0f;
-            outSamples[i] = (int16_t)(v * 32767.0f);
-        }
+        DownmixedToOutputSamples(mono, sampleRate, outSamples);
         return true;
     }
 
+    // MP3 decoding via minimp3 (implementation unit: Mp3Decoder.cpp). Same failure semantics as
+    // LoadAndConvertWav() (false = do not play) and the same downmix/resample tail.
+    static bool LoadAndConvertMp3(const std::wstring& path, std::vector<int16_t>& outSamples)
+    {
+        mp3dec_t mp3d;
+        // zero-initialized: info.buffer must be nullptr on any early failure so the free() below is
+        // safe (free(nullptr) is a no-op)
+        mp3dec_file_info_t info = {};
+        if (mp3dec_load_w(&mp3d, path.c_str(), &info, nullptr, nullptr) != 0 ||
+            !info.buffer || info.samples == 0 || info.channels <= 0)
+        {
+            if (info.buffer) free(info.buffer);
+            return false;
+        }
+
+        const size_t channels = (size_t)info.channels;
+        const size_t frameCount = info.samples / channels;
+
+        std::vector<float> mono(frameCount);
+        for (size_t i = 0; i < frameCount; ++i) {
+            float sum = 0.0f;
+            for (size_t c = 0; c < channels; ++c)
+                sum += info.buffer[i * channels + c] / 32768.0f;
+            mono[i] = sum / (float)channels;
+        }
+        free(info.buffer);
+
+        DownmixedToOutputSamples(mono, (unsigned int)info.hz, outSamples);
+        return true;
+    }
+
+    // Dispatches to the decoder by file extension. Everything downstream (caching, volume scaling,
+    // mixing) is format-agnostic: both loaders produce the same std::vector<int16_t> at the mixer's
+    // fixed sample rate.
+    static bool LoadAndConvertAudioFile(const std::wstring& path, std::vector<int16_t>& outSamples)
+    {
+        if (path.size() >= 4) {
+            std::wstring ext = path.substr(path.size() - 4);
+            for (wchar_t& c : ext) c = (wchar_t)std::towlower(c);
+            if (ext == L".mp3")
+                return LoadAndConvertMp3(path, outSamples);
+        }
+        return LoadAndConvertWav(path, outSamples);
+    }
+
+    // Caches decoded SFX forever, keyed by path: cheap for the small, frequently replayed files
+    // this pool handles. Music does not use this cache (see playMusic()): a multi-minute track is
+    // tens of MB decoded and would stay in memory after a single play.
     std::shared_ptr<std::vector<int16_t>> getOrLoadPcm(const std::wstring& path)
     {
         const auto it = m_pcmCache.find(path);
         if (it != m_pcmCache.end())
-            return it->second; // может быть nullptr — файл уже пытались загрузить и не смогли, не повторяем попытку каждый Play()
+            // may be nullptr: loading this file already failed, do not retry on every play()
+            return it->second;
 
         auto samples = std::make_shared<std::vector<int16_t>>();
-        if (!LoadAndConvertWav(path, *samples) || samples->empty())
+        if (!LoadAndConvertAudioFile(path, *samples) || samples->empty())
             samples.reset();
 
         m_pcmCache[path] = samples;
@@ -501,6 +710,8 @@ private:
     std::array<Voice, kVoiceCount> m_voices;
     std::uint64_t m_playCounter = 0;
     std::unordered_map<std::wstring, std::shared_ptr<std::vector<int16_t>>> m_pcmCache;
+
+    MusicChannel m_music;
 #else
     bool m_available = false;
 #endif

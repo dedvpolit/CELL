@@ -11,9 +11,8 @@ void EnemyCharacter::attachSharedModel(const SkinnedModel* sharedModel)
 
 void EnemyCharacter::destroy()
 {
-    // Ничего не освобождаем на GPU — модель НЕ наша (см. большой
-    // комментарий в .h): владеет и освобождает её DungeonScene через
-    // m_enemySharedModel.destroy(), один раз на всех.
+    // Nothing is freed on the GPU: the model is not ours; DungeonScene owns and frees it via
+    // m_enemySharedModel.destroy(), once for everyone.
     m_model = nullptr;
     m_loaded = false;
 }
@@ -43,37 +42,15 @@ void EnemyCharacter::update(float deltaTime)
 
     m_stateTime += deltaTime;
 
-    // БАГФИКС ("враг скользит, а не идёт") — раньше клип двигался СТРОГО
-    // в реальном времени (m_currentClipTime += deltaTime) независимо от
-    // того, сколько мир-юнитов персонаж реально прошёл за этот кадр. При
-    // любой рассинхронизации между скоростью перемещения (EnemyAI) и
-    // длиной шага, "зашитой" в саму анимацию, это читалось как
-    // скольжение/катание — а если движение вообще было прервано
-    // столкновением (стена/игрок, см. EnemyAI::resolveWallCollision()) и
-    // персонаж в итоге прошёл МЕНЬШЕ положенного, ноги всё равно
-    // доигрывали полный "временной" шаг вникуда, хотя тело стояло почти
-    // на месте.
-    //
-    // Для локомоционных состояний (Walk/Run) клип теперь двигается
-    // ПРОПОРЦИОНАЛЬНО ФАКТИЧЕСКИ ПРОЙДЕННОМУ РАССТОЯНИЮ за кадр, а не
-    // времени: clipDeltaTime = distance / referenceSpeed. При движении
-    // РОВНО с референсной скоростью (нет столкновений/торможения)
-    // формула алгебраически сводится обратно к deltaTime — клип идёт
-    // ровно как раньше, 1:1. При частичной/полной блокировке движения
-    // (упёрся в стену/игрока) — пропорционально меньше вплоть до полной
-    // остановки анимации, что и должно быть у стоящей на месте фигуры.
-    // Idle/Attack/WallSlam/Scream не двигают тело вообще — им distance
-    // всегда ~0, поэтому они намеренно ОСТАВЛЕНЫ на time-based ниже, а
-    // не просто "случайно получили бы то же самое".
-    //
-    // kWalkReferenceSpeed/kRunReferenceSpeed — ДОЛЖНЫ совпадать с
-    // kEnemyWalkSpeed/kEnemyRunSpeed в EnemyAI.cpp (это "на какой
-    // скорости клип задуман идти с темпом 1:1"; поменяются там —
-    // обновить и здесь).
-    const float kWalkReferenceSpeed = 0.55f; // = kEnemyWalkSpeed в EnemyAI.cpp
-    const float kRunReferenceSpeed = 2.0f;  // = kEnemyRunSpeed в EnemyAI.cpp
+    // For Walk/Run the clip advances by the distance actually travelled (clipDeltaTime = distance /
+    // referenceSpeed) instead of time, so a mismatch between movement speed and the baked stride
+    // does not read as skating, and a blocked body stops its legs. At the reference speed this
+    // equals deltaTime. Other states do not move and use time. kWalk/RunReferenceSpeed must match
+    // kEnemyWalk/RunSpeed in EnemyAI.cpp.
+    const float kWalkReferenceSpeed = 0.55f; // = kEnemyWalkSpeed in EnemyAI.cpp
+    const float kRunReferenceSpeed = 2.0f;  // = kEnemyRunSpeed in EnemyAI.cpp
 
-    float clipDeltaTime = deltaTime; // дефолт — старое поведение (Idle/Attack/WallSlam/Scream)
+    float clipDeltaTime = deltaTime; // default: time-based (Idle/Attack/WallSlam/Scream)
 
     if (m_currentState == State::Walk || m_currentState == State::Run)
     {
@@ -86,43 +63,25 @@ void EnemyCharacter::update(float deltaTime)
                 (m_currentState == State::Run) ? kRunReferenceSpeed : kWalkReferenceSpeed;
             clipDeltaTime = distance / referenceSpeed;
 
-            // БАГФИКС ("враг иногда просто застывает на месте на пару
-            // секунд") — при полной блокировке движения (тесно прижало
-            // к стене/углу, resolveWallCollision() гасит почти весь шаг)
-            // clipDeltaTime уходил в ноль или очень близко к нему — тело
-            // выглядело буквально ЗАСТЫВШИМ статуем, а не "идёт, но с
-            // трудом", хотя AI всё ещё активно пытается двигаться и
-            // обычно выправляется за доли секунды — пока сдвиг
-            // не начнётся, легко читается как "сломался". Нижний порог
-            // — минимум 12% от обычной time-based скорости — ноги
-            // продолжают слабо перебирать, читается как "застрял,
-            // но старается", а не как заморозка/баг. Верхнего предела
-            // это не задаёт (при обычном движении clipDeltaTime всё ещё
-            // просто distance/referenceSpeed, без изменений) — только
-            // подхватывает случаи, где иначе было бы околонулевое
-            // значение.
+            // When pinned against a wall the travelled distance is near zero, which would freeze
+            // the body like a statue while the AI keeps trying to move; a floor of 12% of the
+            // time-based rate keeps the legs shuffling ("stuck but trying").
             const float kMinAnimRateFraction = 0.12f;
             clipDeltaTime = std::max(clipDeltaTime, deltaTime * kMinAnimRateFraction);
         }
-        // else: самый первый кадр вообще — нет предыдущей позиции для
-        // сравнения, остаёмся на дефолтном time-based шаге на этот раз.
+        // else: the very first frame: there is no previous position to compare with, so it stays on
+        // the time-based step this once.
     }
 
     m_lastUpdatePosition = m_position;
     m_lastUpdatePositionInit = true;
 
     m_currentClipTime += clipDeltaTime;
-    // Предыдущая поза (во время короткого кроссфейда ниже) — она уже
-    // "уходящая", просто плавно гаснет по blend; не привязываем её к
-    // дистанции — усложнило бы (нужно было бы помнить референсную
-    // скорость ПРЕДЫДУЩЕГО состояния тоже) ради 0.25с почти незаметного
-    // хвоста.
+    // The previous pose (during the short crossfade below) is already on its way out, fading by
+    // blend; it is not tied to distance, which would add complexity (remembering the previous
+    // state's reference speed too) for a barely noticeable 0.25 s tail.
     m_previousClipTime += deltaTime;
 
-    // Короткий кроссфейд между позами при смене состояния — та же идея,
-    // что уже используется для покачивания/подъёма факела
-    // (PlayerController::m_torchBlend): плавное схождение, а не
-    // мгновенный щелчок между позами.
     const float kBlendDuration = 0.25f;
     const float blend = kBlendDuration > 0.0f
         ? std::min(1.0f, m_stateTime / kBlendDuration)
@@ -145,13 +104,11 @@ void EnemyCharacter::draw(GLint uModelLoc, GLint uBoneMatricesLoc) const
     if (!m_loaded)
         return;
 
-    // БАГФИКС ("враг слишком большой"): измерил реальный рост меша в
-    // бинд-позе напрямую по .glb (без анимации, чистые вершины) —
-    // 1.75 юнита. Высота глаз игрока в этой игре — всего 0.5 (то есть
-    // сам игрок ростом ~0.54) — модель была примерно в 3 РАЗА выше
-    // игрока. 0.4 приводит её к ~0.70 юнита — заметно выше игрока (для
-    // угрозы), но соразмерно с 1-юнитовыми коридорами лабиринта.
-    const float kModelScale = 0.6f; // было 0.4 — увеличено в 1.5 раза по запросу
+    // The mesh's real bind-pose height, measured from the .glb (raw vertices, no animation), is
+    // 1.75 units, while the player's eye height in this game is only 0.5 (the player is ~0.54
+    // tall). kModelScale = 0.6 gives ~1.05: noticeably taller than the player (for threat) but
+    // proportionate to the maze's 1-unit-wide corridors.
+    const float kModelScale = 0.6f;
 
     const glm::mat4 model =
         glm::translate(glm::mat4(1.0f), m_position)

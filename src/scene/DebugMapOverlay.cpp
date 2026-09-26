@@ -21,10 +21,9 @@ void DebugMapOverlay::create()
     glBindVertexArray(m_vao);
     glBindBuffer(GL_ARRAY_BUFFER, m_vbo);
 
-    // Буфер переиспользуется каждый кадр под три разные фигуры (фон,
-    // текстурированная карта, маркер игрока), поэтому здесь только
-    // резервируем небольшой размер под максимум 6 вершин; данные
-    // заливаются заново в renderDebugMap() перед каждым draw call.
+    // The buffer is reused every frame for three different shapes (background, textured map, player
+    // marker), so this only reserves a small size for at most 6 vertices; the data is re-uploaded
+    // in renderDebugMap() before each draw call.
     glBufferData(GL_ARRAY_BUFFER, 6 * 4 * sizeof(float), nullptr, GL_DYNAMIC_DRAW);
 
     glEnableVertexAttribArray(0);
@@ -67,7 +66,8 @@ void DebugMapOverlay::render(int viewportWidth, int viewportHeight, bool visible
                               const glm::vec3& camPos, float yaw,
                               const std::vector<glm::vec2>& columnCentersXZ,
                               const Zoning::ZoneGrid& zoneGrid,
-                              const std::vector<glm::vec3>& enemyPositions)
+                              const std::vector<glm::vec3>& enemyPositions,
+                              const std::vector<glm::vec2>& landmarkPropPositionsXZ)
 {
     if (!visible)
         return;
@@ -80,7 +80,6 @@ void DebugMapOverlay::render(int viewportWidth, int viewportHeight, bool visible
 
     glViewport(0, 0, viewportWidth, viewportHeight);
 
-    // Панель никогда не должна перекрываться геометрией сцены/компасом.
     glDisable(GL_DEPTH_TEST);
     glDepthMask(GL_FALSE);
     glEnable(GL_BLEND);
@@ -92,7 +91,6 @@ void DebugMapOverlay::render(int viewportWidth, int viewportHeight, bool visible
     auto toNdcX = [&](float px) { return (px / vw) * 2.0f - 1.0f; };
     auto toNdcY = [&](float py) { return 1.0f - (py / vh) * 2.0f; };
 
-    // Квадратная панель, занимающая примерно левую половину экрана.
     const float margin = 24.0f;
     const float availW = vw * 0.5f - margin * 2.0f;
     const float availH = vh - margin * 2.0f;
@@ -125,7 +123,6 @@ void DebugMapOverlay::render(int viewportWidth, int viewportHeight, bool visible
         glDrawArrays(GL_TRIANGLES, 0, 6);
     };
 
-    // ---- Тёмная полупрозрачная подложка под панелью ----
     glUniform1i(locMode, 1);
     glUniform3f(locColor, 0.02f, 0.02f, 0.03f);
     glUniform1f(locAlpha, 0.72f);
@@ -138,7 +135,6 @@ void DebugMapOverlay::render(int viewportWidth, int viewportHeight, bool visible
         drawQuadNdc(x0, y0, x1, y1, 0.0f, 0.0f, 1.0f, 1.0f);
     }
 
-    // ---- Сама карта (полностью открытая, без fog of war) ----
     glUniform1i(locMode, 0);
     glUniform1f(locAlpha, 1.0f);
     glActiveTexture(GL_TEXTURE0);
@@ -153,26 +149,16 @@ void DebugMapOverlay::render(int viewportWidth, int viewportHeight, bool visible
     }
     glBindTexture(GL_TEXTURE_2D, 0);
 
-    // ---- Зонирование (см. Zoning.h): маркер в центре каждого blob-региона
-    // + цветовой код по chamferProbability (синий=низкая/классические
-    // прямые углы, красный=высокая/рваные стены) ----
-    //
-    // Регионы теперь Voronoi-подобные (органичная форма, см. историю
-    // правок — было раньше прямоугольными секторами с рисованной сеткой
-    // границ), точную границу дёшево не нарисовать (пришлось бы либо
-    // проходить и красить КАЖДУЮ клетку карты отдельным quad'ом — тысячи
-    // draw call'ов на кадр, либо печь ещё один канал в текстуру карты).
-    // Маркер в центре региона — честный компромисс: подтверждает, что
-    // регионы есть, они разные и разбросаны органично, без обещания
-    // точной границы, которую эта отладочная панель и не обязана рисовать.
+    // Zoning: a marker at each region center colored by chamferProbability (blue low, red high).
+    // Drawing exact Voronoi borders would need a quad per cell or another texture channel; centers
+    // are enough to show that regions exist and differ.
     if (mapW > 0 && mapH > 0 && !zoneGrid.centers.empty())
     {
         glUniform1i(locMode, 1);
         glUniform1f(locAlpha, 0.9f);
 
-        // Радиус маркера — пропорционален "радиусу" региона при равномерном
-        // разбиении (см. Zoning::kTargetRegionArea), чтобы соседние
-        // маркеры не сливались в один и грубо намекали на масштаб региона.
+        // Marker radius is proportional to a region's "radius" under even coverage, so neighboring
+        // markers do not merge and roughly hint at the region scale.
         const float regionRadiusCells = std::sqrt((float)Zoning::kTargetRegionArea / 3.14159265f);
         const float markerSize = std::max(4.0f, (regionRadiusCells / (float)mapW) * boxSize * 0.5f);
 
@@ -183,7 +169,6 @@ void DebugMapOverlay::render(int viewportWidth, int viewportHeight, bool visible
                 (style.chamferProbability - Zoning::kChamferProbabilityMin) /
                     (Zoning::kChamferProbabilityMax - Zoning::kChamferProbabilityMin),
                 0.0f, 1.0f);
-            // синий (низкая, "классические" прямые углы) -> красный (высокая, "рваные")
             glUniform3f(locColor, t, 0.25f, 1.0f - t);
 
             const float u = glm::clamp(zoneGrid.centers[i].x / (float)mapW, 0.0f, 1.0f);
@@ -198,13 +183,12 @@ void DebugMapOverlay::render(int viewportWidth, int viewportHeight, bool visible
         }
     }
 
-    // ---- Колонны (Шаг 2, см. Columns.h): отдельные маркеры — в mapTex
-    // клетка колонны ничем не отличается от обычного пола, поэтому без
-    // этого их вообще не видно на debug-карте ----
+    // Columns: separate markers; a column cell in mapTex is indistinguishable from a regular floor,
+    // so without them columns would not be visible on the debug map at all.
     if (mapW > 0 && mapH > 0 && !columnCentersXZ.empty())
     {
         glUniform1i(locMode, 1);
-        glUniform3f(locColor, 0.25f, 0.95f, 0.35f); // зелёный — тот же тон, что и у кнопки победы
+        glUniform3f(locColor, 0.25f, 0.95f, 0.35f); // green — same tone as the win button
         glUniform1f(locAlpha, 1.0f);
 
         const float markerSize = std::max(3.0f, std::min(boxSize / mapW, boxSize / mapH) * 0.9f);
@@ -221,10 +205,6 @@ void DebugMapOverlay::render(int viewportWidth, int viewportHeight, bool visible
         }
     }
 
-    // ---- Враги — УЛУЧШЕНИЕ ("на карте M показать врагов и где они
-    // сейчас") — тот же приём, что и колонны выше, красный маркер
-    // (опасность), чуть крупнее колонного, чтобы не путать одно с
-    // другим на глаз. ----
     if (mapW > 0 && mapH > 0 && !enemyPositions.empty())
     {
         glUniform1i(locMode, 1);
@@ -245,7 +225,26 @@ void DebugMapOverlay::render(int viewportWidth, int viewportHeight, bool visible
         }
     }
 
-    // ---- Маркер игрока: позиция + направление взгляда (yaw) ----
+    if (mapW > 0 && mapH > 0 && !landmarkPropPositionsXZ.empty())
+    {
+        glUniform1i(locMode, 1);
+        glUniform3f(locColor, 0.95f, 0.85f, 0.15f);
+        glUniform1f(locAlpha, 1.0f);
+
+        const float markerSize = std::max(4.0f, std::min(boxSize / mapW, boxSize / mapH) * 1.1f);
+        for (const glm::vec2& p : landmarkPropPositionsXZ)
+        {
+            const float u = glm::clamp(p.x / (float)mapW, 0.0f, 1.0f);
+            const float v = glm::clamp(p.y / (float)mapH, 0.0f, 1.0f);
+            const float cx = boxLeftPx + u * boxSize;
+            const float cy = boxTopPx + v * boxSize;
+            drawQuadNdc(
+                toNdcX(cx - markerSize * 0.5f), toNdcY(cy - markerSize * 0.5f),
+                toNdcX(cx + markerSize * 0.5f), toNdcY(cy + markerSize * 0.5f),
+                0, 0, 0, 0);
+        }
+    }
+
     if (mapW > 0 && mapH > 0)
     {
         const float u = glm::clamp(camPos.x / (float)mapW, 0.0f, 1.0f);
@@ -258,7 +257,7 @@ void DebugMapOverlay::render(int viewportWidth, int viewportHeight, bool visible
         const glm::vec2 frontDir(std::cos(yawRad), std::sin(yawRad));
         const glm::vec2 rightDir(-frontDir.y, frontDir.x);
 
-        const float s = 8.0f; // пиксели
+        const float s = 8.0f; // pixels
         glm::vec2 tip    = frontDir * s;
         glm::vec2 backL  = -frontDir * (s * 0.6f) + rightDir * (s * 0.6f);
         glm::vec2 backR  = -frontDir * (s * 0.6f) - rightDir * (s * 0.6f);
@@ -280,7 +279,6 @@ void DebugMapOverlay::render(int viewportWidth, int viewportHeight, bool visible
     glBindVertexArray(0);
     glUseProgram(0);
 
-    // Восстанавливаем обычное состояние глубины для остальной сцены.
     glDepthMask(GL_TRUE);
     glEnable(GL_DEPTH_TEST);
 }
