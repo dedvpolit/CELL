@@ -7,10 +7,8 @@ namespace Zoning {
 
 namespace {
 
-// Same hashing trick as WallShapes.cpp (splitmix64-style bit mixing), keyed by (seed, regionIndex,
-// salt): the salt separates several independent random numbers for the same region (center
-// position, chamferProbability, columnProbability, widenProbability) so they are not tightly
-// correlated.
+// Seeded hash keyed by (seed, region, salt);
+// salts give independent values per region
 float HashUnitFloat(unsigned int seed, int regionIndex, uint32_t salt) {
     uint64_t h = (uint64_t)seed * 0x9E3779B97F4A7C15ull;
     h ^= (uint64_t)(uint32_t)regionIndex * 0xBF58476D1CE4E5B9ull;
@@ -33,26 +31,21 @@ ZoneGrid BuildZoneGrid(int mapW, int mapH, unsigned int seed) {
         return grid;
     }
 
-    // Region count is map area / target region area, minimum 1: a very small map gets one region
-    // for the whole map instead of a pile of micro-blobs.
+    // Region count is map area / target region area, minimum 1:
+    // a very small map gets one region for the whole map instead of a pile of micro-blobs
     const int numRegions = std::max(1, (mapW * mapH) / kTargetRegionArea);
 
     grid.centers.resize((size_t)numRegions);
     grid.styles.resize((size_t)numRegions);
 
-    // Minimum distance between region centers: without it, purely random scattering occasionally
-    // drops two centers almost on top of each other. The threshold is a fraction of the typical
-    // region radius under even coverage; below it a region would be an indistinguishably thin
-    // sliver, not a meaningful blob.
+    // Minimum distance between centers, as a fraction of the typical region radius
     const float typicalRegionRadius = std::sqrt((float)kTargetRegionArea / 3.14159265f);
     const float minCenterDistance = typicalRegionRadius * 0.8f;
     const int kMaxRejectionAttempts = 40;
 
     for (int i = 0; i < numRegions; ++i) {
-        // Region centers are uniform over the map (two hashes, salts 10/11) for an organic Voronoi
-        // shape. Rejection sampling drops a position too close to an existing center
-        // (minCenterDistance); after kMaxRejectionAttempts the last attempt is accepted to avoid
-        // looping forever on dense maps.
+        // Uniform centers with rejection sampling;
+        // after kMaxRejectionAttempts the last candidate is kept
         float px = 0.0f, pz = 0.0f;
         for (int attempt = 0; attempt < kMaxRejectionAttempts; ++attempt) {
             px = HashUnitFloat(seed, i, 10u + (uint32_t)attempt * 100u) * (float)mapW;
@@ -91,9 +84,7 @@ const ZoneStyle& StyleAt(const ZoneGrid& grid, int cellX, int cellZ) {
     static const ZoneStyle kDefaultStyle{};
     if (grid.centers.empty()) return kDefaultStyle;
 
-    // Voronoi: the nearest region center by squared distance (no square root needed, the comparison
-    // order is the same). A linear scan over all centers is cheap at the typical region count, and
-    // it runs only at map build time, not every frame.
+    // Nearest center by squared distance; linear scan, build time only
     const float fx = (float)cellX, fz = (float)cellZ;
     size_t best = 0;
     float bestDistSq = 1e30f;

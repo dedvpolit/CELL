@@ -3,10 +3,8 @@
 #include <glm/glm.hpp>
 #include <vector>
 
-// Screen-space 3D compass with an ASCII minimap on its top disc (V key; DungeonScene owns the
-// toggle and the appear/hide animation). Own shader (compass.{vert,frag}) after AsciiEffect::end(),
-// so it skips the ASCII post-process. render() takes no camera position: it is a pure screen
-// overlay.
+// Screen-space 3D compass with an ASCII minimap on its top (V)
+// Own shader after AsciiEffect::end()
 class Compass {
 public:
     void create();
@@ -17,14 +15,10 @@ public:
         m_uiGlyphCount = glyphCount;
     }
 
-    // poseBlend: 0..1, how "drawn out" the compass is (no-op at poseBlend <= 0). yawDeg: player
-    // rotation, for the minimap orientation. minimapTexture: see MinimapFog::minimapTexture().
+    // poseBlend 0..1 (no-op at 0), yaw for orientation, minimap texture from MinimapFog
     bool isReady() const { return m_program != 0; }
 
-    // enemySpottedAlphas/enemyMinimapOffsets: one entry per enemy (kEnemyCount). Alpha is
-    // EnemyAI::spottedMarkerAlpha(); the offset is the enemy's cell minus the player's on X and
-    // reversed on Z, computed on the CPU in renderCompassOverlay(). Passed by value (small, fixed
-    // size).
+    // One entry per enemy: marker alpha and cell offset from the player (Z flipped)
     void render(float poseBlend, float yawDeg,
                 GLuint minimapTexture, bool colorEnabled,
                 std::vector<float> enemySpottedAlphas,

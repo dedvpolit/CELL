@@ -185,16 +185,14 @@ void Compass::render(float poseBlend, float yawDeg,
     if (poseBlend <= 0.0001f)
         return;
 
-    // The compass is a held first-person object: it must never be occluded by dungeon walls/floor.
+    // The compass is a held first-person object:
+    // it must never be occluded by dungeon walls/floor
     glDisable(GL_DEPTH_TEST);
     glDepthMask(GL_FALSE);
 
-    // The compass fades/slides in with a small delay. Both directions use smootherstep, so taking
-    // it out and putting it away are visibly non-linear and never snap.
-    const float handT = glm::clamp((poseBlend - 0.14f) / 0.86f, 0.0f, 1.0f);
-    const float e =
-        handT * handT * handT *
-        (handT * (handT * 6.0f - 15.0f) + 10.0f);
+    // Delayed smootherstep in both directions
+    const float handT = glm::clamp((poseBlend - 0.14f) / 0.86f, 0.0f, 1.0f); // Magic numbers
+    const float e = handT * handT * handT * (handT * (handT * 6.0f - 15.0f) + 10.0f);
 
     const float hiddenX = 1.35f;
     const float hiddenY = -1.35f;
@@ -207,19 +205,12 @@ void Compass::render(float poseBlend, float yawDeg,
 
     glUseProgram(m_program);
 
-    glUniform2f(
-        m_uniScreenCenter,
-        screenX,
-        screenY
-    );
+    glUniform2f(m_uniScreenCenter, screenX, screenY);
 
-    glUniform1f(
-        m_uniScreenScale,
-        1.5f
-    );
+    glUniform1f(m_uniScreenScale, 1.5f);
 
-    // View/projection are already available in the active frame; they are reconstructed here so the
-    // compass can be rendered after the dungeon geometry.
+    // View/projection are already available in the active frame;
+    // they are reconstructed here so the compass can be rendered after the dungeon geometry
     int viewport[4];
     glGetIntegerv(GL_VIEWPORT, viewport);
 
@@ -227,56 +218,24 @@ void Compass::render(float poseBlend, float yawDeg,
 
     glm::mat4 view = glm::mat4(1.0f);
 
-    glm::mat4 proj =
-        glm::ortho(
-            -aspect,
-            aspect,
-            -1.0f,
-            1.0f,
-            -10.0f,
-            10.0f
-        );
+    glm::mat4 proj = glm::ortho(-aspect, aspect, -1.0f, 1.0f, -10.0f, 10.0f);
 
-    glUniformMatrix4fv(
-        m_uniView,
-        1, GL_FALSE, glm::value_ptr(view)
-    );
-    glUniformMatrix4fv(
-        m_uniProjection,
-        1, GL_FALSE, glm::value_ptr(proj)
-    );
+    glUniformMatrix4fv(m_uniView, 1, GL_FALSE, glm::value_ptr(view));
+    glUniformMatrix4fv(m_uniProjection, 1, GL_FALSE, glm::value_ptr(proj));
 
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, minimapTexture);
-    glUniform1i(
-        m_uniMinimapTex,
-        0
-    );
-    glUniform1f(
-        m_uniMinimapYawDeg,
-        yawDeg
-    );
+    glUniform1i(m_uniMinimapTex, 0);
+    glUniform1f(m_uniMinimapYawDeg, yawDeg);
 
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_2D, m_uiFontTex);
-    glUniform1i(
-        m_uniUiFontTex,
-        1
-    );
-    glUniform1f(
-        m_uniUiGlyphCount,
-        (float)m_uiGlyphCount
-    );
+    glUniform1i(m_uniUiFontTex, 1);
+    glUniform1f(m_uniUiGlyphCount, (float)m_uiGlyphCount);
 
-    glUniform1f(
-        m_uniColorEnabled,
-        colorEnabled ? 1.0f : 0.0f
-    );
+    glUniform1f(m_uniColorEnabled, colorEnabled ? 1.0f : 0.0f);
 
-    // Arrays instead of a single value: the same upload trick as devLightPos[8] in DungeonScene.cpp
-    // (glUniform*fv on the base location of index 0). enemySpottedAlphas is already computed on the
-    // CPU (see EnemyAI::spottedMarkerAlpha() per enemy); the shader just blends it with the regular
-    // cell color (see compass.frag).
+    // Uniform arrays uploaded from index 0
     const int enemyCount = (int)std::min(enemySpottedAlphas.size(), enemyMinimapOffsets.size());
     glUniform1i(m_uniEnemyCount, enemyCount);
     if (enemyCount > 0) {

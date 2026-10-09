@@ -9,7 +9,9 @@
 #include <memory>
 
 #ifdef _WIN32
+#ifndef NOMINMAX
 #define NOMINMAX
+#endif
 #include <windows.h>
 #include <process.h> // _beginthreadex, see SaveSlotAsync()
 #endif
@@ -20,9 +22,7 @@ namespace {
 
 namespace fs = std::filesystem;
 
-// A "saves" folder next to the .exe (Windows) or next to the working directory (non-Windows/IDE
-// runs): the same basic approach as AssetPath::Resolve() for finding the executable's folder, but
-// for WRITING, so the folder is created on first use (AssetPath.cpp never needs to write).
+// A saves folder next to the executable (Windows) or the working directory
 fs::path GetSavesDir() {
     fs::path baseDir;
 
@@ -49,11 +49,7 @@ fs::path SlotPath(int slotIndex) {
     return GetSavesDir() / ("slot" + std::to_string(slotIndex + 1) + ".sav");
 }
 
-// The fog of war is a 0/1 array of length mapW*mapH (16384 at 128x128), almost always with long
-// uniform runs (mostly unexplored at the start of the game), so a simple RLE ("value:length",
-// comma-separated) is far more compact than 16 thousand raw digits and still human-readable.
-// Loaded values come from a plain text file that may be edited or damaged: out-of-range or
-// non-finite numbers fall back to a default instead of reaching the game state.
+// Fog of war is 0/1 per cell with long runs -> it is stored as RLE ("value:length,...") (mewo)
 constexpr size_t kMaxExploredCells = 1u << 20;
 constexpr size_t kMaxListEntries   = 1u << 16;
 constexpr float  kMaxCoordinate    = 10000.0f;
@@ -114,9 +110,7 @@ std::vector<unsigned char> DecodeExplored(const std::string& token) {
 
 } // namespace
 
-// A plain comma-separated number list ("0,3,7"): more compact than RLE for short lists like
-// diariesReadIndices (about a dozen elements, unlike explored where the count is in the thousands
-// and RLE pays off).
+// Plain comma-separated lists for short index lists
 namespace {
 std::string EncodeIntList(const std::vector<int>& values) {
     std::ostringstream oss;
@@ -168,8 +162,7 @@ SaveData LoadSlot(int slotIndex) {
     std::string stoneTakenToken;
     std::string line;
     while (std::getline(in, line)) {
-        // Strip a possible trailing '\r' (the file may have been saved or copied on Windows and
-        // read line by line differently).
+        // Files edited on Windows may carry \r. Get it???
         while (!line.empty() && (line.back() == '\r' || line.back() == '\n'))
             line.pop_back();
 
@@ -209,22 +202,20 @@ SaveData LoadSlot(int slotIndex) {
             data.stoneCount = ParseInt(value, data.stoneCount, 0, 999);
         } else if (key == "STONETAKEN") {
             stoneTakenToken = value;
+        } else if (key == "DIFFICULTY") {
+            data.difficulty = ParseInt(value, data.difficulty, 0, 2);
         } else if (key == "NAME") {
             data.name = value.substr(0, (size_t)kNameMaxLen); // in case of a hand-edited or old file
         }
     }
 
-    // SEED is the only field without which the file is unusable (the maze is reconstructed from
-    // it); other fields fall back to defaults if missing (spawn in the starting safe zone, full
-    // health/stamina).
+    // Only SEED is required; other fields default
     if (!sawSeed) return data;
 
     if (!exploredToken.empty())
         data.explored = DecodeExplored(exploredToken);
 
-    // Unlike exploredToken above, an empty string here is not "field missing" but a legitimate "no
-    // diaries read yet"; DecodeIntList("") already returns an empty vector, so no separate .empty()
-    // check is needed.
+    // Empty means "none read", not missing
     data.diariesReadIndices = DecodeIntList(diariesReadToken);
     data.torchTakenIndices = DecodeIntList(torchTakenToken);
     data.stoneTakenIndices = DecodeIntList(stoneTakenToken);
@@ -246,6 +237,7 @@ static bool WriteSlotFile(const fs::path& file, const SaveData& data) {
     out << "HEALTH=" << data.healthFraction << '\n';
     out << "STAMINA=" << data.staminaFraction << '\n';
     out << "NAME=" << data.name.substr(0, (size_t)kNameMaxLen) << '\n';
+    out << "DIFFICULTY=" << data.difficulty << '\n';
     out << "EXPLORED=" << EncodeExplored(data.explored) << '\n';
     out << "DIARIESREAD=" << EncodeIntList(data.diariesReadIndices) << '\n';
     out << "TORCHFUEL=" << data.torchFuel << '\n';
@@ -278,13 +270,8 @@ bool SaveSlot(int slotIndex, const SaveData& data) {
     return true;
 }
 
-// Saves are written on a short-lived thread: a synchronous ofstream write on the game loop can
-// block the whole frame for as long as the OS delays the file (antivirus, slow disk), which shows
-// up as an FPS drop at every autosave. _beginthreadex is used instead of std::thread because some
-// MinGW-w64 builds (win32 threading model) fail to link or throw on std::thread; it also
-// initializes the per-thread CRT state that std::ofstream needs. One atomic<bool> per slot prevents
-// a second concurrent write to the same file. The thread is not joined, so a process exit during a
-// write can cut it short.
+// Saves are written on a short-lived thread:
+// a synchronous write can stall the frame whenever the OS delays the file (antivirus, slow disk)
 std::atomic<bool> g_slotSaveInFlight[kSlotCount] = {};
 
 #ifdef _WIN32
@@ -307,21 +294,16 @@ void SaveSlotAsync(int slotIndex, const SaveData& data) {
 
     bool expected = false;
     if (!g_slotSaveInFlight[slotIndex].compare_exchange_strong(expected, true)) {
-        // A previous write to this same slot has not finished yet (extremely unlikely with a 20 s
-        // interval and a few KB per write, but possible on a very slow disk): skip this tick rather
-        // than write over an unfinished write; the next autosave comes along as usual.
+        // The previous write to this slot is still running -> skip this tick
         return;
     }
 
 #ifdef _WIN32
-    // job transfers ownership (a unique_ptr inside AsyncSaveThreadProc): a copy of data goes on the
-    // heap and the thread shares nothing with the caller (DungeonScene has already copied the
-    // needed fields into SaveData, see saveActiveSlot()).
+    // The job owns a copy of the data; the thread shares nothing with the caller.
     auto* job = new AsyncSaveJob{ slotIndex, data };
     const uintptr_t h = _beginthreadex(nullptr, 0, AsyncSaveThreadProc, job, 0, nullptr);
     if (h == 0) {
-        // Thread creation failed (extremely unlikely): do not lose the save, write synchronously
-        // right here. A brief stutter beats a silently dropped autosave.
+        // Thread creation failed: write synchronously rather than drop the save.
         delete job;
         SaveSlot(slotIndex, data);
         g_slotSaveInFlight[slotIndex].store(false);
@@ -329,8 +311,7 @@ void SaveSlotAsync(int slotIndex, const SaveData& data) {
         CloseHandle(reinterpret_cast<HANDLE>(h));
     }
 #else
-    // Non-Windows (local engine debugging): synchronous, since this is not the platform any of this
-    // is optimized for.
+    // Other platforms: synchronous
     SaveSlot(slotIndex, data);
     g_slotSaveInFlight[slotIndex].store(false);
 #endif
@@ -341,8 +322,7 @@ int PickSlotForNewGame() {
         if (!SlotExists(i)) return i;
     }
 
-    // All three slots are full: overwrite the one updated least recently (a simple rotation across
-    // the last 3 games).
+    // All slots full: overwrite the oldest
     int oldest = 0;
     fs::file_time_type oldestTime{};
     bool first = true;

@@ -1,8 +1,7 @@
 #version 330 core
 
-// Screen-space 2D layer (pixel coordinates) for diary text and credits, drawn after
-// AsciiEffect::end() like Compass, with its own orthographic pixel -> NDC projection. aPos is
-// computed on the CPU (TextRenderer.h) from stbtt_GetBakedQuad.
+// Screen-space text layer (pixel coordinates) for diaries and credits, drawn after
+// AsciiEffect::end().
 
 layout(location = 0) in vec2 aPos;   // screen pixel, (0,0) = top-left corner
 layout(location = 1) in vec2 aUV;    // UV into the font atlas (for "glyph" mode)

@@ -5,16 +5,11 @@
 #include "AudioMixer.h"
 #include "AssetLocate.h"
 
-// Gameplay ambience: replays one track at random 60-75 s gaps while gameplay is active, and owns
-// the diary-read duck (volume steps down 20 percentage points at 2/4/7/10/12 diaries, silent at the
-// fifth step). Smoothing lives in AudioMixer; this class only sets the target. It is ticked every
-// frame by DungeonScene::tickAmbientMusic(), even while the reading overlay pauses processInput(),
-// so the duck follows diariesReadCount().
+// Gameplay ambience: one track replayed at random 60-75 s gaps, ducked by 20 points at 2/4/7/10/12
+// diaries read (silent at the last step).
 class GameplayMusic {
 public:
-    // active = false (menu, paused, AudioMixer not initialized yet, ...) stops any playing track,
-    // resets the duck to full volume and clears the replay timer, so gameplay resumes with a fresh
-    // wait rather than mid-countdown.
+    // Inactive: stop the track, restore full volume and reset the replay timer.
     void update(float deltaTime, bool active, int diariesRead)
     {
         AudioMixer& mixer = AudioMixer::instance();

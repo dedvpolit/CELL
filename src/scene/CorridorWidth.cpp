@@ -33,9 +33,7 @@ std::vector<unsigned char> ApplyWidening(
         return map[(size_t)z * mapW + x] == 1;
     };
 
-    // Collect the candidates before mutating map (like Columns::BuildColumns): otherwise a cell
-    // just widened would open up a neighboring wall and infect it in the same pass, a domino effect
-    // instead of independent decisions against the original maze.
+    // Collect candidates before mutating -> decisions are made against the original grid
     std::vector<std::pair<int,int>> candidates;
     for (int z = 0; z < mapH; ++z) {
         for (int x = 0; x < mapW; ++x) {
@@ -45,7 +43,7 @@ std::vector<unsigned char> ApplyWidening(
             const bool vOpen = isFloor(x, z - 1) && isFloor(x, z + 1);
 
             // Open on both axes at once: an isolated wall "tooth", which is Columns::BuildColumns'
-            // territory; do not steal its candidate.
+            // territory; do not steal its candidate
             if (hOpen && vOpen) continue;
             if (!hOpen && !vOpen) continue; // not a "partition wall" at all
 

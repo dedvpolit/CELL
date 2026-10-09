@@ -9,12 +9,11 @@
 
 static constexpr float kWallHeight = 30.0f;
 
-// Per-zone palette: a discrete set of pre-tuned wall/floor pairs instead of a continuous
-// per-channel multiplier, which avoids muddy random tints. Index 0 is the engine's original warm
-// brown stone; the others are clearly different region themes.
+// Per-zone palette:
+// pre-tuned wall/floor pairs rather than random tints. Index 0 is the default warm brown stone
 void SceneGeometry::GetZonePalette(int paletteIndex, glm::vec3& outWallColor, glm::vec3& outFloorColor) {
     static const glm::vec3 kPresets[Zoning::kPaletteCount][2] = {
-        { glm::vec3(0.55f, 0.35f, 0.25f), glm::vec3(0.18f, 0.16f, 0.13f) }, // 0: warm brown (original)
+        { glm::vec3(0.55f, 0.35f, 0.25f), glm::vec3(0.18f, 0.16f, 0.13f) }, // 0: warm brown
         { glm::vec3(0.30f, 0.33f, 0.38f), glm::vec3(0.10f, 0.11f, 0.14f) }, // 1: cold blue-gray stone
         { glm::vec3(0.28f, 0.38f, 0.24f), glm::vec3(0.10f, 0.14f, 0.10f) }, // 2: mossy (muted) green
         { glm::vec3(0.42f, 0.40f, 0.38f), glm::vec3(0.15f, 0.14f, 0.13f) }, // 3: ashen gray
@@ -62,8 +61,7 @@ void AddCylinder(std::vector<Vertex>& verts, std::vector<GLuint>& indices, glm::
         glm::vec3 rt0 = tip  + dir0 * radiusTip;
         glm::vec3 rt1 = tip  + dir1 * radiusTip;
 
-        // rb0/rb1 have different normals than rt0/rt1, so only rb0+dir0 and rt1+dir1 can be shared
-        // between the two triangles; more would need smooth normals and change the look.
+        // Flat normals differ between the rows, so only two vertices can be shared
         GLuint base0 = (GLuint)verts.size();
         verts.push_back({rb0, dir0, color, matId});
         verts.push_back({rb1, dir1, color, matId});
@@ -95,9 +93,7 @@ void AddSphere(std::vector<Vertex>& verts, std::vector<GLuint>& indices, glm::ve
             glm::vec3 p00 = sphPoint(u0, v0), p10 = sphPoint(u1, v0);
             glm::vec3 p01 = sphPoint(u0, v1), p11 = sphPoint(u1, v1);
 
-            // Sphere normals equal the vertex directions (p00/p10/p01/p11 serve as both position
-            // and normal), so all 4 corners of a patch can be shared between its two triangles, as
-            // in AddQuad.
+            // On a sphere the normal equals the position direction, so all four patch corners are shared
             GLuint base0 = (GLuint)verts.size();
             verts.push_back({center + p00 * radius, p00, color, matId});
             verts.push_back({center + p10 * radius, p10, color, matId});
@@ -122,50 +118,24 @@ static void AddTorchMesh(
     int torchIndex,
     bool isGuideTorch)
 {
-    // Torch handle: height and offset must match flamePos in tryAddTorch(), or the flame and the
-    // light/particle source diverge. The negative offset (-0.05) buries the base in the wall so the
-    // handle grows out of the stone.
+    // Must match flamePos in TryAddTorch() (MapGenerator.cpp)
+    // The negative offset buries the base in the wall
 
-    glm::vec3 base =
-        wallBase
-        + normal * -0.015f
-        + glm::vec3(
-            0.0f,
-            0.50f,
-            0.0f
-        );
+    glm::vec3 base = wallBase + normal * -0.015f + glm::vec3(0.0f, 0.50f, 0.0f);
 
-    // Torch tip: the offset must exceed the flame sphere radius (0.065) or half the flame would
-    // sink into the wall.
-    glm::vec3 tip =
-        wallBase
-        + normal * 0.14f
-        + glm::vec3(
-            0.0f,
-            0.62f,
-            0.0f
-        );
+    // Past the flame radius (0.065), or the flame sinks into the wall
+    glm::vec3 tip = wallBase + normal * 0.14f + glm::vec3(0.0f, 0.62f, 0.0f);
 
-    glm::vec3 handleColor(
-        0.34f,
-        0.25f,
-        0.16f
-    );
+    glm::vec3 handleColor(0.34f, 0.25f, 0.16f);
 
-    // Landmark torches (firstGuideTorchIndex): the shader reads vColor.r only as flicker
-    // brightness, so g/b are free. The signal (1, 0, 1), which a regular torch never has, selects
-    // the blue flame gradient.
+    // The shader reads only vColor.r for flames; (1, 0, 1) marks a guide torch's blue flame
     glm::vec3 flameColor = isGuideTorch
         ? glm::vec3(1.0f, 0.0f, 1.0f)    // signal "blue flame" for the shader
         : glm::vec3(1.0f, 0.60f, 0.15f);
 
-    // The handle carries its torch index in matId (1.0..<1.25, below the vMatId > 1.5 flame branch)
-    // so pickupWallTorch() can hide exactly this handle.
+    // Handle matId 1 + index / 4096 lets the lit mask hide this handle
     const float HANDLE_ID_SCALE = 4096.0f;
-    const float handleMatId =
-        1.0f
-        + static_cast<float>(torchIndex)
-          / HANDLE_ID_SCALE;
+    const float handleMatId = 1.0f + static_cast<float>(torchIndex) / HANDLE_ID_SCALE;
 
     AddCylinder(
         verts,
@@ -179,27 +149,17 @@ static void AddTorchMesh(
         handleMatId
     );
 
-    // Flame. matId is 2.0 .. <2.25, so even at MAX_TORCHES = 1024 it stays below the 2.5 material
-    // boundary.
+    // Flame matId 2 + index / 4096 stays below 2.5 for MAX_TORCHES = 1024
 
     const float FLAME_ID_SCALE = 4096.0f;
 
-    float flameMatId =
-        2.0f
-        + static_cast<float>(torchIndex)
-          / FLAME_ID_SCALE;
+    float flameMatId = 2.0f + static_cast<float>(torchIndex) / FLAME_ID_SCALE;
 
-    // The flame sphere is small (radius 0.065) and sits close to the handle tip, so the torch reads
-    // as one object: a thin handle with a compact flame.
     AddSphere(
         verts,
         indices,
         tip
-        + glm::vec3(
-            0.0f,
-            0.045f,
-            0.0f
-        ),
+        + glm::vec3(0.0f, 0.045f, 0.0f),
         0.065f,
         isGuideTorch ? 5 : 8, // fewer segments, same reason as the handle
         isGuideTorch ? 3 : 5,
@@ -208,8 +168,7 @@ static void AddTorchMesh(
     );
 }
 
-// A small box with a top and 4 sides (no bottom: it sits on the floor or is covered by other parts
-// of the book), one color per face. Building block of the diary prop below.
+// Box without a bottom face, one color per face
 static void AddBoxNoBottom(std::vector<Vertex>& verts, std::vector<GLuint>& indices,
                             float x0, float x1, float y0, float y1, float z0, float z1,
                             const glm::vec3& color)
@@ -236,12 +195,12 @@ static void AddBoxNoBottom(std::vector<Vertex>& verts, std::vector<GLuint>& indi
             glm::vec3(1, 0, 0), color, 0.0f);
 }
 
+// meow-mewo-meow (pomogite)
 static void AddDiaryMesh(std::vector<Vertex>& verts, std::vector<GLuint>& indices,
                           const glm::vec3& diaryPos)
 {
-    // Diary prop: a small book on the pocket floor, flat colors (matId 0.0), baked once; it stays
-    // after reading (m_diariesRead is only a UI flag). Three volumes give the silhouette: solid
-    // spine, top/bottom cover plates, and an inset page block between them.
+    // Diary: a small book with a spine, cover plates and an inset page block
+    // Baked once; reading it does not remove it
     const float halfW = 0.145f;        // half the book's width along X (including the spine)
     const float halfD = 0.10f;         // half the depth along Z
     const float totalThickness = 0.075f;
@@ -249,11 +208,9 @@ static void AddDiaryMesh(std::vector<Vertex>& verts, std::vector<GLuint>& indice
     const float spineWidth = 0.022f;   // spine width along X
     const float pageInset = 0.016f;    // how far the pages are inset from the cover edge (not the spine side)
 
-    // The spine runs along the long X side (as in a real book: the spine along the page's long
-    // edge, the opening along the short one) and has its own, noticeably darker color, so from
-    // above there is a contrasting accent stripe instead of one solid rectangle.
-    const glm::vec3 coverColor(0.58f, 0.22f, 0.14f); // cover — faded maroon
-    const glm::vec3 spineColor(0.28f, 0.08f, 0.05f); // spine — noticeably darker, a separate accent
+    // Darker spine along the long side, a contrasting stripe from above
+    const glm::vec3 coverColor(0.58f, 0.22f, 0.14f); // cover: faded maroon
+    const glm::vec3 spineColor(0.28f, 0.08f, 0.05f); // spine: noticeably darker, a separate accent
     const glm::vec3 pageColor(0.82f, 0.75f, 0.58f);  // inset page edge
 
     const float xOuter0 = diaryPos.x - halfW;
@@ -267,9 +224,7 @@ static void AddDiaryMesh(std::vector<Vertex>& verts, std::vector<GLuint>& indice
                     xOuter0, xOuter1, yBase, yTop, zOuter0, zOuter0 + spineWidth,
                     spineColor);
 
-    // Cover: top and bottom binding plates over the full width and the remaining depth (the spine
-    // claimed its strip above), covering the pages and overhanging them on the three open sides;
-    // that overhang reads as a closed book's silhouette.
+    // Cover plates overhang the pages on the three open sides
     AddBoxNoBottom(verts, indices,
                     xOuter0, xOuter1, yTop - coverPlate, yTop, zOuter0 + spineWidth, zOuter1,
                     coverColor);
@@ -277,9 +232,7 @@ static void AddDiaryMesh(std::vector<Vertex>& verts, std::vector<GLuint>& indice
                     xOuter0, xOuter1, yBase, yBase + coverPlate, zOuter0 + spineWidth, zOuter1,
                     coverColor);
 
-    // Pages are inset from the cover on 3 sides (west/east and the north trim); the spine side has
-    // nothing to inset, since it is a solid glued block. They are clamped exactly between the
-    // plates in height.
+    // Pages inset on the open sides, between the plates
     AddBoxNoBottom(verts, indices,
                     xOuter0 + pageInset, xOuter1 - pageInset,
                     yBase + coverPlate, yTop - coverPlate,
@@ -287,10 +240,8 @@ static void AddDiaryMesh(std::vector<Vertex>& verts, std::vector<GLuint>& indice
                     pageColor);
 }
 
-// Chamfered corners (WallShapes.h): such a cell is built separately and skipped by the greedy
-// passes. It emits the regular side faces (two shortened to the chamfer points) plus the diagonal
-// wedge face, and a floor triangle over the wedge, which the floor pass (map[] == 2 cells) does not
-// cover; otherwise the player would see a hole.
+// Chamfered cells are built here and skipped by the greedy passes:
+// the regular side faces (two shortened), the diagonal face, and the floor triangle under the wedge
 static void AddChamferedWallCell(
     std::vector<Vertex>& verts, std::vector<GLuint>& indices,
     int x, int z, WallShapes::CornerCut cut, float chamferSize,
@@ -306,8 +257,7 @@ static void AddChamferedWallCell(
 
     const float xf = (float)x, zf = (float)z, z1 = zf + 1.0f, x1 = xf + 1.0f;
 
-    // Chamfer points in world coordinates (see WallShapes.h for onEdgeCcwFrom/onEdgeCcwTo: which
-    // point lies on which original edge for each cut).
+    // See WallShapes::GetChamferPoints for which point lies on which edge
     const glm::vec3 pFrom(xf + cp.onEdgeCcwFrom.x, 0.0f, zf + cp.onEdgeCcwFrom.y);
     const glm::vec3 pTo(xf + cp.onEdgeCcwTo.x,   0.0f, zf + cp.onEdgeCcwTo.y);
 
@@ -367,8 +317,7 @@ static void AddChamferedWallCell(
         glm::vec3(pTo.x, y1, pTo.z), glm::vec3(pFrom.x, y1, pFrom.z),
         diagNormal, wallColor);
 
-    // Floor patch for the wedge: the corner is repeated as the 3rd and 4th vertex so AddQuad()
-    // degenerates to a single triangle.
+    // Corner repeated so AddQuad() emits one triangle
     glm::vec3 corner(0.0f);
     switch (cut) {
         case CornerCut::SW: corner = glm::vec3(xf, 0.0f, zf);       break;
@@ -377,14 +326,10 @@ static void AddChamferedWallCell(
         case CornerCut::NW: corner = glm::vec3(xf, 0.0f, z1);       break;
         default: break;
     }
-    AddQuad(verts, indices,
-        pFrom, pTo, corner, corner,
-        glm::vec3(0, 1, 0), floorColor);
+    AddQuad(verts, indices, pFrom, pTo, corner, corner, glm::vec3(0, 1, 0), floorColor);
 }
 
-// Free-standing columns (see Columns.h): a plain cylinder with radiusBase == radiusTip (straight,
-// not tapering). A column cell is already floor in map[] by this point, so the regular floor pass
-// builds the floor under it; only the cylinder is emitted here.
+// Straight cylinder; the column cell is already floor
 static void AddColumnMesh(
     std::vector<Vertex>& verts, std::vector<GLuint>& indices,
     const glm::vec2& centerXZ, const glm::vec3& wallColor,
@@ -409,9 +354,7 @@ static void BuildFloorAndWallsGreedy(
     std::vector<std::vector<GLuint>>& chunkMainIndices,
     int chunksX)
 {
-    // Per-cell wall/floor color, already computed by the caller (which blends neighboring zones). A
-    // cell with no data (empty or too short array) falls back to palette 0, so behavior without
-    // zoning is unchanged.
+    // Cells without data use palette 0
     glm::vec3 fallbackWallColor, fallbackFloorColor;
     SceneGeometry::GetZonePalette(0, fallbackWallColor, fallbackFloorColor);
     auto wallColorAt = [&](int x, int z) {
@@ -426,7 +369,7 @@ static void BuildFloorAndWallsGreedy(
         return (cz / SceneGeometry::kChunkSize) * chunksX + (cx / SceneGeometry::kChunkSize);
     };
 
-    // Reserve each per-chunk bucket up front (a rough upper bound); a load-time startup win only.
+    // Rough per-chunk reserve to speed up loading
     {
         const size_t cellsPerChunk = (size_t)SceneGeometry::kChunkSize * (size_t)SceneGeometry::kChunkSize;
         const size_t estVertsPerChunk = cellsPerChunk * 4;   // ~4 verts/quad face, upper bound
@@ -440,8 +383,7 @@ static void BuildFloorAndWallsGreedy(
     const float y0 = 0.0f;
     const float y1 = kWallHeight;
 
-    // Chamfered corners (WallShapes): a separate whole-cell pass. It runs before the greedy passes
-    // below, which read cornerCuts[...] to skip these cells.
+    // Chamfered cells first; the greedy passes skip them
     for (int z = 0; z < mapH; z++) {
         for (int x = 0; x < mapW; x++) {
             const WallShapes::CornerCut cut = cornerCuts[(size_t)z * mapW + x];
@@ -490,8 +432,7 @@ static void BuildFloorAndWallsGreedy(
     for (int z = 0; z < mapH; z++) {
         int x = 0;
         while (x < mapW) {
-            // Chamfered cells were built in the separate pass above; here they only break a run,
-            // neither joining it nor getting their own quad.
+            // Chamfered cells only break a run
             if (!(isWall(x, z) && !isWall(x, z - 1)) ||
                 cornerCuts[(size_t)z * mapW + x] != WallShapes::CornerCut::None) {
                 x++; continue;
@@ -626,7 +567,7 @@ static void BuildFloorAndWallsGreedy(
 }
 
 void SceneGeometry::build(int mapW, int mapH, const std::vector<int>& map,
-                          const glm::vec3& winButtonPos,
+                          const glm::vec3& exitDoorPos,
                           const std::vector<glm::vec3>& torchWallBase,
                           const std::vector<glm::vec3>& torchNormal,
                           const std::vector<glm::vec3>& torchFlamePos,
@@ -647,8 +588,8 @@ void SceneGeometry::build(int mapW, int mapH, const std::vector<int>& map,
         return map[z * mapW + x] == 2;
     };
 
-    // Chunked geometry: bucketed per chunk while generated so render() can skip chunks outside the
-    // frustum/render distance; the GPU buffers still hold all chunks contiguously.
+    // Geometry is bucketed per chunk for culling;
+    // the GPU buffers hold all chunks contiguously
     const int chunksX = (mapW + kChunkSize - 1) / kChunkSize;
     const int chunksZ = (mapH + kChunkSize - 1) / kChunkSize;
     const int numChunks = chunksX * chunksZ;
@@ -667,14 +608,11 @@ void SceneGeometry::build(int mapW, int mapH, const std::vector<int>& map,
 
     BuildFloorAndWallsGreedy(mapW, mapH, map, isWall, isFloor, cornerCuts, chamferSizes, wallColors, floorColors, chunkMainVerts, chunkMainIndices, chunksX);
 
-    for (size_t i = 0;
-         i < torchWallBase.size();
-         ++i)
+    for (size_t i = 0; i < torchWallBase.size(); ++i)
     {
-        // The torch mesh and particles belong to the chunk of the torch's wall cell.
-        // torchWallBase[i] lies on the wall/floor boundary, so floor(x)/floor(z) is wrong for half
-        // the directions; stepping back by normal * 0.5 recovers the wall cell (otherwise culling
-        // could hide a torch while its wall is in view).
+        // The torch belongs to its wall cell's chunk
+        // torchWallBase lies on the wall/floor
+        // boundary, so step back half a cell along the normal to find the wall cell
         const glm::vec3& torchN = torchNormal[i];
         const int torchChunk = chunkIndexForCell(
             (int)std::floor(torchWallBase[i].x - torchN.x * 0.5f),
@@ -693,51 +631,28 @@ void SceneGeometry::build(int mapW, int mapH, const std::vector<int>& map,
             firstGuideTorchIndex >= 0 && (int)i >= firstGuideTorchIndex
         );
 
-        // Flickering ember particles are skipped for landmark torches (saves RAM): a small
-        // decorative accent whose three spark points per torch add up across dozens of torches, and
-        // a landmark is already visible from its blue flame.
+        // Guide torches have no sparks: their blue flame is marker enough
         if (!(firstGuideTorchIndex >= 0 && (int)i >= firstGuideTorchIndex))
         {
 
-        const glm::vec3 origin =
-            torchFlamePos[i]
-            + glm::vec3(
-                0.0f,
-                0.025f,
-                0.0f
-            );
+        const glm::vec3 origin = torchFlamePos[i] + glm::vec3(0.0f, 0.025f, 0.0f);
 
-        const int torchIndex =
-            static_cast<int>(i);
+        const int torchIndex = static_cast<int>(i);
 
         const float PARTICLE_ID_SCALE = 16384.0f;
 
         const float particleMatId0 =
             3.0f
             +
-            (
-                static_cast<float>(
-                    torchIndex * 10 + 0
-                )
-                /
-                PARTICLE_ID_SCALE
-            );
+            (static_cast<float>(torchIndex * 10 + 0) / PARTICLE_ID_SCALE);
 
         particleVerts.push_back(
             {
                 origin,
 
-                glm::vec3(
-                    -0.030f,
-                    0.40f,
-                    0.010f
-                ),
+                glm::vec3(-0.030f, 0.40f, 0.010f),
 
-                glm::vec3(
-                    1.0f,
-                    0.48f,
-                    0.08f
-                ),
+                glm::vec3(1.0f, 0.48f, 0.08f),
 
                 particleMatId0
             }
@@ -746,29 +661,15 @@ void SceneGeometry::build(int mapW, int mapH, const std::vector<int>& map,
         const float particleMatId1 =
             3.0f
             +
-            (
-                static_cast<float>(
-                    torchIndex * 10 + 1
-                )
-                /
-                PARTICLE_ID_SCALE
-            );
+            (static_cast<float>(torchIndex * 10 + 1) / PARTICLE_ID_SCALE);
 
         particleVerts.push_back(
             {
                 origin,
 
-                glm::vec3(
-                    0.020f,
-                    0.48f,
-                    -0.025f
-                ),
+                glm::vec3(0.020f, 0.48f, -0.025f),
 
-                glm::vec3(
-                    1.0f,
-                    0.58f,
-                    0.10f
-                ),
+                glm::vec3(1.0f, 0.58f, 0.10f),
 
                 particleMatId1
             }
@@ -777,29 +678,15 @@ void SceneGeometry::build(int mapW, int mapH, const std::vector<int>& map,
         const float particleMatId2 =
             3.0f
             +
-            (
-                static_cast<float>(
-                    torchIndex * 10 + 2
-                )
-                /
-                PARTICLE_ID_SCALE
-            );
+            (static_cast<float>(torchIndex * 10 + 2) / PARTICLE_ID_SCALE);
 
         particleVerts.push_back(
             {
                 origin,
 
-                glm::vec3(
-                    -0.045f,
-                    0.43f,
-                    -0.020f
-                ),
+                glm::vec3(-0.045f, 0.43f, -0.020f),
 
-                glm::vec3(
-                    1.0f,
-                    0.52f,
-                    0.07f
-                ),
+                glm::vec3(1.0f, 0.52f, 0.07f),
 
                 particleMatId2
             }
@@ -807,13 +694,7 @@ void SceneGeometry::build(int mapW, int mapH, const std::vector<int>& map,
         }
     }
 
-    // The win pedestal is not baked: it animates, and baked chunk geometry cannot be moved or
-    // removed. It is a dynamic mesh (m_winMonumentVao, AddDissolvingMonument()/AddSpinningTorus()
-    // in DungeonScene.cpp).
-
-    // Diaries: one prop per pocket, assigned to a chunk like the torches: find the cell via floor()
-    // of the world coordinates, then the chunk through it, so chunk culling does not drop a diary
-    // the camera is looking straight at.
+    // Diaries are assigned to the chunk of their cell, like torches
     for (size_t i = 0; i < diaryPositions.size(); ++i) {
         const glm::vec3& diaryPos = diaryPositions[i];
         const int diaryChunk = chunkIndexForCell(
@@ -822,9 +703,8 @@ void SceneGeometry::build(int mapW, int mapH, const std::vector<int>& map,
         );
         AddDiaryMesh(chunkMainVerts[diaryChunk], chunkMainIndices[diaryChunk], diaryPos);
 
-        // A couple of pale-gold "moth" particles above the book reveal the diary from afar. They
-        // reuse the torch particle system with a muted color and id torchWallBase.size() + i, so
-        // they do not share a flicker phase with a torch.
+        // Pale gold motes above the book, visible from afar
+        // They reuse the spark system with ids past the torches, so they do not share a torch's phase
         std::vector<Vertex>& diaryParticleVerts = chunkParticleVerts[diaryChunk];
         const glm::vec3 particleOrigin = diaryPos + glm::vec3(0.0f, 0.16f, 0.0f);
         const int diaryParticleId = (int)torchWallBase.size() + (int)i;
@@ -842,8 +722,7 @@ void SceneGeometry::build(int mapW, int mapH, const std::vector<int>& map,
         });
     }
 
-    // Free-standing columns (Columns.h): positions are world XZ cell centers and the cell is
-    // already floor, so only the cylinder is added.
+    // Only the cylinder; the cell is already floor
     for (const glm::vec2& col : columnCentersXZ) {
         const int colCellX = (int)std::floor(col.x);
         const int colCellZ = (int)std::floor(col.y);
@@ -855,8 +734,7 @@ void SceneGeometry::build(int mapW, int mapH, const std::vector<int>& map,
         AddColumnMesh(chunkMainVerts[colChunk], chunkMainIndices[colChunk], col, colWallColor, 0.0f, kWallHeight);
     }
 
-    // Flatten the per-chunk buckets into contiguous buffers and build the per-chunk metadata (draw
-    // ranges + AABB) that render() uses for frustum/distance culling.
+    // Flatten the buckets and record per-chunk draw ranges and AABB (AI-slop as everything)
 
     std::vector<Vertex> verts;
     std::vector<GLuint> indices;
@@ -876,9 +754,7 @@ void SceneGeometry::build(int mapW, int mapH, const std::vector<int>& map,
             const std::vector<GLuint>& mi = chunkMainIndices[idx];
             const std::vector<Vertex>& pv = chunkParticleVerts[idx];
 
-            // Indices in mi are local to mv (they start at 0). When mv's vertices are appended to
-            // the global verts array they land at vertexBase.., so each local index needs
-            // vertexBase added.
+            // Chunk-local indices start at 0; offset them by the chunk's vertex base
             const GLuint vertexBase = (GLuint)verts.size();
             verts.insert(verts.end(), mv.begin(), mv.end());
 
@@ -892,9 +768,7 @@ void SceneGeometry::build(int mapW, int mapH, const std::vector<int>& map,
             chunk.particleCount = (GLsizei)pv.size();
             particleVerts.insert(particleVerts.end(), pv.begin(), pv.end());
 
-            // Cell-grid-based AABB with a small margin for torch/flame meshes that poke past a cell
-            // edge: cheap and always conservative (never smaller than the real geometry), which is
-            // all frustum culling needs.
+            // Cell-grid AABB with a margin for torches poking past the cell edge; conservative
             const float margin = 0.5f;
             const int cellX0 = cxi * kChunkSize;
             const int cellZ0 = cz * kChunkSize;
@@ -906,57 +780,25 @@ void SceneGeometry::build(int mapW, int mapH, const std::vector<int>& map,
         }
     }
 
-    m_vertexCount =
-        (int)verts.size();
+    m_vertexCount = (int)verts.size();
 
-    m_indexCount =
-        (int)indices.size();
+    m_indexCount = (int)indices.size();
 
-    glGenVertexArrays(
-        1,
-        &m_vao
-    );
+    glGenVertexArrays(1, &m_vao);
 
-    glGenBuffers(
-        1,
-        &m_vbo
-    );
+    glGenBuffers(1, &m_vbo);
 
-    glGenBuffers(
-        1,
-        &m_ebo
-    );
+    glGenBuffers(1, &m_ebo);
 
-    glBindVertexArray(
-        m_vao
-    );
+    glBindVertexArray(m_vao);
 
-    glBindBuffer(
-        GL_ARRAY_BUFFER,
-        m_vbo
-    );
+    glBindBuffer(GL_ARRAY_BUFFER, m_vbo);
 
-    glBufferData(
-        GL_ARRAY_BUFFER,
-        verts.size()
-        * sizeof(Vertex),
-        verts.data(),
-        GL_STATIC_DRAW
-    );
+    glBufferData(GL_ARRAY_BUFFER, verts.size() * sizeof(Vertex), verts.data(), GL_STATIC_DRAW);
 
     glEnableVertexAttribArray(0);
 
-    glVertexAttribPointer(
-        0,
-        3,
-        GL_FLOAT,
-        GL_FALSE,
-        sizeof(Vertex),
-        (void*)offsetof(
-            Vertex,
-            pos
-        )
-    );
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, pos));
 
     glEnableVertexAttribArray(1);
 
@@ -966,46 +808,19 @@ void SceneGeometry::build(int mapW, int mapH, const std::vector<int>& map,
         GL_FLOAT,
         GL_FALSE,
         sizeof(Vertex),
-        (void*)offsetof(
-            Vertex,
-            normal
-        )
+        (void*)offsetof(Vertex, normal)
     );
 
     glEnableVertexAttribArray(2);
 
-    glVertexAttribPointer(
-        2,
-        3,
-        GL_FLOAT,
-        GL_FALSE,
-        sizeof(Vertex),
-        (void*)offsetof(
-            Vertex,
-            color
-        )
-    );
+    glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, color));
 
     glEnableVertexAttribArray(3);
 
-    glVertexAttribPointer(
-        3,
-        1,
-        GL_FLOAT,
-        GL_FALSE,
-        sizeof(Vertex),
-        (void*)offsetof(
-            Vertex,
-            matId
-        )
-    );
+    glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, matId));
 
-    // The EBO binding is part of the VAO state, so it must be bound while m_vao is still bound
-    // (before the glBindVertexArray(0) below), like the VBO/attribute setup above.
-    glBindBuffer(
-        GL_ELEMENT_ARRAY_BUFFER,
-        m_ebo
-    );
+    // The EBO binding is VAO state: bind it while the VAO is bound
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_ebo);
 
     glBufferData(
         GL_ELEMENT_ARRAY_BUFFER,
@@ -1017,27 +832,15 @@ void SceneGeometry::build(int mapW, int mapH, const std::vector<int>& map,
 
     glBindVertexArray(0);
 
-    m_particleVertexCount =
-        (int)particleVerts.size();
+    m_particleVertexCount = (int)particleVerts.size();
 
-    glGenVertexArrays(
-        1,
-        &m_particleVao
-    );
+    glGenVertexArrays(1, &m_particleVao);
 
-    glGenBuffers(
-        1,
-        &m_particleVbo
-    );
+    glGenBuffers(1, &m_particleVbo);
 
-    glBindVertexArray(
-        m_particleVao
-    );
+    glBindVertexArray(m_particleVao);
 
-    glBindBuffer(
-        GL_ARRAY_BUFFER,
-        m_particleVbo
-    );
+    glBindBuffer(GL_ARRAY_BUFFER, m_particleVbo);
 
     glBufferData(
         GL_ARRAY_BUFFER,
@@ -1049,17 +852,7 @@ void SceneGeometry::build(int mapW, int mapH, const std::vector<int>& map,
 
     glEnableVertexAttribArray(0);
 
-    glVertexAttribPointer(
-        0,
-        3,
-        GL_FLOAT,
-        GL_FALSE,
-        sizeof(Vertex),
-        (void*)offsetof(
-            Vertex,
-            pos
-        )
-    );
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, pos));
 
     glEnableVertexAttribArray(1);
 
@@ -1069,55 +862,30 @@ void SceneGeometry::build(int mapW, int mapH, const std::vector<int>& map,
         GL_FLOAT,
         GL_FALSE,
         sizeof(Vertex),
-        (void*)offsetof(
-            Vertex,
-            normal
-        )
+        (void*)offsetof(Vertex, normal)
     );
 
     glEnableVertexAttribArray(2);
 
-    glVertexAttribPointer(
-        2,
-        3,
-        GL_FLOAT,
-        GL_FALSE,
-        sizeof(Vertex),
-        (void*)offsetof(
-            Vertex,
-            color
-        )
-    );
+    glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, color));
 
     glEnableVertexAttribArray(3);
 
-    glVertexAttribPointer(
-        3,
-        1,
-        GL_FLOAT,
-        GL_FALSE,
-        sizeof(Vertex),
-        (void*)offsetof(
-            Vertex,
-            matId
-        )
-    );
+    glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, matId));
 
     glBindVertexArray(0);
 }
 
-// Precomputed chunk PVS: flood-fill from each chunk's footprint through floor cells only, one bit
-// per reachable chunk in a 64-bit mask. Built once after geometry. Conservative: it only rules out
-// provably unreachable chunks, and render() combines it with frustum/distance culling.
+// Chunk PVS: flood fill through floor cells from each chunk, one bit per reachable chunk
+// Conservative; render() still frustum- and distance-culls
 
 void SceneGeometry::buildPVS(int mapW, int mapH, const std::function<bool(int, int)>& isWall)
 {
     const size_t numChunks = m_chunks.size();
     m_chunkPvsMask.assign(numChunks, 0ull);
 
-    // The mask is one uint64_t, so at most 64 chunks (the 128x128 maze with kChunkSize 16 gives
-    // exactly 64). Beyond that the prefilter is disabled and render() falls back to frustum +
-    // distance culling.
+    // One uint64_t mask, so at most 64 chunks (128x128 with kChunkSize 16 is exactly 64)
+    // Beyond that PVS is off
     if (numChunks == 0 || numChunks > 64 || m_chunksX <= 0 || mapW <= 0 || mapH <= 0)
     {
         m_chunkPvsEnabled = false;

@@ -20,8 +20,7 @@ float LerpAngle(float current, float target, float speed, float dt) {
     return current + (target - current) * t;
 }
 
-// Updates the nonlinear motion of crumbled ASCII pieces and of the word itself. Fall speed is
-// driven by acceleration, so each frame the particles/logo fall faster than the last.
+// Accelerating fall of the detached pieces and the word itself.
 void UpdateTitleBreakup(TitleBreakupState& state, float deltaTime) {
     deltaTime = std::clamp(deltaTime, 0.0f, 0.05f);
 
@@ -64,8 +63,7 @@ bool HasActiveTitleAnimation(const TitleBreakupState& state) {
     return state.tiltEnabled && std::abs(state.tilt - state.tiltTarget) > 0.002f;
 }
 
-// Writes into a caller-provided buffer: this is the per-frame hot path during the animation, and
-// clear() keeps the buffer's capacity, so it does not allocate after the first call.
+// Per-frame path: writes into a reused buffer.
 void CollectTitleCells(
     std::vector<TitleCell>& outCells,
     const std::string& text, int originCol, int originRow, float scale,
@@ -103,9 +101,7 @@ void CollectTitleCells(
     }
 }
 
-// Convenience wrapper for callers outside the per-frame hot path (e.g. ApplyTitleClick() below,
-// which runs once per mouse click) that just want a vector back. DrawBrokenTitle() does not use it:
-// it uses the out-param overload above with a reused scratch buffer.
+// Allocating wrapper for one-off callers.
 std::vector<TitleCell> CollectTitleCells(
     const std::string& text, int originCol, int originRow, float scale,
     const TitleBreakupState& state)
@@ -134,9 +130,8 @@ void DrawRotatedCell(
     PutGlyph(grid, cols, rows, gc, gr, glyph);
 }
 
-// Draws CELL with the same ASCII art, but as a "sheet" that can be gradually dropped, tilted to one
-// side and finally torn off entirely. The 5th click uses a single fall for the whole word, while
-// individual already detached characters keep their own physics.
+// Draws the title as a sheet that sags, tilts and finally tears off. On the fifth click the whole
+// word falls as one piece.
 void DrawBrokenTitle(
     std::vector<unsigned char>& grid, int cols, int rows,
     const std::string& text, int originCol, int originRow,
@@ -145,9 +140,7 @@ void DrawBrokenTitle(
     const int titleWidth = BigTextWidth(text, scale);
     const int titleHeight = BigGlyphHeight(scale);
 
-    // The same pivot point is used both while CELL hangs on one side and once it has fallen. This
-    // is critical: on the fifth click the word must not jump to a new position, it must continue
-    // falling exactly from where it was hanging.
+    // One pivot for hanging and falling, so the word does not jump when it detaches.
     const float pivotX = state.fullFalling
         ? state.fallPivotX
         : originCol + (state.hangerSide >= 0 ? titleWidth - 1 : 0);
@@ -170,17 +163,13 @@ void DrawBrokenTitle(
             (state.fallDuration * state.fallDuration) *
             state.fallTime * state.fallTime;
 
-        // At the moment of full detachment, keep exactly the same tilt the word started falling
-        // from. Only a small extra lean is added at the bottom, with no position change.
+        // Keep the tilt it started falling with, plus a small lean.
         const float landingTilt = 0.10f *
             (safeT * safeT * (3.0f - 2.0f * safeT));
         wholeAngle = state.fallStartTilt + landingTilt;
     }
 
-    // A reused static scratch buffer instead of a fresh heap allocation every frame (see the
-    // CollectTitleCells() out-param overload above). DrawBrokenTitle() is called every frame while
-    // the title is mid-animation (the menu layout is marked dirty every frame, see
-    // Application.cpp), so this eliminates a real per-frame allocation.
+    // Reused every animation frame.
     static std::vector<TitleCell> s_titleCellsScratch;
     CollectTitleCells(s_titleCellsScratch, text, originCol, originRow, scale, state);
     const std::vector<TitleCell>& cells = s_titleCellsScratch;
@@ -190,18 +179,13 @@ void DrawBrokenTitle(
 
         unsigned char glyph = cell.glyph;
 
-        // With each click CELL's surface looks more worn: some dense ASCII glyphs disappear, others
-        // are replaced with small ragged marks. The distribution is deterministic, so the wear does
-        // not flicker between frames.
+        // Wear grows with each click; deterministic so it does not flicker.
         if (state.wearLevel > 0) {
-            const unsigned int wearHash =
-                Hash(cell.x * 92821 + cell.y * 68917, 1703);
+            const unsigned int wearHash = Hash(cell.x * 92821 + cell.y * 68917, 1703);
             const unsigned int wearRoll = wearHash % 100u;
 
-            const unsigned int blankChance =
-                (unsigned int)std::min(18, state.wearLevel * 4);
-            const unsigned int scuffChance =
-                (unsigned int)std::min(12, state.wearLevel * 3);
+            const unsigned int blankChance = (unsigned int)std::min(18, state.wearLevel * 4);
+            const unsigned int scuffChance = (unsigned int)std::min(12, state.wearLevel * 3);
 
             if (wearRoll < blankChance) {
                 continue;
@@ -220,10 +204,7 @@ void DrawBrokenTitle(
 
     for (const TitleParticle& p : state.particles) {
         if (!p.active || p.age < p.delay) continue;
-        PutGlyph(grid, cols, rows,
-                 (int)std::lround(p.x),
-                 (int)std::lround(p.y),
-                 p.glyph);
+        PutGlyph(grid, cols, rows, (int)std::lround(p.x), (int)std::lround(p.y), p.glyph);
     }
 
     if (state.tiltEnabled && !state.fullFalling) {
@@ -235,9 +216,7 @@ void DrawBrokenTitle(
     (void)titleHeight;
 }
 
-// One click on CELL tears off only a small random set of cells. The first four clicks each break
-// off a different number of characters, so the word does not break apart the same way every run.
-// The third click adds a tilt to one side, the fifth drops the whole remaining logo.
+// Each click tears off a random handful of cells; the third adds a tilt.
 void ApplyTitleClick(TitleBreakupState& state,
                             int cols, int rows,
                             const std::string& text,
@@ -264,8 +243,7 @@ void ApplyTitleClick(TitleBreakupState& state,
     state.wearLevel = std::min(4, state.clickCount);
 
     if (state.clickCount < 5) {
-        // Each new click guarantees more crumbling ASCII cells, but the count still varies a bit
-        // within one step, so the breakup does not look mechanical.
+        // More pieces per click, with some variation.
         const int baseDropCount = 4 + state.clickCount * 3;
         const int dropCount = baseDropCount +
             (int)(Hash(seed + state.clickCount * 271, 4401) % 3u);
@@ -300,8 +278,7 @@ void ApplyTitleClick(TitleBreakupState& state,
 
         if (state.clickCount == 3) {
             state.tiltEnabled = true;
-            state.hangerSide =
-                (Hash(seed, 7711) & 1u) ? 1 : -1;
+            state.hangerSide = (Hash(seed, 7711) & 1u) ? 1 : -1;
 
             state.tiltTarget = 0.28f;
         }
@@ -312,8 +289,7 @@ void ApplyTitleClick(TitleBreakupState& state,
             state.hangerSide = 1;
         }
 
-        // No jump to a new position: the fifth stage starts from the actual angle and the same
-        // hanging point CELL was at before.
+        // Continue from the current tilt and pivot.
         state.fallStartTilt = state.tilt;
         const int titleWidth = BigTextWidth(text, scale);
         state.fallPivotX = originCol + (state.hangerSide >= 0 ? titleWidth - 1 : 0);
@@ -324,8 +300,7 @@ void ApplyTitleClick(TitleBreakupState& state,
         state.fallDuration = 1.30f;
 
         const int titleHeight = BigGlyphHeight(scale);
-        state.fallDistance =
-            (float)std::max(8, rows - originRow + titleHeight + 4);
+        state.fallDistance = (float)std::max(8, rows - originRow + titleHeight + 4);
     }
 
     (void)cols;

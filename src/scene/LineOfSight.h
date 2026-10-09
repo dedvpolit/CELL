@@ -3,15 +3,14 @@
 #include <vector>
 #include "WallShapes.h"
 
-// Line of sight between two world points on the map grid: grid DDA + corner-cut half-plane test +
-// column ray-vs-circle test, the CPU counterpart of shadowedByWall() in scene.frag. Used by EnemyAI
-// and DungeonScene::isEnemyVisibleToPlayer(). Despite the module name nothing is baked: it traces
-// rays on demand.
+// Line of sight between two world points:
+// grid walk with the corner-cut half-plane test plus a ray & circle test for columns
+// Used by EnemyAI and DungeonScene::isEnemyVisibleToPlayer()
 namespace LineOfSight {
 
-// Parameters mirror DungeonScene's arrays (map: 1 = wall; cornerCuts and diagonalChainMask indexed
-// like map; columnCentersXZ/columnRadius). Computed on demand without caching: EnemyAI calls it at
-// most a couple of times per second.
+// map:
+// 1 = wall; the other arrays are indexed like map
+// Uncached; EnemyAI calls it a few times per second
 bool HasLineOfSight(
     const glm::vec2& fromXZ,
     const glm::vec2& toXZ,

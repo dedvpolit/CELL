@@ -4,61 +4,76 @@
 #include <string>
 #include <vector>
 #include "render/AsciiEffect.h"
+#include "render/GpuTimer.h"
+#include "render/CrtEffect.h"
+#include "ui/StoryText.h"
 #include "scene/DungeonScene.h"
 #include "ui/MainMenu.h"
 #include "ui/TextRenderer.h"
 #include "WindowManager.h"
 #include "audio/AudioMixer.h"
 
-// App-level state machine (menu/pause/settings/fades) and frame composition. main.cpp is only
-// bootstrap plus one app.tick(...) call per frame.
+// App state machine (menus, pause, settings, fades) and frame composition
 class Application {
 public:
     void init(GLFWwindow* window, DungeonScene& scene, AsciiEffect& ascii);
+    void shutdown() { m_gpuTimer.shutdown(); m_crt.shutdown(); }
+
+    // While minimized no frames are drawn;
+    // restart the [perf] second so it does not report a stall
+    void restartPerfCounter() { m_perfLastTime = -1.0; m_perfFrameCount = 0; }
 
     void tick(GLFWwindow* window, DungeonScene& scene, AsciiEffect& ascii,
               WindowManager& windowManager, float deltaTime);
 
-    // True while actual gameplay is running (FADE_TO_GAME/PLAYING); main.cpp uses it to toggle the
-    // mouse-look callback and the GLFW cursor mode.
+    // True during FADE_TO_GAME/PLAYING;
+    // main.cpp toggles the cursor with it
     bool isMouseLookEnabled() const { return m_mouseLookEnabled; }
 
 private:
+    GpuTimer m_gpuTimer;
+
+    StoryText m_storyText;
+    bool m_storyLeadsToCredits = false;
+    // Holding Space for kStorySkipHoldSeconds skips the text;
+    // the hint fills with '#'
+    static constexpr float kStorySkipHoldSeconds = 2.0f;
+    float m_storySkipHold = 0.0f;
+    bool m_storySkipArmed = false;
+    std::vector<unsigned char> m_storyGrid;
+    void startStory(bool leadsToCredits);
+
+    // Whatever the cursor is on in the current menu (-1 = nothing)
+    // for the hover/click sounds
+    int currentUiHoverId() const;
+    int m_uiHoverId = -1;
+    double m_perfLastTime = -1.0;
+    int m_perfFrameCount = 0;
+
     TextRenderer m_textRenderer;
 
     enum class AppState {
         MENU, CONTINUE_SELECT, SETTINGS, SAVE_SELECT, SAVE_CONFIRM, SAVE_NAME_ENTRY,
-        // The same slot-picker and overwrite-confirm screens as SAVE_SELECT/SAVE_CONFIRM, for the
-        // main menu's NEW GAME (see m_newGameLayout); SAVE_NAME_ENTRY serves both flows (see
-        // m_nameEntryForNewGame).
+        // Slot picker and overwrite confirmation for NEW GAME;
+        // SAVE_NAME_ENTRY serves both flows
         NEWGAME_SELECT, NEWGAME_CONFIRM,
         FADE_TO_BLACK, FADE_TO_GAME, FADE_TO_MENU, PLAYING, PAUSED,
-        // Credits (see PendingAction::SHOW_CREDITS): the thank-you text over a black background
-        // (the camera is moved out of the map, see the CREDITS branch in tick()). The only way out
-        // is ESC, which closes the game.
-        CREDITS
+        // Thank-you text on black
+        CREDITS,
+        // Text on black between a fade and the next state
+        STORY_TEXT
     };
 
     enum class PendingAction {
-        // NEW_GAME/LOAD_GAME run once the screen is fully black (FADE_TO_BLACK), hiding the heavy
-        // map/GL regeneration. NEW_GAME_IN_SLOT: slot and name were picked before the fade
-        // (NEW_GAME is the fallback that lets DungeonScene::newGame() choose). DIED: player death;
-        // unlike RETURN_TO_MENU (which assumes an open pause menu) it has no overlay and generates
-        // a fresh map. SHOW_CREDITS: E at the donut, then AppState::CREDITS. SAVE needs no
-        // PendingAction: the write is instant.
         NONE, NEW_GAME, NEW_GAME_IN_SLOT, LOAD_GAME, QUIT_APP, RETURN_TO_MENU, DIED, SHOW_CREDITS
     };
 
     static float sensitivityToSlider01(float sensitivity);
     static float slider01ToSensitivity(float t);
 
-    // Shared confirm logic for the name entry screen (AppState::SAVE_NAME_ENTRY), called from both
-    // the ENTER key and the OK click so the default-name and NEW GAME/SAVE branching is not
-    // duplicated.
+    // Shared by ENTER and the OK button
     void confirmNameEntry(DungeonScene& scene);
-    // The same "value <-> slider position 0..1" mapping as
-    // sensitivityToSlider01/slider01ToSensitivity, for the SHARPNESS slider (ASCII cell size in
-    // pixels): a separate pair to keep the units from getting mixed up.
+    // Slider mapping for SHARPNESS (cell size in pixels)
     static float cellSizeToSlider01(int cellSize);
     static int slider01ToCellSize(float t);
 
@@ -67,10 +82,7 @@ private:
 
     bool m_fKeyWasDown = false;
     bool m_f1KeyWasDown = false;
-
-    bool m_appliedCinematicBoost = false;
-    int m_currentSceneW = 0, m_currentSceneH = 0;
-    int m_normalSceneW = 1280, m_normalSceneH = 720;
+    bool m_f3KeyWasDown = false;
 
     AppState m_appState = AppState::MENU;
     PendingAction m_pendingAction = PendingAction::NONE;
@@ -100,17 +112,15 @@ private:
     bool m_saveConfirmLayoutDirty = true;
     int m_pendingSaveSlot = -1; // slot pending overwrite confirmation / name entry
 
-    // NEW GAME has its own layouts and dirty flags instead of reusing the save ones: both screens
-    // can appear back to back with different titles and a shared cache would overwrite itself.
+    // Separate from the save screens caches
     MainMenu::SlotMenuLayout m_newGameLayout;
+    Difficulty m_selectedDifficulty = Difficulty::Normal;
     bool m_newGameLayoutDirty = true;
     MainMenu::ConfirmLayout m_newGameConfirmLayout;
     bool m_newGameConfirmLayoutDirty = true;
     int m_pendingNewGameSlot = -1; // slot pending overwrite confirmation / new game's name
 
-    // The name entry serves both SAVE (from pause) and NEW GAME (from the main menu); this flag
-    // decides whether confirming starts a new game in m_pendingNewGameSlot (NEW_GAME_IN_SLOT) or
-    // overwrites m_pendingSaveSlot.
+    // Whether confirming the name starts a new game or saves
     bool m_nameEntryForNewGame = false;
 
     MainMenu::NameEntryLayout m_nameEntryLayout;
@@ -118,37 +128,26 @@ private:
     std::string m_saveNameBuffer;
     bool m_backHoveredNameEntry = false;
     bool m_confirmHoveredNameEntry = false;
-    // Edge-trigger table for the alphanumeric keys plus Enter/Backspace, polled only in
-    // AppState::SAVE_NAME_ENTRY. Sized GLFW_KEY_LAST + 1 because GLFW_KEY_ENTER (257) and
-    // GLFW_KEY_BACKSPACE (259) lie outside the A-Z/0-9 range (65-90, 48-57).
+    // Edge detection for typing;
+    // sized for Enter/Backspace, which lie outside the letter range
     bool m_textEntryKeyWasDown[GLFW_KEY_LAST + 1] = {};
 
-    // Autosave of the run's progress (DungeonScene::saveActiveSlot()), so CONTINUE reflects real
-    // progress and not only the start/load moment.
     float m_autosaveTimer = 0.0f;
 
-    // Reusable buffer instead of rebuilding the icon vector every frame (like DungeonScene's
-    // scratch vectors). Reallocated only when the screen size changes.
+    // Reused every frame; reallocated only on a size change
     std::vector<unsigned char> m_hudIconsGridScratch;
 
-    // Shared reusable buffer for all six gameplay hints
-    // (DIARY_HINT/TORCH_HINT/TORCH_EMPTY_MSG/WIN_BLOCKED_MSG/WIN_ACTIVATE_HINT/WIN_READY_MSG): they
-    // are shown one at a time, so one buffer serves them all.
+    // Shared by the gameplay hints; only one shows at a time
     std::vector<unsigned char> m_hintGridScratch;
 
-    // A separate reusable buffer for the diary-reading screen: a persistent member, not a local
-    // vector in tick().
     std::vector<unsigned char> m_diaryReadingGridScratch;
 
-    // Credits (AppState::CREDITS, see PendingAction::SHOW_CREDITS). The text is long and does not
-    // fit at once: UP/DOWN scrolling, like the journal (DungeonScene::tickReadingOverlayInput()),
-    // but as its own AppState-level screen instead of a gameplay overlay.
+    // Credits scroll with UP/DOWN
     float m_creditsScrollPx = 0.0f;
     bool m_creditsUpKeyWasDown = false;
     bool m_creditsDownKeyWasDown = false;
 
-    // The line-wrapped credits text does not change while the screen is open, only the visible line
-    // range (scroll) does. It is built once on entering the screen (see m_creditsLinesBuilt).
+    // Wrapped once on entering the credits
     std::vector<std::string> m_creditsLinesCache;
     bool m_creditsLinesBuilt = false;
     float m_creditsLinesCachedWidth = -1.0f; // rebuild if window width changes
@@ -163,8 +162,7 @@ private:
     bool m_sharpnessSliderHovered = false;
     bool m_sharpnessSliderDragging = false;
 
-    // MUSIC/MASTER sliders (same hover/drag pattern as SENSITIVITY/SHARPNESS). The values live here
-    // because they belong to AudioMixer; they are pushed to it once per frame in tick().
+    // Pushed to AudioMixer every frame in tick()
     float m_musicVolume = 1.0f;
     float m_masterVolume = 1.0f;
     bool m_musicSliderHovered = false;
@@ -175,15 +173,23 @@ private:
     bool m_colorEnabled = true; // on by default so COLOR and LENS are already enabled at launch
     bool m_lensEnabled = true;
     bool m_lensCheckboxHovered = false;
+
+    // SHADERS appears in settings once the title has been knocked down (this session only)
+    // Off renders the plain 3D scene instead of ASCII
+    bool m_shadersUnlocked = false;
+    bool m_shadersEnabled = true;
+    bool m_shadersCheckboxHovered = false;
+
+    CrtEffect m_crt;
+    bool m_crtEnabled = true;
+    bool m_crtCheckboxHovered = false;
     bool m_colorCheckboxHovered = false;
 
     bool m_confirmKeyWasDown = false;
 
     float m_fadeAlpha = 0.0f;
     static constexpr float kFadeOutSpeed = 1.2f;
-    // The death fade uses its own, half-speed value instead of kFadeOutSpeed, which the normal menu
-    // exit shares (one fade pipeline, see PendingAction). It applies only while m_pendingAction ==
-    // DIED.
+    // Death fades at half the normal speed.
     static constexpr float kDeathFadeOutSpeed = 0.6f;
     static constexpr float kFadeInSpeed = 0.5f;
 };

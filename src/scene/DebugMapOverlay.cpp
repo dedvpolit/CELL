@@ -6,6 +6,8 @@
 #include <cmath>
 #include <string>
 
+// Meow-meow-meow-mewo
+
 void DebugMapOverlay::create()
 {
     const std::string debugVertSrc = ShaderLoader::LoadSource("assets/shaders/debug_map.vert");
@@ -21,9 +23,7 @@ void DebugMapOverlay::create()
     glBindVertexArray(m_vao);
     glBindBuffer(GL_ARRAY_BUFFER, m_vbo);
 
-    // The buffer is reused every frame for three different shapes (background, textured map, player
-    // marker), so this only reserves a small size for at most 6 vertices; the data is re-uploaded
-    // in renderDebugMap() before each draw call.
+    // Reused for all three shapes; re-uploaded before each draw
     glBufferData(GL_ARRAY_BUFFER, 6 * 4 * sizeof(float), nullptr, GL_DYNAMIC_DRAW);
 
     glEnableVertexAttribArray(0);
@@ -149,16 +149,14 @@ void DebugMapOverlay::render(int viewportWidth, int viewportHeight, bool visible
     }
     glBindTexture(GL_TEXTURE_2D, 0);
 
-    // Zoning: a marker at each region center colored by chamferProbability (blue low, red high).
-    // Drawing exact Voronoi borders would need a quad per cell or another texture channel; centers
-    // are enough to show that regions exist and differ.
+    // A marker at each region center, colored by chamfer probability (blue low, red high)
     if (mapW > 0 && mapH > 0 && !zoneGrid.centers.empty())
     {
         glUniform1i(locMode, 1);
         glUniform1f(locAlpha, 0.9f);
 
-        // Marker radius is proportional to a region's "radius" under even coverage, so neighboring
-        // markers do not merge and roughly hint at the region scale.
+        // Marker radius is proportional to a region's "radius" under even coverage
+        // neighboring markers do not merge and roughly hint at the region scale
         const float regionRadiusCells = std::sqrt((float)Zoning::kTargetRegionArea / 3.14159265f);
         const float markerSize = std::max(4.0f, (regionRadiusCells / (float)mapW) * boxSize * 0.5f);
 
@@ -183,12 +181,11 @@ void DebugMapOverlay::render(int viewportWidth, int viewportHeight, bool visible
         }
     }
 
-    // Columns: separate markers; a column cell in mapTex is indistinguishable from a regular floor,
-    // so without them columns would not be visible on the debug map at all.
+    // Column cells look like floor in mapTex, so they get markers
     if (mapW > 0 && mapH > 0 && !columnCentersXZ.empty())
     {
         glUniform1i(locMode, 1);
-        glUniform3f(locColor, 0.25f, 0.95f, 0.35f); // green — same tone as the win button
+        glUniform3f(locColor, 0.25f, 0.95f, 0.35f); // column markers: green
         glUniform1f(locAlpha, 1.0f);
 
         const float markerSize = std::max(3.0f, std::min(boxSize / mapW, boxSize / mapH) * 0.9f);
@@ -279,6 +276,7 @@ void DebugMapOverlay::render(int viewportWidth, int viewportHeight, bool visible
     glBindVertexArray(0);
     glUseProgram(0);
 
+    glDisable(GL_BLEND);
     glDepthMask(GL_TRUE);
     glEnable(GL_DEPTH_TEST);
 }

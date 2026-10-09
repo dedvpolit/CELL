@@ -11,8 +11,9 @@ void EnemyCharacter::attachSharedModel(const SkinnedModel* sharedModel)
 
 void EnemyCharacter::destroy()
 {
-    // Nothing is freed on the GPU: the model is not ours; DungeonScene owns and frees it via
-    // m_enemySharedModel.destroy(), once for everyone.
+    // Nothing is freed on the GPU:
+    // the model is not ours;
+    // DungeonScene owns and frees it via m_enemySharedModel.destroy(), once for everyone
     m_model = nullptr;
     m_loaded = false;
 }
@@ -42,13 +43,9 @@ void EnemyCharacter::update(float deltaTime)
 
     m_stateTime += deltaTime;
 
-    // For Walk/Run the clip advances by the distance actually travelled (clipDeltaTime = distance /
-    // referenceSpeed) instead of time, so a mismatch between movement speed and the baked stride
-    // does not read as skating, and a blocked body stops its legs. At the reference speed this
-    // equals deltaTime. Other states do not move and use time. kWalk/RunReferenceSpeed must match
-    // kEnemyWalk/RunSpeed in EnemyAI.cpp.
+    // Walk/Run clips advance by distance travelled, so speed mismatches do not skate and a blocked body does not walk in place
     const float kWalkReferenceSpeed = 0.55f; // = kEnemyWalkSpeed in EnemyAI.cpp
-    const float kRunReferenceSpeed = 2.0f;  // = kEnemyRunSpeed in EnemyAI.cpp
+    const float kRunReferenceSpeed = 2.0f;   // = kEnemyRunSpeed in EnemyAI.cpp
 
     float clipDeltaTime = deltaTime; // default: time-based (Idle/Attack/WallSlam/Scream)
 
@@ -63,23 +60,19 @@ void EnemyCharacter::update(float deltaTime)
                 (m_currentState == State::Run) ? kRunReferenceSpeed : kWalkReferenceSpeed;
             clipDeltaTime = distance / referenceSpeed;
 
-            // When pinned against a wall the travelled distance is near zero, which would freeze
-            // the body like a statue while the AI keeps trying to move; a floor of 12% of the
-            // time-based rate keeps the legs shuffling ("stuck but trying").
+            // Pinned against a wall: keep 12% of the time-based rate so the legs still shuffle
             const float kMinAnimRateFraction = 0.12f;
             clipDeltaTime = std::max(clipDeltaTime, deltaTime * kMinAnimRateFraction);
         }
-        // else: the very first frame: there is no previous position to compare with, so it stays on
-        // the time-based step this once.
+        // else: the very first frame:
+        // there is no previous position to compare with, so it stays on the time-based step this once
     }
 
     m_lastUpdatePosition = m_position;
     m_lastUpdatePositionInit = true;
 
     m_currentClipTime += clipDeltaTime;
-    // The previous pose (during the short crossfade below) is already on its way out, fading by
-    // blend; it is not tied to distance, which would add complexity (remembering the previous
-    // state's reference speed too) for a barely noticeable 0.25 s tail.
+    // The outgoing pose of the crossfade runs on time; distance-based playback for it would not be noticeable
     m_previousClipTime += deltaTime;
 
     const float kBlendDuration = 0.25f;
@@ -104,10 +97,7 @@ void EnemyCharacter::draw(GLint uModelLoc, GLint uBoneMatricesLoc) const
     if (!m_loaded)
         return;
 
-    // The mesh's real bind-pose height, measured from the .glb (raw vertices, no animation), is
-    // 1.75 units, while the player's eye height in this game is only 0.5 (the player is ~0.54
-    // tall). kModelScale = 0.6 gives ~1.05: noticeably taller than the player (for threat) but
-    // proportionate to the maze's 1-unit-wide corridors.
+    // The mesh is 1.75 units tall; the player's eye is at 0.5. 0.6 gives ~1.05
     const float kModelScale = 0.6f;
 
     const glm::mat4 model =

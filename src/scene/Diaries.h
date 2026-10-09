@@ -1,97 +1,123 @@
 #pragma once
-#include <vector>
-#include <string>
-#include <random>
 #include <algorithm>
-#include <iterator>
+#include <array>
+#include <random>
+#include <string>
+#include <vector>
 #include <glm/glm.hpp>
 
-// Lore notes in the maze's small safe zones: one diary per pocket (kDiariesPerRun). A diary stays
-// in the world after reading (decoration plus a "read" flag); interacting only opens the reading
-// screen. Unlike Zoning.h this module uses glm because pocketCenters comes straight from
-// MapGenerator.
+// Diaries: one per pocket. The story is told in read order: the N-th diary the player opens shows
+// step N, whichever pocket it lies in. Each step has 2-3 variants with the same key facts; one is
+// picked per map seed. ~WORD~ is drawn as an ink stain.
 namespace Diaries {
 
-// How many diaries physically exist in the world per run: matches the number of small safe zones.
-// If that number changes, diaries do not need touching: SelectForSeed() adapts to the map's actual
-// pocket count. This is a documenting constant, not a hard code dependency.
-constexpr int kDiariesPerRun = 12;
+constexpr int kStepCount = 12;
+constexpr int kMaxVariants = 3;
 
-// The pool a per-seed subset is drawn from (SelectForSeed): the same seed (CONTINUE) always gets
-// the same subset in the same pockets. A word in tildes (~WORD~) is drawn as a procedural ink stain
-// of the same width instead of letters (see TextRenderer); 1-3 per text at deliberately varied
-// positions.
-constexpr const char* kPool[] = {
-    "THE ~TORCHES~ KEEP IT BACK. NOT AWAY - BACK. THERE'S A ~DIFFERENCE~, AND I ONLY LEARNED IT ONCE. WHEN ONE GOES OUT, IT DOESN'T RUSH IN. IT WAITS TO SEE IF I'LL RELIGHT IT MYSELF. I ALWAYS DO. I DON'T KNOW WHY THAT FEELS LIKE ~LOSING~.",
-    "SOMEONE CARVED LINES INTO THIS WALL BEFORE ME. TWELVE OF ~THEM~. I HAVE STARTED MY OWN COUNT BESIDE THEIRS. MINE IS LONGER NOW, AND I DON'T REMEMBER MAKING HALF OF THEM. THE OLDEST LINES ARE DEEPER THAN THE STONE SHOULD ALLOW. I STOPPED CARVING TWO DAYS AGO. THE COUNT KEEPS ~GROWING~ ANYWAY.",
-    "IT DOES NOT RUN. IT NEVER NEEDS TO. WE ARE THE ONES WHO KEEP ~MOVING~. I TESTED THIS ONCE, STANDING STILL IN A DEAD-END HALL, COUNTING MY OWN BREATH. IT TOOK EIGHT MINUTES TO REACH ME. I HAVEN'T TESTED IT ~AGAIN~. SOME QUESTIONS ANSWER THEMSELVES ONLY ONCE.",
-    "I FOUND MY ~OWN~ BOOT PRINT IN THE DUST AHEAD OF ME. I HAVE NOT WALKED THAT ~WAY~ YET. THE TREAD MATCHES MINE EXACTLY, DOWN TO THE CRACK IN THE LEFT HEEL. I CHECKED MY BOOTS TWICE TO BE SURE. I AM STARTING TO WONDER IF SOMEONE ELSE IS WEARING ~MINE~, SOMEWHERE AHEAD OF ME IN TIME RATHER THAN SPACE.",
-    "THE DOOR AT THE FAR END OPENS BOTH WAYS, THEY SAID. NOBODY WHO ~REACHED~ IT CAME BACK TO SAY IF THAT WAS ~TRUE~. I ASKED WHO 'THEY' WERE AND NO ONE COULD ANSWER ME DIRECTLY. THE STORY JUST EXISTS HERE, PASSED HAND TO HAND LIKE A COIN NOBODY WANTS TO SPEND. I HOLD ONTO IT ANYWAY. IT'S EASIER THAN HOLDING NOTHING.",
-    "~NAMES~ STOP MATTERING AFTER THE SECOND WRONG TURN. MINE DID. I DO NOT REMEMBER WRITING MY ~NAME~ AT THE TOP OF THIS ~PAGE~. THE HANDWRITING LOOKS LIKE MINE, BUT SLOWER, LIKE SOMEONE COPYING IT FROM MEMORY RATHER THAN WRITING IT FRESH. I'VE TRIED TO CROSS IT OUT THREE TIMES. IT COMES BACK BY MORNING.",
-    "~IT~ WEARS WHAT IT TAKES FROM US. CLOTH FIRST. THEN SOMETHING ELSE. I SAW IT IN MY OWN COAT LAST WEEK, FROM BEHIND, WALKING THE WAY I WALK. I DIDN'T CALL OUT. I DON'T KNOW WHAT WOULD HAVE ANSWERED IF I ~HAD~.",
-    "THE WALLS ARE NOT STONE ALL THE WAY THROUGH. PRESS YOUR EAR ~CLOSE~ ON A QUIET NIGHT AND YOU WILL WISH YOU HAD ~NOT~. WHAT'S BEHIND THEM BREATHES ON A SLOW COUNT, LIKE SOMETHING SLEEPING RATHER THAN SOMETHING BUILT. I MARKED THE SPOT WHERE I HEARD IT LOUDEST. I HAVEN'T GONE BACK TO CHECK IF THE MARK IS STILL ~THERE~.",
-    "SIX OF US CAME IN TOGETHER. I AM THE ONLY ONE STILL ~WRITING~. ONE LEFT HIS BAG BY THE THIRD TORCH AND NEVER CAME BACK FOR IT. I CHECKED INSIDE. THERE WAS NOTHING PERSONAL IN IT, LIKE HE'D PACKED FOR SOMEONE ELSE'S TRIP. I DON'T TOUCH IT WHEN I PASS THAT ~TORCH~ NOW.",
-    "~THERE~ IS A LIGHT AT THE CENTER THEY CALL THE ~WAY~ OUT. I HAVE SEEN IT TWICE, FROM TWO DIFFERENT DIRECTIONS. BOTH TIMES IT WAS CLOSER THAN THE MAP IN MY HEAD SAID IT SHOULD BE. I'M STARTING TO THINK THE CENTER MOVES TO MEET WHOEVER IS LOOKING FOR IT. THAT SHOULD BE A COMFORT. IT ~ISN'T~.",
-    "I STOPPED COUNTING CORNERS AFTER THE MAZE ~CORRECTED~ ITSELF FOR THE THIRD TIME. THE FIRST TIME I THOUGHT I'D MISCOUNTED. THE SECOND TIME I WATCHED IT HAPPEN, A WALL SLIDING SHUT BEHIND ME SO SLOWLY I ALMOST DIDN'T NOTICE. THE THIRD TIME I JUST WROTE IT DOWN AND KEPT ~WALKING~.",
-    "IF YOU FOUND THIS, YOU ARE ~STILL~ WALKING. DO NOT STOP TO READ THE ~OTHERS~. I KNOW THAT'S EASY TO SAY AND HARD TO DO - I DIDN'T LISTEN EITHER. JUST KNOW THAT EVERY PAGE YOU SIT DOWN TO READ IS A PAGE YOU'RE NOT ~MOVING~. WHOEVER WROTE THESE BEFORE ME HAD THE SAME PROBLEM.",
-
-    "I MARKED THE ~DOOR~ WITH CHALK BEFORE I LEFT IT. WHEN I CAME BACK, THE MARK WAS ON THE INSIDE. I STOOD THERE A LONG TIME WORKING OUT HOW THAT COULD HAPPEN WITHOUT THE DOOR EVER OPENING WHILE I WATCHED IT. I DON'T HAVE AN ANSWER I CAN LIVE WITH. I STARTED CARRYING TWO PIECES OF CHALK AFTER THAT, IN CASE ONE OF THEM ~DISAGREES~.",
-    "IT HUMS WHEN IT'S CLOSE. NOT LOUD. LIKE SOMETHING REMEMBERING A ~SONG~ IT FORGOT THE ~WORDS~ TO. I CAUGHT MYSELF HUMMING THE SAME TUNE THIS MORNING BEFORE I'D EVEN HEARD IT. I STOPPED THE MOMENT I NOTICED. I DON'T THINK STOPPING ~HELPED~.",
-    "WE DREW STRAWS FOR WHO KEPT WATCH. ~NOBODY~ REMEMBERS WHO LOST. THERE WERE FIVE STRAWS AND FIVE OF US, AND SOMEHOW EVERYONE REMEMBERS DRAWING A LONG ONE. I'VE STOPPED BRINGING IT UP AROUND THE OTHERS. IT MAKES THEM QUIET IN A WAY I DON'T LIKE, LIKE THEY'RE COUNTING SOMETHING THEY'D RATHER ~NOT~.",
-    "THE ~COMPASS~ SPINS TWICE NEAR THE CENTER ROOM. TWICE, THEN IT DECIDES. I USED TO TRUST WHATEVER DIRECTION IT SETTLED ON. NOW I WAIT FOR THE THIRD SPIN THAT NEVER COMES AND GO THE OPPOSITE WAY INSTEAD. IT'S GOTTEN ME OUT OF THAT ROOM TWICE. I DON'T KNOW WHAT IT'LL COST ME THE ~THIRD~.",
-    "I STOPPED TRUSTING MY OWN FOOTSTEPS SOMEWHERE AROUND THE ~NINTH~ TURN. THEY SOUND RIGHT BEHIND ME NOW EVEN WHEN I STAND PERFECTLY STILL, LIKE THE ECHO IS RUNNING LATE. I TRIED HOLDING MY BREATH TO CATCH IT OUT. THE FOOTSTEPS HELD THEIRS ~TOO~.",
-    "THERE WERE SEVEN NAMES ON THE WALL WHEN I GOT HERE. THERE ARE ~EIGHT~ NOW, AND NONE OF THEM ARE ~MINE~. THE NEW ONE IS WRITTEN IN THE SAME HAND AS THE FIRST SEVEN, THOUGH THE FIRST SEVEN WERE CLEARLY WRITTEN BY SEVEN DIFFERENT PEOPLE. I'VE CHECKED THAT WALL EVERY DAY SINCE. SO FAR IT HASN'T ADDED A ~NINTH~.",
-    "THE TORCH WENT OUT ON ITS OWN. NO ~WIND~ REACHES THIS FAR IN. I RELIT IT AND WATCHED IT FOR AN HOUR, JUST TO SEE IF IT WOULD DO IT AGAIN WHILE I WAS LOOKING. IT DIDN'T. IT WAITED UNTIL I ~BLINKED~.",
-    "I HEARD SOMEONE SINGING THE TUNE MY MOTHER USED TO HUM. I HAVE NEVER TOLD ANYONE THAT ~TUNE~. I FOLLOWED IT FOR THREE TURNS BEFORE I REALIZED I WAS HUMMING ALONG WITHOUT MEANING TO. WHOEVER WAS SINGING STOPPED THE MOMENT I JOINED IN. I HAVEN'T HEARD IT ~SINCE~, AND I DON'T KNOW IF THAT'S BETTER.",
-    "~THE~ MAZE REMEMBERS WHERE YOU'VE BEEN. I DON'T KNOW IF IT REMEMBERS ~KINDLY~. THE HALLWAYS I'VE WALKED MOST OFTEN HAVE STARTED TO FEEL WORN, LIKE A PATH THROUGH GRASS, EVEN THOUGH THE STONE NEVER CHANGES. THE ONES I'VE NEVER WALKED FEEL LIKE THEY'RE WAITING. I TRY NOT TO GIVE THEM THE ~SATISFACTION~.",
-    "THREE OF US TURNED BACK AT THE FIRST POCKET. I NEVER SAW THEM AGAIN, NOT EVEN AS ~BONES~. I WENT LOOKING ONCE, FOLLOWING THE ROUTE WE'D COME IN BY. THE ROUTE WAS THERE. THE POCKET WASN'T. I DON'T ASK THE OTHERS IF THEY REMEMBER IT ~DIFFERENTLY~.",
-    "IT DOESN'T ~CHASE~. IT WAITS UNTIL YOU'VE ALREADY CHOSEN THE WRONG HALLWAY. I'VE STARTED CHOOSING WRONG ON PURPOSE, JUST TO SEE WHERE IT'S WAITING THIS TIME. IT'S NEVER IN THE SAME PLACE TWICE. THAT MEANS IT'S LEARNING FROM ME AS MUCH AS I'M LEARNING FROM ~IT~.",
-    "THE LAST PAGE OF THE LAST DIARY I FOUND WAS ~BLANK~. I AM STARTING TO UNDERSTAND ~WHY~. THERE'S A POINT WHERE WRITING IT DOWN STOPS FEELING LIKE RECORDING AND STARTS FEELING LIKE SUMMONING. I DON'T KNOW WHERE THAT LINE IS EXACTLY. I THINK I MIGHT BE GETTING CLOSE TO ~IT~.",
-    "I COUNTED THE STONES IN THIS WALL TWICE. THE ~NUMBER~ CHANGED THE SECOND TIME. NOT BY MUCH - ONE MORE THAN BEFORE, TUCKED INTO A CORNER I WAS SURE I'D ALREADY COUNTED. I COUNTED A THIRD TIME TO SETTLE IT. I STOPPED BEFORE I FINISHED. SOME ANSWERS AREN'T WORTH ~KNOWING~.",
-    "SOMEONE LEFT FOOD HERE, UNTOUCHED, YEARS AGO BY THE DUST ON IT. I DIDN'T EAT IT ~EITHER~. IT LOOKS FRESHER TODAY THAN IT DID WHEN I FIRST FOUND IT, WHICH IS THE WRONG DIRECTION FOR FOOD TO AGE. I'VE STARTED WALKING A DIFFERENT WAY TO AVOID PASSING IT. I DON'T LIKE HOW MUCH IT LOOKS LIKE IT'S ~WAITING~.",
-    "THE EXIT ISN'T A PLACE. I THINK IT'S A NUMBER OF ~STEPS~, AND I THINK I ~MISCOUNTED~ ONCE. I'VE BEEN RECOUNTING FROM THE START EVER SINCE, WHICH MEANS STARTING FROM A POINT I CAN NO LONGER PROVE WAS THE ACTUAL START. I DON'T TELL THE OTHERS THIS. IT WOULDN'T HELP THEM, AND IT WOULD COST ME THE ONLY PLAN I HAVE ~LEFT~.",
-    "IT WORE THE CLOTH OF THE ONE WHO CAME BEFORE ME. I RECOGNIZED THE ~STITCHING~. MY MOTHER TAUGHT ME THAT STITCH BEFORE I EVER CAME DOWN HERE, AND I'D KNOW IT ANYWHERE. I DIDN'T ASK HOW IT CAME TO BE WEARING SOMETHING THAT SPECIFIC. SOME QUESTIONS ANSWER THEMSELVES IF YOU JUST STAND THERE ~LONG~ ENOUGH, AND I DIDN'T WANT TO.",
-    "I ~DREAMED~ OF THIS CORRIDOR BEFORE I EVER WALKED IT. I HAVEN'T TOLD THE OTHERS THAT PART. IN THE DREAM THERE WAS A DOOR WHERE THE THIRD TORCH IS NOW, AND I KEEP EXPECTING IT TO BE THERE WHEN I ROUND THE CORNER. IT NEVER IS. I DON'T KNOW IF THAT MEANS THE DREAM WAS WRONG OR JUST ~EARLY~.",
-    "THE WALLS CLOSE IN SLOWLY ENOUGH THAT YOU DOUBT YOURSELF BEFORE YOU DOUBT ~THEM~. I STARTED MARKING THE WIDTH OF THIS HALLWAY WITH MY OUTSTRETCHED ARMS, EVERY TIME I PASS THROUGH IT. THE MARKS DON'T LINE UP ANYMORE. I'VE DECIDED NOT TO MEASURE AGAIN - NOT BECAUSE I TRUST THE WALLS, BUT BECAUSE I'VE STOPPED TRUSTING MY OWN ~ARMS~.",
-    "I FOUND THE SAME MATCH BURNED TWICE, ONE WEEK APART, ~SAME~ SCORCH MARK EXACTLY. I KEPT THE FIRST ONE IN MY POCKET THE WHOLE WEEK, SO I KNOW IT WASN'T LEFT BEHIND OR SWAPPED. I STRUCK IT AGAIN JUST TO SEE WHAT WOULD HAPPEN. IT LIT THE SAME WAY IT ALWAYS ~HAD~, AS IF THE FIRST BURN HAD NEVER TAKEN ANYTHING FROM IT.",
-    "IF THE TORCHES EVER ALL GO OUT AT ONCE, THAT'S NOT A ~WARNING~. THAT'S AN ~ANSWER~. I DON'T KNOW WHAT THE QUESTION WAS, ONLY THAT SOMEONE HERE HAS BEEN ASKING IT FOR A LONG TIME. I HOPE I'M NOT AROUND TO HEAR WHAT COMES AFTER THE DARK. I HOPE, IF I AM, I DON'T RECOGNIZE MY OWN ~VOICE~ IN IT.",
+struct StoryStep {
+    int variantCount;
+    const char* variants[kMaxVariants];
 };
-constexpr int kPoolCount = sizeof(kPool) / sizeof(kPool[0]);
 
-// One diary chosen for this run: the raw text from kPool (with tildes, not yet laid out into
-// lines/corrupted letters: that is the reading screen's job) plus the position of the pocket it
-// sits in.
+constexpr StoryStep kStory[kStepCount] = {
+    // 1
+    { 3, {
+        "Day 1. Mom says writing helps. Helps with what, she didn't say. So, hi, diary. M. forgot his lighter at my place again. He swears he's quitting by summer. Third summer in a row. On Saturday we're finally going to the old quarry. He says I'll chicken out. I won't. Mom and Dad were quiet at dinner. Quiet is worse than loud. Anyway. I'm fine.",
+        "Day 1. This was Mom's idea. She bought the notebook and everything, so now I have to. M. left his lighter on my desk again. He'll want it back on Saturday - we're going to the quarry, we've been planning it forever. He still hasn't texted the girl from the other class. Three months of \"tomorrow\". Dinner was quiet again. I'm fine.",
+        "Day 1. Mom thinks I don't talk enough, so now I write. Fine. M. forgot his lighter here. Again. He says he'll quit by summer, I say he said that last summer, he throws a pillow at me. Saturday is the quarry. Finally. He bets I'll chicken out at the last minute. Loser buys the chips. I'm not losing. Mom and Dad aren't really talking. I'm fine.",
+    } },
+    // 2
+    { 3, {
+        "Day 5. Friday. Dad didn't come home for dinner. He came home at midnight and then it got loud. Really loud. Alarm set for 6:00, we leave early. Everything else on silent. I don't want to hear anything tonight. Not them, not anyone. Phone face down, pillow over my head. M. texted before that: \"don't forget my lighter\". It's in my backpack. Saturday tomorrow.",
+        "Day 5. Got a C in physics, whatever. M. says physics is fake anyway. He texted: \"bring my lighter, we leave early, don't oversleep\". As if. Tonight they're shouting again. Something about money, something about \"your son\". So: alarm at 6:00, phone on silent, face down. Pillow over my head until they're just noise. Tomorrow is the quarry. That's all I'm thinking about.",
+        "Day 5. Dad's car came back late. Now the kitchen door is closed and they're yelling through it. I don't want to hear any of it. Not tonight. I set the alarm for 6:00 and put everything else on silent. Pillow over my head. M. wrote earlier: \"lighter. early. don't be late, chicken.\" I packed it already. I'll sleep and then it'll be Saturday.",
+    } },
+    // 3
+    { 3, {
+        "Day 8. Two missed calls from M. Saturday, 01:14 and 01:20. I saw them in the morning. I don't want to write about the ~weekend~. School today. Nobody sat at his desk. Not even the kids who always fight over the window seats. The teachers were nice to me. ALL of them. Even the physics one.",
+        "Day 8. My phone still shows them. M., 01:14. M., 01:20. Missed. I didn't hear. I'm not writing about ~Saturday~. I'm not. School was weird. His desk was empty all day and everyone walked around it. Ms. K. asked if I wanted to go home early. She NEVER lets anyone go home early.",
+        "Day 8. 01:14. 01:20. Two calls. I was asleep. I found them in the morning and called back and called back. I don't want to talk about the ~weekend~. At school nobody sat next to me. Nobody sat at his desk either. Everyone was SO nice. I hate it.",
+    } },
+    // 4
+    { 3, {
+        "Day 10. Mom ironed a black shirt for the ~funeral~. I didn't have a black shirt. Now I do. The whole class signed a card for his mom. I wrote my name and then I couldn't think of anything else. From the bus you can see they put a fence around the quarry. New one. Ugly. His lighter doesn't work anymore. Just sparks. I'll buy him a new one. I'm FINE.",
+        "Day 10. The black shirt is scratchy. Mom bought it for ~Thursday~. Everyone signed the card for his mom. I had it last and the pen died. Or I let it die. There's a fence around the quarry now, I saw it from the bus window. I tried his lighter. Click. Sparks. Nothing. I'll get him a new one, the blue kind he likes. I'm FINE. Mom, I'm FINE.",
+        "Day 10. Things that are new: a black shirt. A card with 27 names for his mom - mine is the smallest one, I wrote ~sorry~. A fence around the quarry, I saw it from the bus and looked at my shoes until my stop. Things that are old: his lighter. It only sparks. I'll buy him a new one. He'll pretend he doesn't care. I'm FINE.",
+    } },
+    // 5
+    { 2, {
+        "Day 13. Didn't go to school. Mom thinks I did. I sent M. a meme about a chicken. Under his name it says \"last seen 7 days ago\". I sent another one. He's going to have SO many to scroll through. Dad said at breakfast I should be over ~it~ by now. It's been a week. A WEEK. Clicked his lighter 9 times. Sparks. Nothing. Tomorrow I'll buy gas for it.",
+        "Day 13. Things I did today: didn't go to school. Sent M. three memes. It still says \"last seen a week ago\". He's never been offline this long, not even when his phone fell in the soup. Dad says I need to move on from ~it~. Like it's a bus stop. Clicked the lighter 12 times. 12 sparks. 0 fire. I'm keeping COUNT. Someone has to.",
+    } },
+    // 6
+    { 3, {
+        "Day 16. I scratched an M on his lighter. With the compass from my geometry set. So it remembers whose it is. It still won't light. At night there's something in the corner of my room. Tall. Wrapped up like a person under a sheet. It doesn't move when I look. I put the blanket over my head and stayed there till morning. Someone walked down the hall at 3. Everyone was ASLEEP.",
+        "Day 16. Couldn't sleep again. I took the compass out of my pencil case and scratched an M into the lighter. Deep. So it knows. Click. Spark. Nothing. Around 2 I saw IT. In the corner, by the wardrobe. Something wrapped in cloth, standing very still, like it was waiting for me to ~notice~. I pulled the blanket over my head. Under the blanket it's only me. Footsteps in the hallway. Not Mom's.",
+        "Day 16. There's an M on the lighter now. I scratched it with the compass during math. Ms. K. saw and said nothing. Everyone says nothing now. Night: the corner by the door is darker than the others. Something is standing in it, wrapped up, head to feet. I don't know what IT is. I know it's waiting. Blanket over my head. Slow footsteps in the hall. Mom and Dad were asleep. I ~checked~.",
+    } },
+    // 7
+    { 2, {
+        "Day 19. Dad left. He took the big suitcase and the photos from the hallway. He said it's for work. Work doesn't need the photos. Mom works two shifts now. There are notes on the fridge: \"soup in the pot\", \"love you\", \"eat SOMETHING\". The hallway in our flat is longer. I walked it twice to be sure. 23 clicks today.",
+        "Day 19. The big suitcase is gone. So is Dad. He hugged me at the door and said \"be a man about it\". About WHAT, Dad. Mom came home at 11 and left again at 6. Her notes are everywhere. The hallway takes longer to walk now. 14 steps, then 17, then 19. I counted. The lighter: 27 clicks. The M is getting deeper.",
+    } },
+    // 8
+    { 3, {
+        "Day 19. Or 20? It said 19 yesterday. ~M~, you'd laugh at me. You'd say I'm being dramatic. Maybe. The night light SHAKES when I don't look at it. Someone is standing at the end of the hallway. I KNOW THE SHAPE. I don't know from where. 33 clicks. Still nothing.",
+        "Day 19. Day 19 again. My phone says 20. My phone is LYING. ~M~, remember when we stayed up till 4 and you said the dark doesn't do anything, it's just dark? It does things now. The night light trembles. Someone stands at the end of the hall and doesn't come closer. 36 clicks. YOU'D KNOW WHAT TO DO.",
+        "Day 19? I wrote Day 19 yesterday. And the day before. ~M~, I keep the lighter in my pocket. The M is so deep now I can feel it with my thumb. 38 clicks. Last night the night light shook like someone was blowing on it. There's a SHAPE at the end of the hallway. Wrapped. It's patient. It's SO PATIENT.",
+    } },
+    // 9
+    { 2, {
+        "Day 19? He called twice. 01:14. 01:20. I was asleep. My phone was on SILENT. He called TWICE. What do you call someone for at 01:14? What was he going to say? I SHOULD HAVE ~ANSWERED~. I SHOULD HAVE. IT is closer tonight. It breathes like someone under a blanket. 39 clicks. The M is deeper. It doesn't help.",
+        "Day 19. Still 19. I keep doing the math. 01:14. 01:20. Six minutes. He waited six minutes and called AGAIN. My phone was on SILENT and I was ASLEEP. I SHOULD HAVE ~ANSWERED~. ~M~, I SHOULD HAVE. IT stands by my bed now. I can hear it breathing. Slow. Under cloth. The M is so deep the lighter is sharp there.",
+    } },
+    // 10
+    { 3, {
+        "Day ? 41. 44. 47. CLICK CLICK CLICK. NOTHING. THE M IS DEEPER. Mom's note: \"please eat something, please\". I read it eleven times. I ate the soup. I THINK. IT STOOD AT MY DOOR ALL NIGHT. IT DIDN'T COME IN. IT DOESN'T NEED TO. ~M~ ~M~ ~M~",
+        "DAY ? I DON'T KNOW. 41 44 47 50. SPARKS. NO FIRE. NO FIRE EVER. the hallway is ~forty~ steps now. Mom left a note: \"I'm here. Knock if you need me.\" I didn't knock. IT knocked. IT KNOCKED ON MY DOOR FROM THE INSIDE.",
+        "Day ?? 41. 44. 47. i stopped writing the days, they don't change. ~M~ CALLED TWICE. TWICE. the M on the lighter is a hole now. mom's notes keep coming: \"eat\", \"sleep\", \"I love you\". IT STANDS IN THE DOOR. I PULL THE BLANKET UP. UNDER THE BLANKET IT'S ONLY ME. ONLY ME.",
+    } },
+    // 11
+    { 3, {
+        "DAY ??? IT SPOKE TONIGHT. IT SOUNDS LIKE ME. IT SAID THE THINGS I SAY. THE LIGHTER STILL SMELLS LIKE HIS CIGARETTES. I KEEP IT UNDER MY PILLOW. ~CLICK~. I'M FINE I'M FINE I'M FINE I'M",
+        "DAY ??? I HEARD IT IN THE HALL AND IT HAD MY VOICE. IT WAS COUNTING CLICKS. MY NUMBERS. HIS LIGHTER STILL SMELLS LIKE HIS CIGARETTES. I KEEP IT IN A SOCK SO THE SMELL ~STAYS~. I'M FINE. I'M FINE I'M FINE I'M FI",
+        "DAY ??? DAY ??? DAY. IT IS IN THE ROOM. IT IS WRAPPED IN SOMETHING. IT BREATHES WHEN I BREATHE. IT SOUNDS LIKE ME WHEN I SAY ~HIS~ NAME. the lighter smells like his cigarettes. that's the only quiet thing. I'M FINE I'M FINE I'M",
+    } },
+    // 12
+    { 2, {
+        "Day 31. I slept. I saw it today. Up close. It was wrapped in my blanket. It had my face. It wasn't chasing me. It was just tired. I didn't click the lighter today. The M is still there. M., I'm keeping it. I think I'm going to tell Mom. Not everything. Just the first word. The door is right there.",
+        "Day 31. A real day 31, I checked the calendar on the fridge, under Mom's notes. Last night I finally looked at it. It was me. Wrapped in my blanket, sitting on the floor. Not scary. Just tired. I didn't click the lighter today. The M is still there. Mom is home tonight. I'm going to knock. Not everything. Just the first word. The door is right there.",
+    } },
+};
+
 struct PlacedDiary {
-    int poolIndex = -1;      // index into kPool — a stable id for SaveSystem
-    std::string text;        // == kPool[poolIndex], copied for convenience
-    int pocketCellX = 0;     // pocket's world cell
+    int pocketCellX = 0;
     int pocketCellZ = 0;
+    int storyStep = -1;  // assigned when first read
+    std::string text;    // empty until read
 };
 
-// Picks pocketCount distinct entries from kPool with the maze's rng (same seed, same set on
-// CONTINUE) and assigns them to pocketCenters 1:1 (std::sample: random without replacement).
-template <typename Rng>
-std::vector<PlacedDiary> SelectForSeed(const std::vector<glm::ivec2>& pocketCenters, Rng& rng) {
-    std::vector<PlacedDiary> result;
-    result.reserve(pocketCenters.size());
-
-    std::vector<int> indices(kPoolCount);
-    for (int i = 0; i < kPoolCount; ++i) indices[i] = i;
-
-    std::vector<int> chosen;
-    chosen.reserve(pocketCenters.size());
-    std::sample(indices.begin(), indices.end(), std::back_inserter(chosen),
-                std::min(pocketCenters.size(), (size_t)kPoolCount), rng);
-
-    for (size_t i = 0; i < chosen.size() && i < pocketCenters.size(); ++i) {
-        PlacedDiary d;
-        d.poolIndex = chosen[i];
-        d.text = kPool[chosen[i]];
-        d.pocketCellX = pocketCenters[i].x;
-        d.pocketCellZ = pocketCenters[i].y;
-        result.push_back(std::move(d));
+inline std::vector<PlacedDiary> PlaceInPockets(const std::vector<glm::ivec2>& pocketCenters) {
+    std::vector<PlacedDiary> result(pocketCenters.size());
+    for (size_t i = 0; i < pocketCenters.size(); ++i) {
+        result[i].pocketCellX = pocketCenters[i].x;
+        result[i].pocketCellZ = pocketCenters[i].y;
     }
     return result;
+}
+
+template <typename Rng>
+std::array<int, kStepCount> PickVariants(Rng& rng) {
+    std::array<int, kStepCount> variants{};
+    for (int s = 0; s < kStepCount; ++s)
+        variants[s] = std::uniform_int_distribution<int>(0, kStory[s].variantCount - 1)(rng);
+    return variants;
+}
+
+// Steps past the end repeat the last one; maps have at most kStepCount pockets.
+inline const char* StepText(int step, const std::array<int, kStepCount>& variants) {
+    step = std::clamp(step, 0, kStepCount - 1);
+    return kStory[step].variants[variants[step]];
 }
 
 } // namespace Diaries

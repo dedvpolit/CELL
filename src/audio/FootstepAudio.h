@@ -6,9 +6,7 @@
 #include "AssetLocate.h"
 #include "AudioMixer.h"
 
-// Footstep playback for the player on top of the shared AudioMixer. Enemy footsteps (EnemyAudio.h,
-// one instance per enemy) use the same voice pool. The player's own footsteps do not depend on
-// distance (played at volume 1.0), unlike EnemyAudio, which applies distance-based volume.
+// Player footsteps through the shared AudioMixer, always at full volume
 class FootstepAudio {
 public:
     bool init()
@@ -33,9 +31,7 @@ public:
 #endif
     }
 
-    // The one place that actually stops the shared AudioMixer: EnemyAudio::shutdown() deliberately
-    // does not (the mixer is shared by all enemies). There is one player, so this runs once on
-    // scene teardown.
+    // The only owner that stops the shared mixer; EnemyAudio does not
     void shutdown()
     {
         AudioMixer::instance().shutdown();
@@ -71,9 +67,9 @@ public:
     bool isAvailable() const { return m_available; }
 
 private:
-    // Priority for AudioMixer (see EnemyAudio.h for the scale: 0 enemy footsteps, 1 this and the
-    // enemy moan, 2 scream/wall hit). The player's footsteps are slightly more important than the
-    // enemies' (feedback about the player's own movement) but not as critical as one-off events.
+    // Priority 1:
+    // slightly above enemy footsteps (0)
+    // below screams and wall hits (2)
     static constexpr int kPriority = 1;
 
     static std::wstring locateAsset(const wchar_t* name)

@@ -1,19 +1,24 @@
 # depslib dependency file v1.0
-1790051222 source:d:\programming\c_project\ascii game\ascii_engine\src\app\application.cpp
+1791265446 source:d:\programming\c_project\ascii game\ascii_engine\src\app\application.cpp
 	"Application.h"
 	"ProcessMemory.h"
 	"save/SaveSystem.h"
 	"audio/AudioMixer.h"
+	"audio/UiAudio.h"
+	"dev/DevTools.h"
 	<algorithm>
 	<cmath>
 	<cstdio>
 
-1790051222 d:\programming\c_project\ascii game\ascii_engine\src\app\application.h
+1791370871 d:\programming\c_project\ascii game\ascii_engine\src\app\application.h
 	<GL/glew.h>
 	<GLFW/glfw3.h>
 	<string>
 	<vector>
 	"render/AsciiEffect.h"
+	"render/GpuTimer.h"
+	"render/CrtEffect.h"
+	"ui/StoryText.h"
 	"scene/DungeonScene.h"
 	"ui/MainMenu.h"
 	"ui/TextRenderer.h"
@@ -1003,13 +1008,15 @@
 	<windows.h>
 	<KHR/khrplatform.h>
 
-1790051222 d:\programming\c_project\ascii game\ascii_engine\src\render\asciieffect.h
+1791371649 d:\programming\c_project\ascii game\ascii_engine\src\render\asciieffect.h
 	<GL/glew.h>
 	<algorithm>
 	<vector>
 	<chrono>
+	"AcerolaAscii.h"
 
-1790051222 d:\programming\c_project\ascii game\ascii_engine\src\scene\dungeonscene.h
+1791373047 d:\programming\c_project\ascii game\ascii_engine\src\scene\dungeonscene.h
+	<algorithm>
 	<GL/glew.h>
 	<GLFW/glfw3.h>
 	<glm/glm.hpp>
@@ -1034,7 +1041,9 @@
 	"Diaries.h"
 	"CorridorWidth.h"
 	"DiagonalCorridors.h"
+	"Difficulty.h"
 	"Lighting.h"
+	"TorchShadowMap.h"
 	"PlayerController.h"
 	"audio/EnemyAudio.h"
 	"dev/DevTools.h"
@@ -1701,20 +1710,20 @@
 
 1771564503 c:\program files\codeblocks\mingw\x86_64-w64-mingw32\include\glm\simd\integer.h
 
-1790051222 d:\programming\c_project\ascii game\ascii_engine\src\audio\footstepaudio.h
+1791371322 d:\programming\c_project\ascii game\ascii_engine\src\audio\footstepaudio.h
 	<string>
 	<vector>
 	"AssetLocate.h"
 	"AudioMixer.h"
 
-1790051222 d:\programming\c_project\ascii game\ascii_engine\src\audio\assetlocate.h
+1791370984 d:\programming\c_project\ascii game\ascii_engine\src\audio\assetlocate.h
 	<filesystem>
 	<string>
 	<unordered_map>
 	<vector>
 	<windows.h>
 
-1790051222 d:\programming\c_project\ascii game\ascii_engine\src\audio\audiomixer.h
+1791371241 d:\programming\c_project\ascii game\ascii_engine\src\audio\audiomixer.h
 	<algorithm>
 	<array>
 	<climits>
@@ -1728,10 +1737,11 @@
 	<unordered_map>
 	<vector>
 	"minimp3_ex.h"
+	"Mp3Stream.h"
 	<windows.h>
 	<mmsystem.h>
 
-1790051222 d:\programming\c_project\ascii game\ascii_engine\third_party\minimp3_ex.h
+1791044914 d:\programming\c_project\ascii game\ascii_engine\third_party\minimp3_ex.h
 	<stddef.h>
 	"minimp3.h"
 	<limits.h>
@@ -1747,7 +1757,7 @@
 	<windows.h>
 	<stdio.h>
 
-1790051222 d:\programming\c_project\ascii game\ascii_engine\third_party\minimp3.h
+1791044914 d:\programming\c_project\ascii game\ascii_engine\third_party\minimp3.h
 	<stdint.h>
 	<stdlib.h>
 	<string.h>
@@ -1813,52 +1823,52 @@
 1738705850 c:\program files\codeblocks\mingw\x86_64-w64-mingw32\include\sec_api\stdio_s.h
 	<stdio.h>
 
-1790051222 d:\programming\c_project\ascii game\ascii_engine\src\audio\gameplaymusic.h
+1791044915 d:\programming\c_project\ascii game\ascii_engine\src\audio\gameplaymusic.h
 	<random>
 	"AudioMixer.h"
 	"AssetLocate.h"
 
-1790051222 d:\programming\c_project\ascii game\ascii_engine\src\scene\walltexture.h
+1791551148 d:\programming\c_project\ascii game\ascii_engine\src\scene\walltexture.h
 	<GL/glew.h>
 	<string>
 
-1790051222 d:\programming\c_project\ascii game\ascii_engine\src\scene\minimapfog.h
+1791550642 d:\programming\c_project\ascii game\ascii_engine\src\scene\minimapfog.h
 	<GL/glew.h>
 	<glm/glm.hpp>
 	<vector>
 	<functional>
 	"WallShapes.h"
 
-1790051222 d:\programming\c_project\ascii game\ascii_engine\src\scene\wallshapes.h
+1791551137 d:\programming\c_project\ascii game\ascii_engine\src\scene\wallshapes.h
 	<glm/glm.hpp>
 	<vector>
 	<cstdint>
 	<functional>
 
-1790051222 d:\programming\c_project\ascii game\ascii_engine\src\scene\debugmapoverlay.h
+1791372309 d:\programming\c_project\ascii game\ascii_engine\src\scene\debugmapoverlay.h
 	<GL/glew.h>
 	<glm/glm.hpp>
 	<vector>
 	"Zoning.h"
 
-1790051222 d:\programming\c_project\ascii game\ascii_engine\src\scene\zoning.h
+1791551193 d:\programming\c_project\ascii game\ascii_engine\src\scene\zoning.h
 	<vector>
 	<functional>
 	"CorridorWidth.h"
 
-1790051222 d:\programming\c_project\ascii game\ascii_engine\src\scene\corridorwidth.h
+1791372142 d:\programming\c_project\ascii game\ascii_engine\src\scene\corridorwidth.h
 	<vector>
 	<functional>
 
-1790051222 d:\programming\c_project\ascii game\ascii_engine\src\scene\compass.h
+1791372119 d:\programming\c_project\ascii game\ascii_engine\src\scene\compass.h
 	<GL/glew.h>
 	<glm/glm.hpp>
 	<vector>
 
-1790051222 d:\programming\c_project\ascii game\ascii_engine\src\scene\culling.h
+1791372192 d:\programming\c_project\ascii game\ascii_engine\src\scene\culling.h
 	<glm/glm.hpp>
 
-1790051222 d:\programming\c_project\ascii game\ascii_engine\src\scene\scenegeometry.h
+1791551022 d:\programming\c_project\ascii game\ascii_engine\src\scene\scenegeometry.h
 	<GL/glew.h>
 	<glm/glm.hpp>
 	<vector>
@@ -1866,20 +1876,20 @@
 	<functional>
 	"WallShapes.h"
 
-1790051222 d:\programming\c_project\ascii game\ascii_engine\src\scene\playertorchviewmodel.h
+1791550934 d:\programming\c_project\ascii game\ascii_engine\src\scene\playertorchviewmodel.h
 	<GL/glew.h>
 	<glm/glm.hpp>
 	<vector>
 	"SceneGeometry.h"
 
-1790051222 d:\programming\c_project\ascii game\ascii_engine\src\scene\enemycharacter.h
+1791550375 d:\programming\c_project\ascii game\ascii_engine\src\scene\enemycharacter.h
 	<GL/glew.h>
 	<glm/glm.hpp>
 	<string>
 	<vector>
 	"render/SkinnedModel.h"
 
-1790051222 d:\programming\c_project\ascii game\ascii_engine\src\render\skinnedmodel.h
+1791371892 d:\programming\c_project\ascii game\ascii_engine\src\render\skinnedmodel.h
 	<GL/glew.h>
 	<glm/glm.hpp>
 	<glm/gtc/quaternion.hpp>
@@ -2072,7 +2082,7 @@
 
 1771564503 c:\program files\codeblocks\mingw\x86_64-w64-mingw32\include\glm\gtc\quaternion_simd.inl
 
-1790051222 d:\programming\c_project\ascii game\ascii_engine\src\scene\enemyai.h
+1791374148 d:\programming\c_project\ascii game\ascii_engine\src\scene\enemyai.h
 	<glm/glm.hpp>
 	<vector>
 	<random>
@@ -2080,35 +2090,35 @@
 	"WallShapes.h"
 	"audio/EnemyAudio.h"
 
-1790051222 d:\programming\c_project\ascii game\ascii_engine\src\audio\enemyaudio.h
+1791371292 d:\programming\c_project\ascii game\ascii_engine\src\audio\enemyaudio.h
 	<string>
 	<vector>
 	"AssetLocate.h"
 	"AudioMixer.h"
 
-1790051222 d:\programming\c_project\ascii game\ascii_engine\src\scene\columns.h
+1791372098 d:\programming\c_project\ascii game\ascii_engine\src\scene\columns.h
 	<glm/glm.hpp>
 	<vector>
 	<cstdint>
 	<functional>
 
-1790051222 d:\programming\c_project\ascii game\ascii_engine\src\scene\diaries.h
-	<vector>
-	<string>
-	<random>
+1791044915 d:\programming\c_project\ascii game\ascii_engine\src\scene\diaries.h
 	<algorithm>
-	<iterator>
+	<array>
+	<random>
+	<string>
+	<vector>
 	<glm/glm.hpp>
 
-1790051222 d:\programming\c_project\ascii game\ascii_engine\src\scene\diagonalcorridors.h
+1791372343 d:\programming\c_project\ascii game\ascii_engine\src\scene\diagonalcorridors.h
 	<vector>
 	"WallShapes.h"
 
-1790051222 d:\programming\c_project\ascii game\ascii_engine\src\scene\lighting.h
+1791550471 d:\programming\c_project\ascii game\ascii_engine\src\scene\lighting.h
 	<glm/glm.hpp>
 	<vector>
 
-1790051222 d:\programming\c_project\ascii game\ascii_engine\src\scene\playercontroller.h
+1791550913 d:\programming\c_project\ascii game\ascii_engine\src\scene\playercontroller.h
 	<GL/glew.h>
 	<GLFW/glfw3.h>
 	<glm/glm.hpp>
@@ -2120,11 +2130,11 @@
 	"WallShapes.h"
 	"Columns.h"
 
-1790051222 d:\programming\c_project\ascii game\ascii_engine\src\dev\devtools.h
+1791371479 d:\programming\c_project\ascii game\ascii_engine\src\dev\devtools.h
 	<GLFW/glfw3.h>
 	<algorithm>
 
-1790051222 d:\programming\c_project\ascii game\ascii_engine\src\ui\mainmenu.h
+1791551250 d:\programming\c_project\ascii game\ascii_engine\src\ui\mainmenu.h
 	"UiGlyphs.h"
 	"TextGrid.h"
 	"BigFont.h"
@@ -2132,41 +2142,41 @@
 	"TitleBreakup.h"
 	"MenuLayouts.h"
 
-1790051222 d:\programming\c_project\ascii game\ascii_engine\src\ui\uiglyphs.h
+1791551558 d:\programming\c_project\ascii game\ascii_engine\src\ui\uiglyphs.h
 
-1790051222 d:\programming\c_project\ascii game\ascii_engine\src\ui\textgrid.h
+1791551438 d:\programming\c_project\ascii game\ascii_engine\src\ui\textgrid.h
 	<vector>
 	<string>
 	"UiGlyphs.h"
 
-1790051222 d:\programming\c_project\ascii game\ascii_engine\src\ui\bigfont.h
+1791551246 d:\programming\c_project\ascii game\ascii_engine\src\ui\bigfont.h
 	<vector>
 	<string>
 
-1790051222 d:\programming\c_project\ascii game\ascii_engine\src\ui\atmosphere.h
+1791551234 d:\programming\c_project\ascii game\ascii_engine\src\ui\atmosphere.h
 	<vector>
 
-1790051222 d:\programming\c_project\ascii game\ascii_engine\src\ui\titlebreakup.h
+1791551537 d:\programming\c_project\ascii game\ascii_engine\src\ui\titlebreakup.h
 	<vector>
 	<string>
 	"UiGlyphs.h"
 
-1790051222 d:\programming\c_project\ascii game\ascii_engine\src\ui\menulayouts.h
+1791551373 d:\programming\c_project\ascii game\ascii_engine\src\ui\menulayouts.h
 	<vector>
 	<string>
 	"TitleBreakup.h"
 
-1790051222 d:\programming\c_project\ascii game\ascii_engine\src\ui\textrenderer.h
+1791551519 d:\programming\c_project\ascii game\ascii_engine\src\ui\textrenderer.h
 	<GL/glew.h>
 	<glm/glm.hpp>
 	<string>
 	<vector>
 
-1790051222 d:\programming\c_project\ascii game\ascii_engine\src\app\windowmanager.h
+1791370956 d:\programming\c_project\ascii game\ascii_engine\src\app\windowmanager.h
 	<GL/glew.h>
 	<GLFW/glfw3.h>
 
-1790051222 d:\programming\c_project\ascii game\ascii_engine\src\app\processmemory.h
+1791044915 d:\programming\c_project\ascii game\ascii_engine\src\app\processmemory.h
 	<cstddef>
 	<cstdio>
 	<windows.h>
@@ -2175,11 +2185,11 @@
 1738705850 c:\program files\codeblocks\mingw\x86_64-w64-mingw32\include\psapi.h
 	<_mingw_unicode.h>
 
-1790051222 d:\programming\c_project\ascii game\ascii_engine\src\save\savesystem.h
+1791372010 d:\programming\c_project\ascii game\ascii_engine\src\save\savesystem.h
 	<vector>
 	<string>
 
-1790051222 source:d:\programming\c_project\ascii game\ascii_engine\src\app\windowmanager.cpp
+1791266118 source:d:\programming\c_project\ascii game\ascii_engine\src\app\windowmanager.cpp
 	<GL/glew.h>
 	"WindowManager.h"
 	"FatalError.h"
@@ -2187,12 +2197,12 @@
 	<cstdio>
 	<string>
 
-1790051222 d:\programming\c_project\ascii game\ascii_engine\src\app\fatalerror.h
+1791370903 d:\programming\c_project\ascii game\ascii_engine\src\app\fatalerror.h
 	<cstdio>
 	<string>
 	<windows.h>
 
-1790051222 d:\programming\c_project\ascii game\ascii_engine\third_party\stb_image.h
+1791044914 d:\programming\c_project\ascii game\ascii_engine\third_party\stb_image.h
 	"stb_image.h"
 	<stdio.h>
 	<stdlib.h>
@@ -2216,10 +2226,10 @@
 	<crtdefs.h>
 	<stdlib.h>
 
-1790051222 source:d:\programming\c_project\ascii game\ascii_engine\src\audio\mp3decoder.cpp
+1791266127 source:d:\programming\c_project\ascii game\ascii_engine\src\audio\mp3decoder.cpp
 	"minimp3_ex.h"
 
-1790051222 source:d:\programming\c_project\ascii game\ascii_engine\src\main.cpp
+1791272710 source:d:\programming\c_project\ascii game\ascii_engine\src\main.cpp
 	<GL/glew.h>
 	<GLFW/glfw3.h>
 	<algorithm>
@@ -2227,10 +2237,11 @@
 	"app/FatalError.h"
 	"app/WindowManager.h"
 	"app/Application.h"
+	"audio/AudioMixer.h"
 	"render/AsciiEffect.h"
 	"scene/DungeonScene.h"
 
-1790051222 source:d:\programming\c_project\ascii game\ascii_engine\src\render\asciieffect.cpp
+1791044915 source:d:\programming\c_project\ascii game\ascii_engine\src\render\asciieffect.cpp
 	"AsciiEffect.h"
 	"ShaderLoader.h"
 	"ShaderProgram.h"
@@ -2239,34 +2250,34 @@
 	<cstdio>
 	<algorithm>
 
-1790051222 d:\programming\c_project\ascii game\ascii_engine\src\render\shaderloader.h
+1791371735 d:\programming\c_project\ascii game\ascii_engine\src\render\shaderloader.h
 	<string>
 
-1790051222 d:\programming\c_project\ascii game\ascii_engine\src\render\shaderprogram.h
+1791371750 d:\programming\c_project\ascii game\ascii_engine\src\render\shaderprogram.h
 	<GL/glew.h>
 
-1790051222 source:d:\programming\c_project\ascii game\ascii_engine\src\render\assetpath.cpp
+1791266294 source:d:\programming\c_project\ascii game\ascii_engine\src\render\assetpath.cpp
 	"AssetPath.h"
 	<filesystem>
 	<vector>
 	<windows.h>
 
-1790051222 d:\programming\c_project\ascii game\ascii_engine\src\render\assetpath.h
+1791371673 d:\programming\c_project\ascii game\ascii_engine\src\render\assetpath.h
 	<string>
 
-1790051222 source:d:\programming\c_project\ascii game\ascii_engine\src\render\shaderloader.cpp
+1791044915 source:d:\programming\c_project\ascii game\ascii_engine\src\render\shaderloader.cpp
 	"ShaderLoader.h"
 	"AssetPath.h"
 	<fstream>
 	<sstream>
 	<stdexcept>
 
-1790051222 source:d:\programming\c_project\ascii game\ascii_engine\src\render\shaderprogram.cpp
+1791044915 source:d:\programming\c_project\ascii game\ascii_engine\src\render\shaderprogram.cpp
 	"ShaderProgram.h"
 	<stdexcept>
 	<string>
 
-1790051222 source:d:\programming\c_project\ascii game\ascii_engine\src\render\skinnedmodel.cpp
+1791266579 source:d:\programming\c_project\ascii game\ascii_engine\src\render\skinnedmodel.cpp
 	"cgltf.h"
 	"SkinnedModel.h"
 	"AssetPath.h"
@@ -2279,7 +2290,7 @@
 	<algorithm>
 	"stb_image.h"
 
-1790051222 d:\programming\c_project\ascii game\ascii_engine\third_party\cgltf.h
+1791044914 d:\programming\c_project\ascii game\ascii_engine\third_party\cgltf.h
 	<stddef.h>
 	<stdint.h>
 	<assert.h>
@@ -2403,7 +2414,7 @@
 	<limits>
 	"../gtc/constants.hpp"
 
-1790051222 source:d:\programming\c_project\ascii game\ascii_engine\src\save\savesystem.cpp
+1791266746 source:d:\programming\c_project\ascii game\ascii_engine\src\save\savesystem.cpp
 	"SaveSystem.h"
 	<algorithm>
 	<cmath>
@@ -2416,10 +2427,10 @@
 	<windows.h>
 	<process.h>
 
-1790051222 source:d:\programming\c_project\ascii game\ascii_engine\src\scene\columns.cpp
+1791266882 source:d:\programming\c_project\ascii game\ascii_engine\src\scene\columns.cpp
 	"Columns.h"
 
-1790051222 source:d:\programming\c_project\ascii game\ascii_engine\src\scene\compass.cpp
+1791266935 source:d:\programming\c_project\ascii game\ascii_engine\src\scene\compass.cpp
 	"Compass.h"
 	"MinimapFog.h"
 	"render/ShaderLoader.h"
@@ -2434,14 +2445,14 @@
 	<cmath>
 	<cstddef>
 
-1790051222 source:d:\programming\c_project\ascii game\ascii_engine\src\scene\corridorwidth.cpp
+1791266966 source:d:\programming\c_project\ascii game\ascii_engine\src\scene\corridorwidth.cpp
 	"CorridorWidth.h"
 	<cstdint>
 
-1790051222 source:d:\programming\c_project\ascii game\ascii_engine\src\scene\culling.cpp
+1791267003 source:d:\programming\c_project\ascii game\ascii_engine\src\scene\culling.cpp
 	"Culling.h"
 
-1790051222 source:d:\programming\c_project\ascii game\ascii_engine\src\scene\debugmapoverlay.cpp
+1791267079 source:d:\programming\c_project\ascii game\ascii_engine\src\scene\debugmapoverlay.cpp
 	"DebugMapOverlay.h"
 	"render/ShaderLoader.h"
 	"render/ShaderProgram.h"
@@ -2450,16 +2461,18 @@
 	<cmath>
 	<string>
 
-1790051222 source:d:\programming\c_project\ascii game\ascii_engine\src\scene\diagonalcorridors.cpp
+1791267110 source:d:\programming\c_project\ascii game\ascii_engine\src\scene\diagonalcorridors.cpp
 	"DiagonalCorridors.h"
 	<vector>
 
-1790051222 source:d:\programming\c_project\ascii game\ascii_engine\src\scene\dungeonscene.cpp
+1791269249 source:d:\programming\c_project\ascii game\ascii_engine\src\scene\dungeonscene.cpp
 	"DungeonScene.h"
 	"render/ShaderLoader.h"
 	"render/ShaderProgram.h"
 	"WallTexture.h"
 	"MapGenerator.h"
+	"ExitDoor.h"
+	"audio/UiAudio.h"
 	"LineOfSight.h"
 	"GridPathfinding.h"
 	"save/SaveSystem.h"
@@ -2475,22 +2488,23 @@
 	<limits>
 	<filesystem>
 
-1790051222 d:\programming\c_project\ascii game\ascii_engine\src\scene\mapgenerator.h
+1791550585 d:\programming\c_project\ascii game\ascii_engine\src\scene\mapgenerator.h
+	<array>
 	<glm/glm.hpp>
 	<vector>
 	<functional>
 	"Diaries.h"
 
-1790051222 d:\programming\c_project\ascii game\ascii_engine\src\scene\lineofsight.h
+1791550520 d:\programming\c_project\ascii game\ascii_engine\src\scene\lineofsight.h
 	<glm/glm.hpp>
 	<vector>
 	"WallShapes.h"
 
-1790051222 d:\programming\c_project\ascii game\ascii_engine\src\scene\gridpathfinding.h
+1791550454 d:\programming\c_project\ascii game\ascii_engine\src\scene\gridpathfinding.h
 	<glm/glm.hpp>
 	<vector>
 
-1790051222 source:d:\programming\c_project\ascii game\ascii_engine\src\scene\enemyai.cpp
+1791270220 source:d:\programming\c_project\ascii game\ascii_engine\src\scene\enemyai.cpp
 	"EnemyAI.h"
 	"LineOfSight.h"
 	"GridPathfinding.h"
@@ -2498,42 +2512,43 @@
 	<algorithm>
 	<cmath>
 
-1790051222 source:d:\programming\c_project\ascii game\ascii_engine\src\scene\enemycharacter.cpp
+1791270316 source:d:\programming\c_project\ascii game\ascii_engine\src\scene\enemycharacter.cpp
 	"EnemyCharacter.h"
 	<glm/gtc/matrix_transform.hpp>
 	<glm/gtc/type_ptr.hpp>
 	<algorithm>
 
-1790051222 source:d:\programming\c_project\ascii game\ascii_engine\src\scene\gridpathfinding.cpp
+1791270391 source:d:\programming\c_project\ascii game\ascii_engine\src\scene\gridpathfinding.cpp
 	"GridPathfinding.h"
 	<queue>
 	<algorithm>
 	<cstdlib>
 
-1790051222 source:d:\programming\c_project\ascii game\ascii_engine\src\scene\lighting.cpp
+1791270414 source:d:\programming\c_project\ascii game\ascii_engine\src\scene\lighting.cpp
 	"Lighting.h"
 	<algorithm>
 
-1790051222 source:d:\programming\c_project\ascii game\ascii_engine\src\scene\lineofsight.cpp
+1791270451 source:d:\programming\c_project\ascii game\ascii_engine\src\scene\lineofsight.cpp
 	"LineOfSight.h"
 	<algorithm>
 	<cmath>
 
-1790051222 source:d:\programming\c_project\ascii game\ascii_engine\app.rc
+1791551697 source:d:\programming\c_project\ascii game\ascii_engine\app.rc
 
-1790051222 source:d:\programming\c_project\ascii game\ascii_engine\src\scene\mapgenerator.cpp
+1791271460 source:d:\programming\c_project\ascii game\ascii_engine\src\scene\mapgenerator.cpp
 	"MapGenerator.h"
 	<random>
 	<algorithm>
 	<cmath>
 	<cstdio>
 
-1790051222 source:d:\programming\c_project\ascii game\ascii_engine\src\scene\minimapfog.cpp
+1791551811 source:d:\programming\c_project\ascii game\ascii_engine\src\scene\minimapfog.cpp
 	"MinimapFog.h"
 	<cmath>
 
-1790051222 source:d:\programming\c_project\ascii game\ascii_engine\src\scene\playercontroller.cpp
+1791271869 source:d:\programming\c_project\ascii game\ascii_engine\src\scene\playercontroller.cpp
 	"PlayerController.h"
+	"ExitDoor.h"
 	"EnemyAI.h"
 	<glm/gtc/matrix_transform.hpp>
 	<glm/gtc/constants.hpp>
@@ -2542,11 +2557,11 @@
 	<algorithm>
 	"dev/DevTools.h"
 
-1790051222 source:d:\programming\c_project\ascii game\ascii_engine\src\scene\playertorchviewmodel.cpp
+1791271985 source:d:\programming\c_project\ascii game\ascii_engine\src\scene\playertorchviewmodel.cpp
 	"PlayerTorchViewmodel.h"
 	<cstddef>
 
-1790051222 source:d:\programming\c_project\ascii game\ascii_engine\src\scene\scenegeometry.cpp
+1791272389 source:d:\programming\c_project\ascii game\ascii_engine\src\scene\scenegeometry.cpp
 	"SceneGeometry.h"
 	"WallShapes.h"
 	"Columns.h"
@@ -2556,49 +2571,51 @@
 	<cmath>
 	<cstddef>
 
-1790051222 source:d:\programming\c_project\ascii game\ascii_engine\src\scene\wallshapes.cpp
+1791272547 source:d:\programming\c_project\ascii game\ascii_engine\src\scene\wallshapes.cpp
 	"WallShapes.h"
 
-1790051222 source:d:\programming\c_project\ascii game\ascii_engine\src\scene\walltexture.cpp
+1791272594 source:d:\programming\c_project\ascii game\ascii_engine\src\scene\walltexture.cpp
 	"WallTexture.h"
 	"render/AssetPath.h"
 	"stb_image.h"
 	<cstdio>
 
-1790051222 source:d:\programming\c_project\ascii game\ascii_engine\src\scene\zoning.cpp
+1791272638 source:d:\programming\c_project\ascii game\ascii_engine\src\scene\zoning.cpp
 	"Zoning.h"
 	<algorithm>
 	<cstdint>
 	<cmath>
 
-1790051222 source:d:\programming\c_project\ascii game\ascii_engine\src\ui\atmosphere.cpp
+1791044915 source:d:\programming\c_project\ascii game\ascii_engine\src\ui\atmosphere.cpp
 	"Atmosphere.h"
 	"TextGrid.h"
 	"UiGlyphs.h"
 	<algorithm>
 	<cmath>
 
-1790051222 source:d:\programming\c_project\ascii game\ascii_engine\src\ui\bigfont.cpp
+1791044915 source:d:\programming\c_project\ascii game\ascii_engine\src\ui\bigfont.cpp
 	"BigFont.h"
 	"TextGrid.h"
 	"UiGlyphs.h"
 	<algorithm>
 	<cmath>
 
-1790051222 source:d:\programming\c_project\ascii game\ascii_engine\src\ui\menulayouts.cpp
+1791044915 source:d:\programming\c_project\ascii game\ascii_engine\src\ui\menulayouts.cpp
 	"MenuLayouts.h"
 	"TextGrid.h"
 	"BigFont.h"
 	"Atmosphere.h"
 	"UiGlyphs.h"
+	"scene/Difficulty.h"
 	<algorithm>
 	<cmath>
+	<utility>
 
-1790051222 source:d:\programming\c_project\ascii game\ascii_engine\src\ui\textgrid.cpp
+1791044915 source:d:\programming\c_project\ascii game\ascii_engine\src\ui\textgrid.cpp
 	"TextGrid.h"
 	<algorithm>
 
-1790051222 source:d:\programming\c_project\ascii game\ascii_engine\src\ui\textrenderer.cpp
+1791044915 source:d:\programming\c_project\ascii game\ascii_engine\src\ui\textrenderer.cpp
 	"TextRenderer.h"
 	"render/AssetPath.h"
 	"render/ShaderLoader.h"
@@ -2607,7 +2624,7 @@
 	<cstdio>
 	<cstddef>
 
-1790051222 d:\programming\c_project\ascii game\ascii_engine\third_party\stb_truetype.h
+1791044914 d:\programming\c_project\ascii game\ascii_engine\third_party\stb_truetype.h
 	"stb_truetype.h"
 	<stdio.h>
 	"stb_truetype.h"
@@ -2621,11 +2638,122 @@
 	<string.h>
 	<string.h>
 
-1790051222 source:d:\programming\c_project\ascii game\ascii_engine\src\ui\titlebreakup.cpp
+1791044915 source:d:\programming\c_project\ascii game\ascii_engine\src\ui\titlebreakup.cpp
 	"TitleBreakup.h"
 	"TextGrid.h"
 	"BigFont.h"
 	"UiGlyphs.h"
+	<algorithm>
+	<cmath>
+
+1791371550 d:\programming\c_project\ascii game\ascii_engine\src\render\acerolaascii.h
+	<GL/glew.h>
+
+1791266236 source:d:\programming\c_project\ascii game\ascii_engine\src\render\acerolaascii.cpp
+	"AcerolaAscii.h"
+	"ShaderLoader.h"
+	"ShaderProgram.h"
+	<algorithm>
+	<cmath>
+	<stdexcept>
+	<string>
+	<vector>
+
+1791044914 d:\programming\c_project\ascii game\ascii_engine\third_party\gl\glew.h
+	<cstddef>
+	<cstdint>
+	<stddef.h>
+	<stdint.h>
+	<stddef.h>
+	<inttypes.h>
+	<stdint.h>
+	<inttypes.h>
+	<Availability.h>
+	<OpenGL/glu.h>
+	<GL/glu.h>
+
+1791372363 d:\programming\c_project\ascii game\ascii_engine\src\scene\difficulty.h
+
+1791044915 source:d:\programming\c_project\ascii game\ascii_engine\src\ui\storytext.cpp
+	"StoryText.h"
+	"BigFont.h"
+	"TextGrid.h"
+	"UiGlyphs.h"
+	<algorithm>
+	<cctype>
+
+1791551393 d:\programming\c_project\ascii game\ascii_engine\src\ui\storytext.h
+	<string>
+	<vector>
+
+1791044914 source:d:\programming\c_project\ascii game\ascii_engine\third_party\glew\glew.c
+	<GL/glew.h>
+	<GL/osmesa.h>
+	<GL/eglew.h>
+	<GL/wglew.h>
+	<GL/glxew.h>
+	<stddef.h>
+	<dlfcn.h>
+	<stdio.h>
+	<stdlib.h>
+	<stdlib.h>
+	<string.h>
+	<AvailabilityMacros.h>
+	<dlfcn.h>
+	<mach-o/dyld.h>
+
+1791044914 d:\programming\c_project\ascii game\ascii_engine\third_party\gl\eglew.h
+	<sys/types.h>
+	<KHR/khrplatform.h>
+	<EGL/eglplatform.h>
+	<GL/glew.h>
+
+1791044914 d:\programming\c_project\ascii game\ascii_engine\third_party\gl\wglew.h
+	<windows.h>
+
+1791044914 d:\programming\c_project\ascii game\ascii_engine\third_party\gl\glxew.h
+	<X11/Xlib.h>
+	<X11/Xutil.h>
+	<X11/Xmd.h>
+	<GL/glew.h>
+
+1791044915 d:\programming\c_project\ascii game\ascii_engine\src\render\gputimer.h
+	<GL/glew.h>
+
+1791371713 d:\programming\c_project\ascii game\ascii_engine\src\render\crteffect.h
+	<GL/glew.h>
+
+1791371391 d:\programming\c_project\ascii game\ascii_engine\src\audio\mp3stream.h
+	"minimp3_ex.h"
+	<algorithm>
+	<cstdint>
+	<memory>
+	<string>
+	<vector>
+
+1791551067 d:\programming\c_project\ascii game\ascii_engine\src\scene\torchshadowmap.h
+	<GL/glew.h>
+	<glm/glm.hpp>
+	<functional>
+	<vector>
+
+1791044915 d:\programming\c_project\ascii game\ascii_engine\src\audio\uiaudio.h
+	"AssetLocate.h"
+	"AudioMixer.h"
+
+1791266383 source:d:\programming\c_project\ascii game\ascii_engine\src\render\crteffect.cpp
+	"CrtEffect.h"
+	"ShaderLoader.h"
+	"ShaderProgram.h"
+	<algorithm>
+	<cmath>
+
+1791550425 d:\programming\c_project\ascii game\ascii_engine\src\scene\exitdoor.h
+	<glm/glm.hpp>
+	<algorithm>
+
+1791272454 source:d:\programming\c_project\ascii game\ascii_engine\src\scene\torchshadowmap.cpp
+	"TorchShadowMap.h"
 	<algorithm>
 	<cmath>
 

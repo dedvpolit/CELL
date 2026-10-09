@@ -3,6 +3,8 @@
 #include "render/ShaderProgram.h"
 #include "WallTexture.h"
 #include "MapGenerator.h"
+#include "ExitDoor.h"
+#include "audio/UiAudio.h"
 #include "LineOfSight.h"
 #include "GridPathfinding.h"
 #include "save/SaveSystem.h"
@@ -17,6 +19,9 @@
 #include <array>
 #include <limits>
 #include <filesystem>
+
+// The main pseudo-engine of this game
+// Good luck
 
 const int DungeonScene::MAX_TORCHES;
 const int DungeonScene::MAX_ACTIVE_TORCHES;
@@ -41,7 +46,7 @@ bool DungeonScene::isFloor(int x, int z) const {
 
 WallShapes::CornerCut DungeonScene::wallCornerCut(int x, int z) const {
     if (x < 0 || x >= m_mapW || z < 0 || z >= m_mapH) return WallShapes::CornerCut::None;
-    // Empty until generateMap() fills it, so check the size before indexing.
+    // Empty until generateMap() fills it, so check the size before indexing
     if (m_wallCornerCuts.size() != (size_t)m_mapW * (size_t)m_mapH) return WallShapes::CornerCut::None;
     return m_wallCornerCuts[(size_t)z * m_mapW + x];
 }
@@ -52,10 +57,7 @@ float DungeonScene::wallChamferSize(int x, int z) const {
     return m_chamferSizes[(size_t)z * m_mapW + x];
 }
 
-void DungeonScene::setCompassUiFont(
-    GLuint texture,
-    int glyphCount
-)
+void DungeonScene::setCompassUiFont(GLuint texture, int glyphCount)
 {
     m_compass.setUiFont(texture, glyphCount);
 }
@@ -71,25 +73,22 @@ void DungeonScene::generateMap(unsigned int seed)
     m_mapH = result.mapH;
     m_map = std::move(result.map);
 
-    // Zones are built first: everything below reads per-cell probabilities from m_zoneGrid, which
-    // the debug map also uses to draw sector boundaries.
+    // Zones first: every generator below reads its per-cell probabilities from m_zoneGrid
     m_zoneGrid = Zoning::BuildZoneGrid(m_mapW, m_mapH, seed);
 
-    // Grid mutations run in a fixed order. Widening comes first because it changes which cells are
-    // open, and columns/chamfers must see the widened grid.
+    // Grid passes run in a fixed order:
+    // widening changes which cells are open, and columns and chamfers must see the widened grid
     m_corridorWidened = CorridorWidth::ApplyWidening(
         m_mapW, m_mapH, m_map, seed,
         [this](int x, int z) { return Zoning::StyleAt(m_zoneGrid, x, z).widenProbability; });
 
-    // Columns must run before BuildCornerCuts() below: candidate wall cells become floor here, and
-    // neighboring walls need to see that before chamfer detection.
+    // Before BuildCornerCuts(): column cells become floor, and chamfer detection must see that
     m_columnCentersXZ = Columns::BuildColumns(
         m_mapW, m_mapH, m_map, seed,
         [this](int x, int z) { return Zoning::StyleAt(m_zoneGrid, x, z).columnProbability; });
 
-    // Chamfers use the maze seed, so loading a save reproduces them without storing them. Long
-    // diagonal chains are detected first and forced to probability 1.0 so the whole chain is
-    // chamfered and reads as a diagonal.
+    // Chamfers are derived from the seed
+    // saves do not store them. Diagonal chains are forced to probability 1 so the whole chain reads as one diagonal wall (wha?)
     m_diagonalChainMask = DiagonalCorridors::DetectChains(m_mapW, m_mapH, m_map);
     m_wallCornerCuts = WallShapes::BuildCornerCuts(
         m_mapW, m_mapH, m_map, seed,
@@ -99,8 +98,8 @@ void DungeonScene::generateMap(unsigned int seed)
             return Zoning::StyleAt(m_zoneGrid, x, z).chamferProbability;
         });
 
-    // Chain cells use kChamferSizeChain so a diagonal reads as connected; other chamfered cells get
-    // a size in [kChamferSizeVariedMin, kChamferSizeVariedMax] for silhouette variety.
+    // Chains use kChamferSizeChain so the diagonal reads as connected;
+    // other chamfers vary in size for silhouette variety
     m_chamferSizes.assign((size_t)m_mapW * (size_t)m_mapH, WallShapes::kChamferSize);
     for (int z = 0; z < m_mapH; ++z) {
         for (int x = 0; x < m_mapW; ++x) {
@@ -113,9 +112,7 @@ void DungeonScene::generateMap(unsigned int seed)
         if (m_diagonalChainMask[i]) m_chamferSizes[i] = WallShapes::kChamferSizeChain;
     }
 
-    // Per-cell palette, blended across nearby zone borders to avoid a hard color jump. Geometry
-    // receives ready-made per-cell colors and knows nothing about zoning. The spawn area is forced
-    // to palette 0 so the start always looks the same.
+    // Per-cell palette blended across zone borders. The spawn area always uses palette 0.
     m_paletteWallColors.assign((size_t)m_mapW * (size_t)m_mapH, glm::vec3(0.0f));
     m_paletteFloorColors.assign((size_t)m_mapW * (size_t)m_mapH, glm::vec3(0.0f));
     for (int z = 0; z < m_mapH; ++z) {
@@ -147,15 +144,16 @@ void DungeonScene::generateMap(unsigned int seed)
     m_endSafeZ0 = result.endSafeZ0;
     m_endSafeX1 = result.endSafeX1;
     m_endSafeZ1 = result.endSafeZ1;
-    m_winButtonPos = result.winButtonPos;
+    m_exitDoorPos = result.exitDoorPos;
 
     m_smallSafeZoneCenters = std::move(result.smallSafeZoneCenters);
     m_smallSafeZoneRadius = result.smallSafeZoneRadius;
 
-    // Diaries arrive already placed one per pocket. Read flags start cleared; loadSlot() restores
-    // them.
+    // One diary per pocket. Read state starts cleared; loadSlot() restores it
     m_diaries = std::move(result.diaries);
+    m_storyVariants = result.storyVariants;
     m_diariesRead.assign(m_diaries.size(), false);
+    m_diaryReadOrder.clear();
     rebuildDiaryReadWallLookup();
 
     m_minimapFog.resetExplored(m_mapW, m_mapH);
@@ -185,11 +183,10 @@ void DungeonScene::placeTorches(unsigned int seed)
     resetTorchLitMask();
 }
 
-// Small decorative props (knee/waist height) at main-corridor forks. Plain diffuse geometry (matId
-// 0), no collision.
+// Decorative props at corridor forks: plain diffuse geometry (matId 0), no collision
 static void AddCairnProp(std::vector<Vertex>& verts, std::vector<GLuint>& indices, const glm::vec3& base)
 {
-    // Low segment counts on purpose: extra smoothness is invisible in the ASCII output.
+    // Low segment counts: extra smoothness is invisible after the ASCII pass
     const glm::vec3 stoneColor(0.62f, 0.60f, 0.56f);
 
     AddSphere(verts, indices, base + glm::vec3(0.0f, 0.11f, 0.0f), 0.11f, 4, 3, stoneColor, 0.0f);
@@ -224,67 +221,79 @@ static void AddCrossProp(std::vector<Vertex>& verts, std::vector<GLuint>& indice
                 0.018f, 0.018f, 4, woodColor, 0.0f);
 }
 
-// Final win scene (see WinSequenceState in the header). The two functions below build geometry for
-// the current phase; updateWinSequence() calls them.
+// matId range 0.3..0.4 is left untextured by scene.frag:
+// the exit door and the donut are flat colored, not brick.
+static constexpr float kUntexturedMatId = 0.35f;
 
-// matId tag for geometry that takes part in the shared monument alpha fade. The 0.05..0.5 range
-// overlaps no other matId (0.0 opaque, 0.5-1.5 torch handle, 1.5-2.5 flame, >2.5 particles).
-static constexpr float kMonumentFadeMatId = 0.2f;
-
-// matId tag for the torus. It also falls inside the fade range (harmless: the alpha stays 1.0 while
-// it spins) and inside 0.3..0.4, which scene.frag excludes from wall/floor texturing. The pedestal
-// (0.2) keeps its stone texture.
-static constexpr float kTorusNoTextureMatId = 0.35f;
-
-// Phase 1 (dissolving): the pedestal keeps full size and fades via uMonumentFadeAlpha (curve from
-// updateWinSequence()). Sparks are derived from the timer and index, so no particle state is
-// stored.
-static void AddDissolvingMonument(std::vector<Vertex>& verts, std::vector<GLuint>& indices,
-                                    const glm::vec3& base, float timer, bool spawnParticles)
+static void AddOrientedBox(std::vector<Vertex>& verts, std::vector<GLuint>& indices,
+                           const glm::vec3& center, const glm::vec3& right, const glm::vec3& up,
+                           const glm::vec3& front, const glm::vec3& halfExtents,
+                           const glm::vec3& color, float matId)
 {
-    const glm::vec3 pedestalColor(0.55f, 0.42f, 0.12f);
-    const glm::vec3 capColor(0.25f, 0.95f, 0.35f);
-
-    AddCylinder(verts, indices, base, base + glm::vec3(0.0f, 0.9f, 0.0f),
-                0.35f, 0.30f, 16, pedestalColor, kMonumentFadeMatId);
-    AddCylinder(verts, indices,
-                base + glm::vec3(0.0f, 0.9f, 0.0f), base + glm::vec3(0.0f, 1.05f, 0.0f),
-                0.30f, 0.22f, 16, pedestalColor, kMonumentFadeMatId);
-    AddSphere(verts, indices, base + glm::vec3(0.0f, 1.18f, 0.0f), 0.16f,
-              14, 10, capColor, kMonumentFadeMatId);
-
-    if (!spawnParticles)
-        return; // pedestal not activated yet: no sparks
-
-    const int kParticleCount = 18;
-    for (int p = 0; p < kParticleCount; ++p)
+    const glm::vec3 axes[3] = { right, up, front };
+    for (int axis = 0; axis < 3; ++axis)
     {
-        const float seed = (float)p * 12.9898f;
-        const float rx = std::sin(seed) * 0.5f + 0.5f;
-        const float rz = std::sin(seed * 1.37f) * 0.5f + 0.5f;
-        const float rSpeed = 0.6f + std::sin(seed * 2.11f) * 0.2f;
-        const float startDelay = (float)p / (float)kParticleCount * 0.25f;
-
-        const float localT = std::max(0.0f, timer - startDelay);
-        const float height = localT * (1.2f + rSpeed);
-        const float wobble = std::sin(localT * 6.0f + seed) * 0.08f;
-
-        const float particleShrink = std::max(0.0f, 1.0f - localT / 0.6f);
-        if (particleShrink <= 0.0f)
-            continue;
-
-        const glm::vec3 pos = base + glm::vec3(
-            (rx - 0.5f) * 0.5f + wobble,
-            0.3f + height,
-            (rz - 0.5f) * 0.5f
-        );
-        AddSphere(verts, indices, pos, 0.035f * particleShrink, 4, 3, capColor, 0.0f);
+        const glm::vec3 a = axes[(axis + 1) % 3] * halfExtents[(axis + 1) % 3];
+        const glm::vec3 b = axes[(axis + 2) % 3] * halfExtents[(axis + 2) % 3];
+        for (int sign = -1; sign <= 1; sign += 2)
+        {
+            const glm::vec3 n = axes[axis] * (float)sign;
+            const glm::vec3 c = center + n * halfExtents[axis];
+            const GLuint base = (GLuint)verts.size();
+            verts.push_back({ c - a - b, n, color, matId });
+            verts.push_back({ c + a - b, n, color, matId });
+            verts.push_back({ c + a + b, n, color, matId });
+            verts.push_back({ c - a + b, n, color, matId });
+            // Winding does not matter: face culling is off
+            indices.insert(indices.end(), { base, base + 1, base + 2, base, base + 2, base + 3 });
+        }
     }
 }
 
-// Phase 2 (spinning): the donut tumbles on two axes. Rotation is applied on the CPU because the
-// mesh is rebuilt every frame in this phase anyway. The shared ASCII post-process handles the look,
-// so no special math is needed.
+// The exit door: frame, panel and handle. openAngle (radians, 0 = closed) swings the panel on its
+// hinge away from the front
+static void AddExitDoor(std::vector<Vertex>& verts, std::vector<GLuint>& indices,
+                        const glm::vec3& base, float openAngle)
+{
+    using namespace ExitDoor;
+    const glm::vec3 frameColor(0.30f, 0.20f, 0.12f);
+    const glm::vec3 panelColor(0.46f, 0.33f, 0.19f);
+    const glm::vec3 handleColor(0.78f, 0.64f, 0.30f);
+
+    const glm::vec3 up(0.0f, 1.0f, 0.0f);
+    const glm::vec3 right(Right().x, 0.0f, Right().y);
+    const glm::vec3 front(Front().x, 0.0f, Front().y);
+    const float w = kOpeningWidth, h = kOpeningHeight, fw = kFrameWidth;
+
+    const glm::vec3 jambHalf(fw * 0.5f, (h + fw) * 0.5f, kFrameDepth * 0.5f);
+    for (int side = -1; side <= 1; side += 2)
+    {
+        const glm::vec3 c = base + right * ((float)side * (w + fw) * 0.5f) + up * ((h + fw) * 0.5f);
+        AddOrientedBox(verts, indices, c, right, up, front, jambHalf, frameColor, kUntexturedMatId);
+    }
+    AddOrientedBox(verts, indices, base + up * (h + fw * 0.5f), right, up, front,
+                   glm::vec3(w * 0.5f + fw, fw * 0.5f, kFrameDepth * 0.5f), frameColor, kUntexturedMatId);
+
+    const glm::vec3 panelRight = right * std::cos(openAngle) - front * std::sin(openAngle);
+    const glm::vec3 panelFront = right * std::sin(openAngle) + front * std::cos(openAngle);
+    const glm::vec3 hinge = base - right * (w * 0.5f);
+    const float gap = 0.01f;
+    AddOrientedBox(verts, indices, hinge + panelRight * (w * 0.5f) + up * (h * 0.5f),
+                   panelRight, up, panelFront,
+                   glm::vec3(w * 0.5f - gap, h * 0.5f - gap, kPanelThickness * 0.5f),
+                   panelColor, kUntexturedMatId);
+
+    // A knob on each side of the panel, at the latch edge
+    const glm::vec3 latch = hinge + panelRight * (w - 0.09f) + up * (h * 0.48f);
+    const float reach = kPanelThickness * 0.5f + 0.035f;
+    AddCylinder(verts, indices, latch - panelFront * reach, latch + panelFront * reach,
+                0.012f, 0.012f, 6, handleColor, kUntexturedMatId);
+    AddSphere(verts, indices, latch + panelFront * reach, 0.026f, 8, 6, handleColor, kUntexturedMatId);
+    AddSphere(verts, indices, latch - panelFront * reach, 0.026f, 8, 6, handleColor, kUntexturedMatId);
+}
+
+// The donut tumbles on two axes. Its mesh is rebuilt every frame while it spins
+// so the rotation is baked on the CPU
 static void AddSpinningTorus(std::vector<Vertex>& verts, std::vector<GLuint>& indices,
                               const glm::vec3& center, float angleA, float angleB,
                               float majorRadius, float minorRadius,
@@ -312,7 +321,7 @@ static void AddSpinningTorus(std::vector<Vertex>& verts, std::vector<GLuint>& in
             );
             const glm::vec3 normalLocal(cv * cu, sv, cv * su);
 
-            verts.push_back({ center + rot * local, rot * normalLocal, color, kTorusNoTextureMatId });
+            verts.push_back({ center + rot * local, rot * normalLocal, color, kUntexturedMatId });
         }
     }
 
@@ -332,8 +341,7 @@ static void AddSpinningTorus(std::vector<Vertex>& verts, std::vector<GLuint>& in
 
 static constexpr float kStoneVisualRadius = 0.0375f; // shared by BuildStoneMesh() and placeStones()
 
-// Builds tiny sphere "stones" from world positions. Shared by pickable stones (rebuilt rarely) and
-// thrown stones (rebuilt every frame while any are in flight).
+// Tiny sphere stones at the given positions, for both pickable and thrown stones
 static void BuildStoneMesh(std::vector<Vertex>& verts, std::vector<GLuint>& indices,
                             const std::vector<glm::vec3>& positions)
 {
@@ -342,13 +350,12 @@ static void BuildStoneMesh(std::vector<Vertex>& verts, std::vector<GLuint>& indi
         AddSphere(verts, indices, p, kStoneVisualRadius, 6, 4, stoneColor, 0.0f);
 }
 
-// Re-uploads a stone mesh; shared by the pickup and thrown-stone VAOs. GL_DYNAMIC_DRAW because both
-// buffers are rewritten in full.
+// Buffers are rewritten in full every upload, hence GL_DYNAMIC_DRAW
 static void UploadDynamicStoneMesh(GLuint& vao, GLuint& vbo, GLuint& ebo, GLsizei& indexCount,
                                      const std::vector<Vertex>& verts, const std::vector<GLuint>& indices)
 {
-    // Attribute bindings belong to the VAO, so they are set up once on the first call. Only
-    // glBufferData has to repeat.
+    // Attribute bindings live in the VAO
+    // they are set up once
     const bool firstTime = (vao == 0);
     if (firstTime)
     {
@@ -389,12 +396,11 @@ void DungeonScene::placeStones(unsigned int seed)
     m_stoneWorldPositions.clear();
     m_stonePickedUp.clear();
 
-    // Dedicated RNG with a per-feature salt: the same seed reproduces the same stone layout
-    // regardless of the call order in other generators.
-    std::mt19937 rng(seed ^ 0x53746F6Eu);
+    // Own RNG stream: the stone layout does not depend on the order of other generators
+    std::mt19937 rng(seed ^ 0x53746F6Eu); // amazing 0x53746F6Eu the best part from the whole code
     std::uniform_int_distribution<int> countDist(1, 2);
 
-    // Diagonal offsets inside the 3x3 pocket, away from the center where the diary sits.
+    // Diagonal offsets inside the 3x3 pocket, clear of the diary in the center
     const glm::vec2 kOffsetCandidates[4] = {
         glm::vec2(0.6f, 0.6f), glm::vec2(-0.6f, -0.6f),
         glm::vec2(0.6f, -0.6f), glm::vec2(-0.6f, 0.6f)
@@ -433,6 +439,17 @@ void DungeonScene::rebuildStonePickupMesh()
     std::vector<GLuint> indices;
     BuildStoneMesh(verts, indices, remaining);
     UploadDynamicStoneMesh(m_stonePickupVao, m_stonePickupVbo, m_stonePickupEbo, m_stonePickupIndexCount, verts, indices);
+}
+
+void DungeonScene::markDiaryRead(int diaryIndex)
+{
+    if (diaryIndex < 0 || diaryIndex >= (int)m_diaries.size() || m_diariesRead[(size_t)diaryIndex])
+        return;
+    m_diariesRead[(size_t)diaryIndex] = true;
+    Diaries::PlacedDiary& diary = m_diaries[(size_t)diaryIndex];
+    diary.storyStep = (int)m_diaryReadOrder.size();
+    diary.text = Diaries::StepText(diary.storyStep, m_storyVariants);
+    m_diaryReadOrder.push_back(diaryIndex);
 }
 
 void DungeonScene::rebuildDiaryReadWallLookup()
@@ -479,8 +496,8 @@ void DungeonScene::placeLandmarks(unsigned int seed)
     if (pocketCount < 2)
         return;
 
-    // Nearest-neighbor tour over pockets. Straight-line distance is enough to order the visits;
-    // real paths are computed later, only between chosen neighbors.
+    // Nearest-neighbor tour over the pockets. Straight-line distance is enough to order them;
+    // real paths are computed only between chosen neighbors
     std::vector<unsigned char> visited(pocketCount, 0);
     m_safeZoneChainOrder.push_back(0);
     visited[0] = 1;
@@ -504,10 +521,9 @@ void DungeonScene::placeLandmarks(unsigned int seed)
         visited[(size_t)best] = 1;
     }
 
-    // For each chain link, follow the real corridor path (same GridPathfinding as EnemyAI) to the
-    // next pocket and place 2-3 landmark torches (kMaxGuideTorches) along its first cells, with a
-    // longer minimap highlight (kMinimapHintCells). Only the start of the path is used: it hints at
-    // the direction without revealing the route.
+    // For each link, follow the real corridor path to the next pocket and place a few guide torches
+    // along its first cells. Only the start of the path is marked: it hints at the direction
+    // without revealing the route
     std::mt19937 rng(seed ^ 0x4C616E64u);
 
     const int kMinimapHintCells = 4;
@@ -515,7 +531,6 @@ void DungeonScene::placeLandmarks(unsigned int seed)
 
     static const glm::ivec2 kNeighborDirs[4] = { {1,0}, {-1,0}, {0,1}, {0,-1} };
 
-    // Props and torches share this loop so each link's path is computed once.
     const int kMaxProps = 18;
     std::vector<Vertex> propVerts;
     std::vector<GLuint> propIndices;
@@ -533,7 +548,7 @@ void DungeonScene::placeLandmarks(unsigned int seed)
 
         const int hintCount = std::min((int)path.size() - 1, kMinimapHintCells);
 
-        // Landmark torches on the first path cells, mounted like MapGenerator's TryAddTorch().
+        // Guide torches are mounted like MapGenerator's TryAddTorch()
         int placedTorches = 0;
         for (int p = 1; p <= hintCount && placedTorches < kMaxGuideTorches; ++p)
         {
@@ -548,14 +563,13 @@ void DungeonScene::placeLandmarks(unsigned int seed)
                 if (wallCornerCut(wx, wz) != WallShapes::CornerCut::None)
                     continue; // chamfered walls are unreliable mount points
 
-                // Normal points from the wall to the floor, opposite of d.
+                // Normal points from the wall to the floor, opposite of d
                 const glm::vec3 normal((float)-d.x, 0.0f, (float)-d.y);
 
                 const glm::vec3 wallCenter((float)wx + 0.5f, 0.0f, (float)wz + 0.5f);
                 const glm::vec3 wallBase = wallCenter + normal * 0.5f;
 
-                // Same minimum spacing as TryAddTorch(), checked against all torches, not only
-                // landmarks.
+                // Same minimum spacing as TryAddTorch(), against all torches
                 bool tooClose = false;
                 for (const glm::vec3& existing : m_torchWallBase)
                 {
@@ -573,10 +587,10 @@ void DungeonScene::placeLandmarks(unsigned int seed)
                 m_torchColor.push_back(glm::vec3(0.30f, 0.55f, 1.0f)); // landmark torches burn blue
                 std::uniform_real_distribution<float> intensRange(2.3f, 2.8f);
                 m_torchIntensity.push_back(intensRange(rng));
-                // landmark torches are permanently "taken": not pickable, never extinguished
+                // Guide torches cannot be picked up or extinguished
                 m_torchTaken.push_back(1);
 
-                // Minimap uses the wall cell (wx,wz), like m_torchCellLookup, not the floor cell.
+                // The minimap marks the wall cell, like m_torchCellLookup
                 if (wx >= 0 && wx < m_mapW && wz >= 0 && wz < m_mapH)
                     m_guideTorchCellLookup[(size_t)wz * m_mapW + wx] = 1;
 
@@ -585,9 +599,8 @@ void DungeonScene::placeLandmarks(unsigned int seed)
             }
         }
 
-        // Decorative props on every other chain link, at roughly 1/3 and 2/3 of the full path. They
-        // are a mid-corridor accent, not a direction hint, so unlike the torches they are not
-        // limited to the first cells.
+        // Props on every other link at about 1/3 and 2/3 of the path. They are decoration, not a
+        // hint, so they are not limited to the first cells
         if (propsPlaced < kMaxProps && (k % 2 == 0) && path.size() >= 3)
         {
             const size_t marks[2] = { path.size() / 3, (path.size() * 2) / 3 };
@@ -656,11 +669,11 @@ void DungeonScene::tryAutoPickupStones()
         {
             m_stonePickedUp[i] = 1;
             m_player.addStoneToInventory();
+            UiAudio::PlayClick();
             pickedAny = true;
         }
     }
 
-    // Rebuild the mesh once per frame, not once per picked-up stone.
     if (pickedAny)
         rebuildStonePickupMesh();
 }
@@ -673,8 +686,7 @@ void DungeonScene::updateThrownStones(float deltaTime)
     const float kGravity = 9.8f;
     const float kStoneRadius = kStoneVisualRadius;
     const float kEnemyHitRadius = EnemyAI::kCollisionRadius + kStoneRadius;
-    // Louder than the player's footsteps (see the EnemyAI hearing radii), otherwise it would not
-    // work as a distraction.
+    // Louder than footsteps, otherwise it would not work as a distraction
     const float kNoiseImpactRadius = 9.0f;
     const float kMaxLifetime = 4.0f; // safety cap in case a stone never lands
 
@@ -687,8 +699,7 @@ void DungeonScene::updateThrownStones(float deltaTime)
 
         bool consumed = false;
 
-        // Enemies are checked first: a direct hit outranks a wall/floor impact. Circle test in XZ,
-        // ignoring height.
+        // A direct enemy hit takes priority over a wall/floor impact. Circle test in XZ
         for (int e = 0; e < kEnemyCount && !consumed; ++e)
         {
             if (!m_enemies[e].isLoaded())
@@ -703,7 +714,7 @@ void DungeonScene::updateThrownStones(float deltaTime)
             }
         }
 
-        // Wall/floor impact: not a hit, but still makes noise (EnemyAI::notifyNoiseEvent()).
+        // A wall/floor impact still makes noise
         if (!consumed)
         {
             const int cx = (int)std::floor(nextPos.x);
@@ -748,79 +759,72 @@ void DungeonScene::updateThrownStones(float deltaTime)
     UploadDynamicStoneMesh(m_thrownStoneVao, m_thrownStoneVbo, m_thrownStoneEbo, m_thrownStoneIndexCount, verts, indices);
 }
 
-// "Unreliable vision" effects (see glitchStage() in the header), ticked every frame from
-// processInput(). Each of the four effects has its own cooldown timer plus an active timer that
-// runs while the event is perceivable.
-
 void DungeonScene::updateWinSequence(float deltaTime)
 {
+    auto uploadDoor = [this](float openAngle) {
+        m_exitDoorVertsScratch.clear();
+        m_exitDoorIndicesScratch.clear();
+        AddExitDoor(m_exitDoorVertsScratch, m_exitDoorIndicesScratch, m_exitDoorPos, openAngle);
+        UploadDynamicStoneMesh(m_exitDoorVao, m_exitDoorVbo, m_exitDoorEbo, m_exitDoorIndexCount,
+                               m_exitDoorVertsScratch, m_exitDoorIndicesScratch);
+    };
+
     if (m_winSequenceState == WinSequenceState::None)
     {
-        // The pedestal is a dynamic mesh, so it has to be built once per map. It does not change
-        // until the sequence starts.
-        if (!m_winMonumentBuiltOnce)
+        // The closed door is built once per map and does not change until the sequence starts
+        if (!m_exitDoorBuiltOnce)
         {
-            m_winMonumentBuiltOnce = true;
-            m_winMonumentFadeAlpha = 1.0f;
-            m_winMonumentVertsScratch.clear();
-            m_winMonumentIndicesScratch.clear();
-            AddDissolvingMonument(m_winMonumentVertsScratch, m_winMonumentIndicesScratch, m_winButtonPos, 0.0f, /*spawnParticles=*/false);
-            UploadDynamicStoneMesh(m_winMonumentVao, m_winMonumentVbo, m_winMonumentEbo,
-                                    m_winMonumentIndexCount, m_winMonumentVertsScratch, m_winMonumentIndicesScratch);
+            m_exitDoorBuiltOnce = true;
+            uploadDoor(0.0f);
         }
         return;
     }
 
     m_winSequenceTimer += deltaTime;
+    const float openAngle = glm::radians(ExitDoor::kOpenAngleDeg);
 
-    // Reused buffers: clear() keeps the capacity, so there is no allocation after the first frame.
-    std::vector<Vertex>& verts = m_winMonumentVertsScratch;
-    std::vector<GLuint>& indices = m_winMonumentIndicesScratch;
-    verts.clear();
-    indices.clear();
-
-    if (m_winSequenceState == WinSequenceState::Dissolving)
+    if (m_winSequenceState == WinSequenceState::Opening)
     {
-        // Nonlinear curve (t^2): stays nearly opaque, then vanishes quickly at the end.
-        const float t = std::clamp(m_winSequenceTimer / kWinDissolveDuration, 0.0f, 1.0f);
-        m_winMonumentFadeAlpha = 1.0f - t * t;
-        AddDissolvingMonument(verts, indices, m_winButtonPos, m_winSequenceTimer, /*spawnParticles=*/true);
+        const float t = std::clamp(m_winSequenceTimer / kExitDoorOpenDuration, 0.0f, 1.0f);
+        uploadDoor(openAngle * t * t * (3.0f - 2.0f * t));
 
-        if (m_winSequenceTimer >= kWinDissolveDuration)
+        if (m_winSequenceTimer >= kExitDoorOpenDuration)
         {
+            uploadDoor(openAngle);
             m_winSequenceState = WinSequenceState::Spinning;
             m_winSequenceTimer = 0.0f;
             m_torusAngleA = 0.0f;
             m_torusAngleB = 0.0f;
         }
-    }
-    else
-    {
-        // Reset the alpha here, in sync with building the torus. Resetting it earlier drew the old,
-        // near-transparent pedestal geometry at full alpha for one frame (a visible flash).
-        m_winMonumentFadeAlpha = 1.0f;
-
-        // Two angles with different speeds give the tumble; equal speeds would just look like
-        // rotation around one diagonal axis.
-        const float kSpinSpeedA = 1.1f; // rad/sec
-        const float kSpinSpeedB = 0.7f;
-        m_torusAngleA = std::fmod(m_torusAngleA + kSpinSpeedA * deltaTime, glm::two_pi<float>());
-        m_torusAngleB = std::fmod(m_torusAngleB + kSpinSpeedB * deltaTime, glm::two_pi<float>());
-
-        const glm::vec3 torusCenter = m_winButtonPos + glm::vec3(0.0f, 0.55f, 0.0f);
-        AddSpinningTorus(verts, indices, torusCenter, m_torusAngleA, m_torusAngleB,
-                          0.336f, 0.128f, 24, 12, glm::vec3(0.62f, 0.62f, 0.62f));
+        return;
     }
 
-    UploadDynamicStoneMesh(m_winMonumentVao, m_winMonumentVbo, m_winMonumentEbo,
-                            m_winMonumentIndexCount, verts, indices);
+    // Different speeds on the two axes; equal speeds would look like a spin around one diagonal
+    const float kSpinSpeedA = 1.1f; // rad/sec
+    const float kSpinSpeedB = 0.7f;
+    m_torusAngleA = std::fmod(m_torusAngleA + kSpinSpeedA * deltaTime, glm::two_pi<float>());
+    m_torusAngleB = std::fmod(m_torusAngleB + kSpinSpeedB * deltaTime, glm::two_pi<float>());
+
+    const float appear = std::clamp(m_winSequenceTimer / kDonutAppearDuration, 0.0f, 1.0f);
+    m_donutAlpha = appear * appear * (3.0f - 2.0f * appear);
+
+    // Sized to tumble inside the doorway without touching the frame
+    m_donutVertsScratch.clear();
+    m_donutIndicesScratch.clear();
+    const glm::vec3 torusCenter = m_exitDoorPos + glm::vec3(0.0f, ExitDoor::kOpeningHeight * 0.5f, 0.0f);
+    AddSpinningTorus(m_donutVertsScratch, m_donutIndicesScratch, torusCenter, m_torusAngleA,
+                     m_torusAngleB, 0.24f, 0.09f, 24, 12, glm::vec3(0.62f, 0.62f, 0.62f));
+    UploadDynamicStoneMesh(m_donutVao, m_donutVbo, m_donutEbo, m_donutIndexCount,
+                           m_donutVertsScratch, m_donutIndicesScratch);
 }
+
+// AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
 
 void DungeonScene::updateGlitchEffects(float deltaTime)
 {
     static std::mt19937 rng(std::random_device{}());
 
-    // Drives glitchStage(). Advances only during real, unpaused gameplay (the caller gates that).
+    // Drives glitchStage(); the caller only ticks this during unpaused gameplay
     m_glitchElapsedTime += deltaTime;
 
     const int stage = glitchStage();
@@ -839,8 +843,7 @@ void DungeonScene::updateGlitchEffects(float deltaTime)
             m_glyphGlitchUV = glm::vec2(uvDist(rng), uvDist(rng));
             m_glyphGlitchActiveTimer = (stage >= 4) ? 0.25f : 0.15f;
 
-            // A spot rather than a single cell; radius in ASCII-grid cells (uGlitchRadiusCells in
-            // ascii_post.frag).
+            // Radius in ASCII cells.
             std::uniform_real_distribution<float> radiusDist(4.0f, 7.0f);
             m_glyphGlitchRadiusCells = radiusDist(rng);
 
@@ -860,7 +863,7 @@ void DungeonScene::updateGlitchEffects(float deltaTime)
         m_torchGlitchCooldown -= deltaTime;
         if (m_torchGlitchCooldown <= 0.0f && !m_torchWallBase.empty())
         {
-            // Nearest torch, computed only at this rare moment; O(N) over all torches is fine.
+            // Linear scan over all torches; this runs rarely
             const glm::vec3 camPos = m_player.camPos();
             int nearest = -1;
             float bestDistSq = std::numeric_limits<float>::max();
@@ -874,7 +877,7 @@ void DungeonScene::updateGlitchEffects(float deltaTime)
             const double duration = (stage >= 4) ? 0.6 : 0.4;
             m_torchGlitchUntilTime = glfwGetTime() + duration;
 
-            // Stage 4 is deliberately not more frequent than stage 3 for this effect.
+            // Stage 4 does not make this effect more frequent
             float lo = 12.0f, hi = 16.0f;
             if (stage >= 3) { lo = 8.0f; hi = 12.0f; }
             std::uniform_real_distribution<float> cdDist(lo, hi);
@@ -882,12 +885,12 @@ void DungeonScene::updateGlitchEffects(float deltaTime)
         }
     }
 
-    // Effect 4 (stage >= 4, 420 s+): flickering enemy silhouette
+    // Effect 4: flickering enemy silhouette (stage >= 4)
     if (m_silhouetteActiveTimer > 0.0f)
     {
         m_silhouetteActiveTimer -= deltaTime;
-        // Static pose, but the clip clock must still tick: otherwise draw() renders clip time 0,
-        // which is the animation's first frame rather than the idle stance.
+        // The pose is static, but the clip clock must tick, or draw() shows the first animation
+        // frame instead of the idle stance
         m_glitchGhost.update(0.0f);
     }
     else if (stage >= 4)
@@ -906,11 +909,11 @@ void DungeonScene::updateGlitchEffects(float deltaTime)
                 front /= frontLen;
                 const glm::vec3 right(-front.z, 0.0f, front.x);
 
-                // no closer: a nearer silhouette reads as a teleport, not a glitch
+                // Closer reads as a teleport rather than a glitch
                 const float kMinDist = 4.5f;
-                // slightly under the player's sight radius in isEnemyVisibleToPlayer()
+                // Just under the player's sight radius in isEnemyVisibleToPlayer()
                 const float kMaxDist = 13.0f;
-                // slightly narrower than the real FOV so it is not right at the frame edge
+                // Slightly narrower than the real FOV, away from the frame edge
                 const float kHalfFOVDeg = 40.0f;
 
                 std::uniform_real_distribution<float> distDist(kMinDist, kMaxDist);
@@ -928,8 +931,7 @@ void DungeonScene::updateGlitchEffects(float deltaTime)
                     if (!isFloor(cx, cz))
                         continue;
 
-                    // Must pass the same visibility test (distance, FOV, line of sight) as a real
-                    // enemy, or it could appear where a real one never could.
+                    // Must pass the same visibility test as a real enemy
                     if (!isEnemyVisibleToPlayer(candidate))
                         continue;
 
@@ -953,15 +955,14 @@ void DungeonScene::updateGlitchEffects(float deltaTime)
             }
             else
             {
-                // No valid spot found (rare): retry soon instead of waiting the full cooldown.
+                // No valid spot: retry soon instead of waiting a full cooldown
                 m_silhouetteCooldown = 5.0f;
             }
         }
     }
 
-    // Fake-footsteps sub-effect (shared by two of the three variants below). Ticks independently of
-    // the trigger, so it plays out its full 2-4 s even if the stage changes. Intervals mirror the
-    // real walk/run cadence (see PlayerController.cpp).
+    // Fake footsteps run independently of the trigger, so they play out fully even if the stage
+    // changes. Intervals match the real walk/run cadence (PlayerController.cpp)
     if (m_fakeFootstepsTimer > 0.0f)
     {
         m_fakeFootstepsTimer -= deltaTime;
@@ -988,8 +989,9 @@ void DungeonScene::updateGlitchEffects(float deltaTime)
         m_soundGlitchCooldown -= deltaTime;
         if (m_soundGlitchCooldown <= 0.0f)
         {
-            // Kind 0: moan (always available). 1: fake walk steps (not while walking). 2: fake run
-            // steps (not while running).
+            // 0: moan (always)
+            // 1: fake walk steps (not while walking)
+            // 2: fake run steps (not while running)
             int kinds[3];
             int kindCount = 0;
             kinds[kindCount++] = 0;
@@ -1017,15 +1019,13 @@ void DungeonScene::updateGlitchEffects(float deltaTime)
     }
 }
 
-// Resets the lit-mask texture to "everything lit" (255). Used when a new map is generated; pickups
-// use a point update instead (see pickupWallTorch()).
+// Marks every torch lit again; used for a new map. Pickups update a single texel instead
 void DungeonScene::resetTorchLitMask()
 {
     if (m_torchLitMaskTex == 0)
         return;
 
-    std::vector<unsigned char> allLit(
-        (size_t)kTorchLitMaskDim * kTorchLitMaskDim, 255);
+    std::vector<unsigned char> allLit((size_t)kTorchLitMaskDim * kTorchLitMaskDim, 255);
 
     glBindTexture(GL_TEXTURE_2D, m_torchLitMaskTex);
     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0,
@@ -1044,6 +1044,7 @@ void DungeonScene::pickupWallTorch(int torchIndex)
     extinguishTorchVisualAndLight(torchIndex);
     rebuildTorchCellLookupFromTaken();
     m_player.addTorchToInventory();
+    UiAudio::PlayClick();
 
     std::fprintf(stderr, "DungeonScene: torch #%d picked up (inventory now %d).\n",
                  torchIndex, m_player.torchInventoryCount());
@@ -1063,35 +1064,33 @@ void DungeonScene::restoreTorchPickups(const std::vector<int>& takenIndices)
         extinguishTorchVisualAndLight(idx);
     }
 
-    // Rebuild the lookup once for the whole list, not per torch as pickupWallTorch() does.
+    // One rebuild for the whole list
     rebuildTorchCellLookupFromTaken();
 }
 
-// Shared by pickupWallTorch() and restoreTorchPickups(): turns off the torch's light and visible
-// flame and marks it taken. Leaves m_torchCellLookup and the player's inventory to the caller (a
-// pickup credits +1, a save restore must not).
+// Turns off a torch's light and flame and marks it taken
+// The caller updates m_torchCellLookup and the inventory: a pickup adds a torch, restoring a save must not
 void DungeonScene::extinguishTorchVisualAndLight(int torchIndex)
 {
     m_torchTaken[(size_t)torchIndex] = true;
 
-    // Zeroing the intensity is enough: Lighting and the scene shader already filter on it.
+    // Lighting skips torches with zero intensity
     m_torchIntensity[(size_t)torchIndex] = 0.0f;
 
-    // Visible flame: update one texel of the lit-mask texture (uTorchLitMask in scene.frag).
+    // Hide the baked flame: one texel of uTorchLitMask
     if (m_torchLitMaskTex != 0)
     {
         const unsigned char off = 0;
         const int tx = torchIndex % kTorchLitMaskDim;
         const int ty = torchIndex / kTorchLitMaskDim;
         glBindTexture(GL_TEXTURE_2D, m_torchLitMaskTex);
-        glTexSubImage2D(GL_TEXTURE_2D, 0, tx, ty, 1, 1,
-                         GL_RED, GL_UNSIGNED_BYTE, &off);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, tx, ty, 1, 1, GL_RED, GL_UNSIGNED_BYTE, &off);
         glBindTexture(GL_TEXTURE_2D, 0);
     }
 }
 
-// Taken torches must not show a torch icon on the minimap (MinimapFog::updateMinimap()). Rebuilt in
-// full from the untaken torches; O(N), but only on pickup and save load.
+// Minimap torch icons for untaken torches only
+// Full rebuild; runs on pickup and on load
 void DungeonScene::rebuildTorchCellLookupFromTaken()
 {
     std::vector<glm::vec3> remainingWallBase;
@@ -1109,9 +1108,8 @@ void DungeonScene::rebuildTorchCellLookupFromTaken()
         m_mapW, m_mapH, remainingWallBase, remainingNormal);
 }
 
-// Smooth cell color: near a border between the two nearest zone centers the palettes blend (50/50
-// at the border, pure nearest when the distance difference is at least kPaletteBlendWidth),
-// avoiding a hard jump.
+// Palette of a cell: blends 50/50 on the border between the two nearest zone centers, pure nearest
+// beyond kPaletteBlendWidth
 static void BlendedZoneColor(const Zoning::ZoneGrid& zoneGrid, int cellX, int cellZ,
                               glm::vec3& outWallColor, glm::vec3& outFloorColor)
 {
@@ -1123,7 +1121,7 @@ static void BlendedZoneColor(const Zoning::ZoneGrid& zoneGrid, int cellX, int ce
 
     const float fx = (float)cellX, fz = (float)cellZ;
     size_t nearestIdx = 0, secondIdx = 0;
-    float nearestDistSq = 1e30f, secondDistSq = 1e30f;
+    float nearestDistSq = 1e30f, secondDistSq = 1e30f; // I dont love exponential form
 
     for (size_t i = 0; i < zoneGrid.centers.size(); ++i)
     {
@@ -1169,9 +1167,8 @@ void DungeonScene::loadMapAndGeometry(unsigned int seed)
     generateMap(seed);
     m_currentSeed = seed;
 
-    // Reset the "unreliable vision" state for each playthrough. Resetting m_glitchElapsedTime alone
-    // is not enough: the active timers are checked before glitchStage() and are not stage-gated, so
-    // an effect in progress (e.g. fake footsteps) would carry into the new run.
+    // Reset all glitch timers, not only the elapsed time:
+    // active timers are not stage-gated, so an effect in progress would carry into the new run
     m_glitchElapsedTime = 0.0f;
     m_glyphGlitchActiveTimer = 0.0f;
     m_silhouetteActiveTimer = 0.0f;
@@ -1185,7 +1182,26 @@ void DungeonScene::loadMapAndGeometry(unsigned int seed)
     placeStones(seed);
     placeLandmarks(seed);
 
-    // Built once and shared by all enemies by pointer, instead of one copy per enemy.
+    // Every map starts with a closed door and no donut;
+    // building it here also shows it behind the main menu, where the gameplay update does not run.
+    m_winSequenceState = WinSequenceState::None;
+    m_winSequenceTimer = 0.0f;
+    m_donutIndexCount = 0;
+    m_exitDoorBuiltOnce = false;
+    updateWinSequence(0.0f);
+
+    m_torchShadowMap.build(
+        [this](int x, int z) { return isWall(x, z); },
+        [this](float x, float z) {
+            const int cx = (int)std::floor(x), cz = (int)std::floor(z);
+            if (!isWall(cx, cz))
+                return false;
+            return WallShapes::IsLocalPointSolid(x - (float)cx, z - (float)cz,
+                                                 wallCornerCut(cx, cz), wallChamferSize(cx, cz));
+        },
+        m_columnCentersXZ, Columns::kColumnRadius, m_torchFlamePos);
+
+    // Shared by all enemies by pointer
     m_pathfindingMapWithColumns = m_map;
     for (const glm::vec2& col : m_columnCentersXZ)
     {
@@ -1207,9 +1223,8 @@ void DungeonScene::loadMapAndGeometry(unsigned int seed)
     }
     spawnEnemiesAcrossMap(seed);
 
-    // Dev dummy (K key): independent of the real enemies. It needs the map for its own
-    // resolveWallCollision(). The spawn position is a placeholder; the first K press moves it to
-    // where the player is looking.
+    // not necessary part:
+    // Dev dummy (K): needs the map for its own collision. The first K press moves it in front of the player
     m_enemyAI.init(
         m_mapW, m_mapH,
         &m_map, &m_wallCornerCuts, &m_diagonalChainMask,
@@ -1219,27 +1234,24 @@ void DungeonScene::loadMapAndGeometry(unsigned int seed)
     const glm::vec3 dummySpawnPos(3.5f, 0.0f, 3.5f);
     m_enemyAI.setPosition(dummySpawnPos);
 
-    // destroy() is safe on the first call (all handles are zero), so init(), newGame() and
-    // loadSlot() share this path.
+    // destroy() is a no-op on zero handles, so init(), newGame() and loadSlot() share this path
     m_geometry.destroy();
 
-    // Diary world positions: pocket cell center (+0.5 offset, like winButtonPos).
+    // Pocket cell centers.
     std::vector<glm::vec3> diaryPositions;
     diaryPositions.reserve(m_diaries.size());
     for (const Diaries::PlacedDiary& d : m_diaries) {
         diaryPositions.emplace_back((float)d.pocketCellX + 0.5f, 0.0f, (float)d.pocketCellZ + 0.5f);
     }
 
-    m_geometry.build(m_mapW, m_mapH, m_map, m_winButtonPos,
+    m_geometry.build(m_mapW, m_mapH, m_map, m_exitDoorPos,
                       m_torchWallBase, m_torchNormal, m_torchFlamePos,
                       m_wallCornerCuts, m_columnCentersXZ, m_chamferSizes,
                       m_paletteWallColors, m_paletteFloorColors,
                       diaryPositions,
                       m_firstGuideTorchIndex);
 
-    // Perf diagnostic: size of the generated geometry. Chamfered cells break the greedy quad merge
-    // (SceneGeometry::BuildFloorAndWallsGreedy), so a high chamfer probability inflates
-    // vertex/index counts across the whole map. Printed so tuning it is visible without a profiler.
+    // Chamfered cells break the greedy quad merge, so the chamfer probability shows up directly in these counts
     std::printf(
         "[perf] map %dx%d -> %d vertices, %d indices (%d triangles)\n",
         m_mapW, m_mapH,
@@ -1248,7 +1260,7 @@ void DungeonScene::loadMapAndGeometry(unsigned int seed)
         (int)m_geometry.indexCount() / 3
     );
 
-    // Both steps depend on m_geometry.build() (chunk count, wall map), so they run after it.
+    // Both depend on the chunk layout from m_geometry.build()
     reserveRenderScratchBuffers();
     m_geometry.buildPVS(m_mapW, m_mapH, [this](int x, int z) { return isWall(x, z); });
 }
@@ -1259,31 +1271,109 @@ void DungeonScene::generateFreshMapAndPlayer()
     const unsigned int seed = rd();
     loadMapAndGeometry(seed);
 
-    // Spawn at the center of the starting safe zone. resetForNewGame() also resets look direction,
-    // health, stamina and the compass.
+    // Center of the starting safe zone. resetForNewGame() also resets view, health, stamina and the
+    // compass.
     const glm::vec3 spawnPos(6.5f, 0.5f, 6.5f);
     m_player.resetForNewGame(spawnPos);
 }
 
-// Builds the decorative map behind the main menu. It never touches m_activeSlot/m_saveName and
-// never saves (there is no real session; saving would create a file on every launch or overwrite
-// the oldest save). saveActiveSlot() is a no-op while m_activeSlot is negative.
+// The map behind the main menu. It never picks a slot and never saves: saveActiveSlot() is a no-op
+// while m_activeSlot < 0. Each launch shows a different spot:
+// the starting zone, a pocket, the exit door or a random corridor
 void DungeonScene::generateMenuBackgroundMaze()
 {
     generateFreshMapAndPlayer();
 
-    // Slight downward tilt so both the floor and the wall torches above eye level fit in frame. Yaw
-    // stays at the regular spawn heading.
-    m_player.setPitchDegrees(-6.0f);
+    std::random_device rd;
+    std::mt19937 rng(rd());
+    auto yawTo = [](const glm::vec3& from, const glm::vec3& to) {
+        return glm::degrees(std::atan2(to.z - from.z, to.x - from.x));
+    };
+
+    glm::vec3 pos(6.5f, 0.5f, 6.5f); // starting zone center
+    float yaw = 45.0f * (float)std::uniform_int_distribution<int>(0, 7)(rng);
+
+    enum Spot { StartZone, Pocket, Door, Corridor, SpotCount };
+    Spot spot = (Spot)std::uniform_int_distribution<int>(0, SpotCount - 1)(rng);
+    if (spot == Pocket && m_smallSafeZoneCenters.empty())
+        spot = StartZone;
+
+    if (spot == Pocket)
+    {
+        // A step off the pocket's center, looking at the diary that lies there
+        const glm::ivec2 c = m_smallSafeZoneCenters[std::uniform_int_distribution<size_t>(
+            0, m_smallSafeZoneCenters.size() - 1)(rng)];
+        const glm::vec3 diary(c.x + 0.5f, 0.5f, c.y + 0.5f);
+        static const glm::vec2 kOffsets[4] = { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } };
+        const glm::vec2 o = kOffsets[std::uniform_int_distribution<int>(0, 3)(rng)];
+        pos = diary + glm::vec3(o.x, 0.0f, o.y);
+        yaw = yawTo(pos, diary);
+    }
+    else if (spot == Door)
+    {
+        const glm::vec2 front = ExitDoor::Front();
+        pos = glm::vec3(m_exitDoorPos.x + front.x * 2.2f, 0.5f, m_exitDoorPos.z + front.y * 2.2f);
+        yaw = yawTo(pos, m_exitDoorPos);
+    }
+    else if (spot == Corridor)
+    {
+        // A floor cell away from the safe zones, looking down its longest open direction
+        auto inSafeArea = [&](int x, int z) {
+            if (x < 13 && z < 13)
+                return true;
+            if (x >= m_endSafeX0 - 1 && x <= m_endSafeX1 + 1 && z >= m_endSafeZ0 - 1 && z <= m_endSafeZ1 + 1)
+                return true;
+            for (const glm::ivec2& c : m_smallSafeZoneCenters)
+                if (std::abs(c.x - x) <= 2 && std::abs(c.y - z) <= 2)
+                    return true;
+            return false;
+        };
+        std::uniform_int_distribution<int> cellX(1, m_mapW - 2), cellZ(1, m_mapH - 2);
+        for (int attempt = 0; attempt < 500; ++attempt)
+        {
+            const int x = cellX(rng), z = cellZ(rng);
+            if (!isFloor(x, z) || inSafeArea(x, z))
+                continue;
+            static const glm::ivec2 kDirs[4] = { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } };
+            int bestRun = 0;
+            glm::ivec2 bestDir(1, 0);
+            for (const glm::ivec2& d : kDirs)
+            {
+                int run = 0;
+                while (run < 16 && isFloor(x + d.x * (run + 1), z + d.y * (run + 1)))
+                    ++run;
+                if (run > bestRun)
+                {
+                    bestRun = run;
+                    bestDir = d;
+                }
+            }
+            if (bestRun < 3)
+                continue;
+            pos = glm::vec3(x + 0.5f, 0.5f, z + 0.5f);
+            yaw = glm::degrees(std::atan2((float)bestDir.y, (float)bestDir.x));
+            break;
+        }
+    }
+
+    // Tilted down so the floor and the torches above eye level both fit in frame
+    m_player.restoreState(pos, yaw, -6.0f, 1.0f, 1.0f);
+}
+
+void DungeonScene::applyDifficulty()
+{
+    // A map with fewer pockets than the requirement would be unwinnable
+    const DifficultyRules& rules = RulesFor(m_difficulty);
+    m_player.setWinRules(std::min(rules.diariesToWin, (int)m_diaries.size()), rules.oneHitKills);
 }
 
 void DungeonScene::newGame(int explicitSlot, const std::string& explicitName)
 {
     generateFreshMapAndPlayer();
+    applyDifficulty();
 
-    // explicitSlot >= 0: the player already picked a slot (and maybe a name); use them as given.
-    // Otherwise take the first empty slot or the oldest save, with an empty name (death path: a
-    // real session that must be saved).
+    // explicitSlot >= 0: slot (and maybe name) chosen by the player
+    //Otherwise the first empty slot or the oldest save, unnamed (death path)
     if (explicitSlot >= 0)
     {
         m_activeSlot = explicitSlot;
@@ -1302,9 +1392,10 @@ bool DungeonScene::loadSlot(int slotIndex)
     SaveSystem::SaveData save = SaveSystem::LoadSlot(slotIndex);
     if (!save.valid) return false;
 
-    // The seed rebuilds the exact same maze and torch layout, so geometry is not stored in the
-    // save.
+    // The seed reproduces the maze and torch layout, so saves store no geometry
     loadMapAndGeometry(save.seed);
+    m_difficulty = DifficultyFromInt(save.difficulty);
+    applyDifficulty();
 
     glm::vec3 pos(save.posX, save.posY, save.posZ);
     if (!(pos.x > 0.0f && pos.x < (float)m_mapW && pos.z > 0.0f && pos.z < (float)m_mapH)) {
@@ -1313,28 +1404,21 @@ bool DungeonScene::loadSlot(int slotIndex)
     }
     m_player.restoreState(pos, save.yaw, save.pitch, save.healthFraction, save.staminaFraction);
 
-    // Fog of war is restored only if its size matches the map (hand-edited or older save);
-    // otherwise it stays "nothing revealed".
+    // Fog of war is restored only if its size matches the map
     if (save.explored.size() == (size_t)m_mapW * m_mapH) {
         m_minimapFog.setExplored(std::move(save.explored));
     }
 
-    // loadMapAndGeometry() rebuilt m_diaries from the seed and cleared the read flags; re-mark the
-    // ones read at save time.
-    for (int idx : save.diariesReadIndices) {
-        if (idx >= 0 && idx < (int)m_diariesRead.size())
-            m_diariesRead[(size_t)idx] = true;
-    }
+    // Saved in read order, which decides the story step of each diary
+    for (int idx : save.diariesReadIndices)
+        markDiaryRead(idx);
     rebuildDiaryReadWallLookup();
 
-    // Torches: the same seed gives the same layout with none taken. Extinguish the ones taken at
-    // save time. Fuel and inventory are restored separately (restoreTorchPickups() does not touch
-    // the inventory).
+    // Extinguish the torches taken at save time. Fuel and inventory are restored separately
     restoreTorchPickups(save.torchTakenIndices);
     m_player.restoreTorchState(save.torchFuel, save.torchInventoryCount);
 
-    // Stones: mark the ones picked up at save time and restore the inventory count separately,
-    // otherwise they would respawn on the floor while the inventory kept growing.
+    // Picked-up stones must not respawn; the inventory count is restored separately
     for (int idx : save.stoneTakenIndices) {
         if (idx >= 0 && (size_t)idx < m_stonePickedUp.size())
             m_stonePickedUp[(size_t)idx] = 1;
@@ -1351,11 +1435,11 @@ void DungeonScene::saveActiveSlot()
 {
     if (m_activeSlot < 0) return; // no active session: nothing to save
 
-    // The snapshot is assembled synchronously (cheap); the disk write is handed to SaveSlotAsync()
-    // so it does not stall the game loop.
+    // The snapshot is built here; SaveSlotAsync() writes it off the game loop
     SaveSystem::SaveData data;
     data.seed = m_currentSeed;
     data.name = m_saveName;
+    data.difficulty = (int)m_difficulty;
 
     const glm::vec3 pos = m_player.camPos();
     data.posX = pos.x;
@@ -1368,17 +1452,14 @@ void DungeonScene::saveActiveSlot()
     data.explored = m_minimapFog.explored();
 
     data.diariesReadIndices.clear();
-    for (size_t i = 0; i < m_diariesRead.size(); ++i)
-        if (m_diariesRead[i]) data.diariesReadIndices.push_back((int)i);
+    data.diariesReadIndices = m_diaryReadOrder;
 
     data.torchFuel = m_player.torchFuel();
     data.torchInventoryCount = m_player.torchInventoryCount();
     data.torchTakenIndices.clear();
     for (size_t i = 0; i < m_torchTaken.size(); ++i)
     {
-        // Landmark torches are always "taken" (merely non-interactive) and are excluded from the
-        // list: regenerating the map from the seed marks them again, and a restore must not
-        // extinguish them.
+        // Guide torches are regenerated as taken from the seed; restoring them would extinguish them.
         if (m_firstGuideTorchIndex >= 0 && (int)i >= m_firstGuideTorchIndex)
             continue;
         if (m_torchTaken[i]) data.torchTakenIndices.push_back((int)i);
@@ -1411,15 +1492,13 @@ void DungeonScene::reserveRenderScratchBuffers()
 
 void DungeonScene::processInput(GLFWwindow* window, float deltaTime)
 {
-    // Enemy positions from the end of the previous frame (EnemyAI::update() runs in render(), after
-    // processInput()): a one-frame lag that is imperceptible. The dev dummy is excluded: it must
-    // not physically block the player.
+    // Enemy positions lag one frame (EnemyAI::update() runs in render())
+    // The dev dummy must not block the player
     std::vector<glm::vec3> enemyPositions;
     enemyPositions.reserve(kEnemyCount);
     for (int i = 0; i < kEnemyCount; ++i)
         enemyPositions.push_back(m_enemyAIs[i].position());
 
-    // Same pocket-center formula as in loadMapAndGeometry(); cheap enough not to cache.
     std::vector<glm::vec3> diaryPositions;
     diaryPositions.reserve(m_diaries.size());
     for (const Diaries::PlacedDiary& d : m_diaries)
@@ -1431,7 +1510,7 @@ void DungeonScene::processInput(GLFWwindow* window, float deltaTime)
         [this](int x, int z) { return wallCornerCut(x, z); },
         [this](int x, int z) { return wallChamferSize(x, z); },
         m_columnCentersXZ,
-        m_winButtonPos,
+        m_exitDoorPos,
         enemyPositions,
         diaryPositions,
         diariesReadCount(),
@@ -1442,7 +1521,7 @@ void DungeonScene::processInput(GLFWwindow* window, float deltaTime)
 
     if (m_player.consumeWinSequenceRequest())
     {
-        m_winSequenceState = WinSequenceState::Dissolving;
+        m_winSequenceState = WinSequenceState::Opening;
         m_winSequenceTimer = 0.0f;
     }
     updateWinSequence(deltaTime);
@@ -1454,17 +1533,16 @@ void DungeonScene::processInput(GLFWwindow* window, float deltaTime)
 
     m_nearbyDiaryIndex = m_player.nearbyDiaryIndex();
 
-    // Opening a diary with E works only from regular gameplay: while a reading screen is open,
-    // Application does not call processInput().
+    // processInput() is not called while a reading screen is open, so E opens a diary only from gameplay
     if (m_player.consumeDiaryOpenRequest() && m_nearbyDiaryIndex != -1)
     {
         m_openDiaryIndex = m_nearbyDiaryIndex;
-        m_diariesRead[(size_t)m_openDiaryIndex] = true;
+        markDiaryRead(m_openDiaryIndex);
         rebuildDiaryReadWallLookup();
+        UiAudio::PlayClick();
 
-        // Sync the overlay's E tracker while the key is known to be held. Otherwise the next frame,
-        // tickReadingOverlayInput() sees the still-held key as a new press and closes the diary it
-        // just opened.
+        // The key is still held: without this, tickReadingOverlayInput() sees a new press next
+        // frame and closes the diary it just opened
         m_overlayEKeyWasDown = true;
     }
 
@@ -1473,7 +1551,7 @@ void DungeonScene::processInput(GLFWwindow* window, float deltaTime)
         m_journalOpen = true;
         m_journalSelectedIndex = 0;
 
-        // Same tracker sync as above, for Tab.
+        // Same for Tab
         m_overlayTabKeyWasDown = true;
     }
 
@@ -1481,8 +1559,7 @@ void DungeonScene::processInput(GLFWwindow* window, float deltaTime)
     if (m_player.consumeTorchPickupRequest() && m_nearbyWallTorchIndex != -1)
     {
         pickupWallTorch(m_nearbyWallTorchIndex);
-        // Just taken: clear it so the HUD does not show the hint over an extinguished torch until
-        // nearbyTorchIndex() is recomputed.
+        // Hide the hint until nearbyTorchIndex() is recomputed
         m_nearbyWallTorchIndex = -1;
     }
     if (m_player.consumeTorchEmptyWarningRequest())
@@ -1490,9 +1567,8 @@ void DungeonScene::processInput(GLFWwindow* window, float deltaTime)
     if (m_torchEmptyMessageTimer > 0.0f)
         m_torchEmptyMessageTimer = std::max(0.0f, m_torchEmptyMessageTimer - deltaTime);
 
-    // Stones: auto-pickup (tryAutoPickupStones()) and throwing with G. Flight physics run in
-    // updateThrownStones() from render() (it needs this frame's enemy positions); here a stone is
-    // only spawned from the current camera position and direction.
+    // Stones: auto-pickup and throwing (G)
+    // Flight runs in updateThrownStones() from render(), which has this frame's enemy positions
     tryAutoPickupStones();
     if (m_player.consumeThrowStoneRequest())
     {
@@ -1520,8 +1596,8 @@ void DungeonScene::processInput(GLFWwindow* window, float deltaTime)
 #endif
 }
 
-// Diaries: reading screen and journal (see Diaries.h). Separate from processInput(): while
-// isReadingOverlayOpen(), Application calls tickReadingOverlayInput() instead.
+// Diary reading screen and journal
+// While isReadingOverlayOpen(), Application calls this instead of processInput().
 
 void DungeonScene::tickReadingOverlayInput(GLFWwindow* window)
 {
@@ -1531,8 +1607,7 @@ void DungeonScene::tickReadingOverlayInput(GLFWwindow* window)
     const bool upDown    = glfwGetKey(window, GLFW_KEY_UP)     == GLFW_PRESS;
     const bool downDown  = glfwGetKey(window, GLFW_KEY_DOWN)   == GLFW_PRESS;
 
-    // Confirm is E or Enter. Each is edge-triggered on its own, so holding one while releasing the
-    // other does not fire twice.
+    // E or Enter, each edge-triggered on its own so releasing one while holding the other does not fire twice.
     const bool confirmPressed =
         (eDown && !m_overlayEKeyWasDown) || (enterDown && !m_overlayEnterKeyWasDown);
 
@@ -1545,20 +1620,24 @@ void DungeonScene::tickReadingOverlayInput(GLFWwindow* window)
     {
         if (!m_diaries.empty())
         {
+            const int count = (int)m_diaries.size();
             if (upDown && !m_overlayUpKeyWasDown)
-                m_journalSelectedIndex = (m_journalSelectedIndex - 1 + (int)m_diaries.size()) % (int)m_diaries.size();
+            {
+                m_journalSelectedIndex = (m_journalSelectedIndex - 1 + count) % count;
+                UiAudio::PlayHover();
+            }
             if (downDown && !m_overlayDownKeyWasDown)
-                m_journalSelectedIndex = (m_journalSelectedIndex + 1) % (int)m_diaries.size();
+            {
+                m_journalSelectedIndex = (m_journalSelectedIndex + 1) % count;
+                UiAudio::PlayHover();
+            }
 
-            const bool selectionIsRead =
-                m_journalSelectedIndex >= 0 &&
-                m_journalSelectedIndex < (int)m_diariesRead.size() &&
-                m_diariesRead[(size_t)m_journalSelectedIndex];
-
-            // Confirm opens the selected row only if it is already read: the journal reveals that
-            // an unfound entry exists ("ENTRY N ---") but not its text.
-            if (confirmPressed && selectionIsRead)
-                m_openDiaryIndex = m_journalSelectedIndex;
+            // Entries are listed in read order; unread ones show that they exist, not their text
+            if (confirmPressed && journalEntryRead(m_journalSelectedIndex))
+            {
+                m_openDiaryIndex = m_diaryReadOrder[(size_t)m_journalSelectedIndex];
+                UiAudio::PlayClick();
+            }
         }
 
         if (tabDown && !m_overlayTabKeyWasDown)
@@ -1577,9 +1656,8 @@ bool DungeonScene::buildReadingOverlayGrid(std::vector<unsigned char>& grid, int
     grid.assign((size_t)std::max(0, cols) * std::max(0, rows), 0);
     if (!isReadingOverlayOpen()) return false;
 
-    // Readable text (prose, "LOG", journal labels) is drawn by TextRenderer on top, after
-    // ascii.end(), like Compass. This grid keeps only the fixed decorative parts (frame, blood
-    // drips, small hints): the grid font cannot scale text, one character is always one cell.
+    // Readable text is drawn by TextRenderer after ascii.end();
+    // the grid holds only the frame and decorations, since the grid font cannot scale
     int boxX0, boxY0, boxX1, boxY1;
     getReadingBoxBounds(cols, rows, boxX0, boxY0, boxX1, boxY1);
     MainMenu::DrawBox(grid, cols, rows, boxX0, boxY0, boxX1, boxY1,
@@ -1591,24 +1669,22 @@ bool DungeonScene::buildReadingOverlayGrid(std::vector<unsigned char>& grid, int
 
         MainMenu::PutText(grid, cols, rows, cols / 2 - 4, boxY1 - 1, "E CLOSE");
 
-        // Blood streaks along the frame's top and bottom edge; deterministic from poolIndex.
+        // Blood streaks on the top and bottom edges, fixed per story step
         for (int i = 0; i < 5; ++i)
         {
             const int span = std::max(1, (boxX1 - boxX0) - 4);
             const unsigned char dripGlyph = (i % 2 == 0) ? MainMenu::GLYPH_DRIP_BIG : MainMenu::GLYPH_DRIP_SMALL;
 
-            const unsigned int hTop = MainMenu::Hash(d.poolIndex * 97 + i, 4242);
+            const unsigned int hTop = MainMenu::Hash(d.storyStep * 97 + i, 4242);
             MainMenu::PutGlyph(grid, cols, rows, boxX0 + 2 + (int)(hTop % (unsigned)span), boxY0 + 1, dripGlyph);
 
-            const unsigned int hBot = MainMenu::Hash(d.poolIndex * 131 + i, 9001);
+            const unsigned int hBot = MainMenu::Hash(d.storyStep * 131 + i, 9001);
             MainMenu::PutGlyph(grid, cols, rows, boxX0 + 2 + (int)(hBot % (unsigned)span), boxY1 - 1, dripGlyph);
         }
     }
     else if (m_journalOpen)
     {
-        // The selected-row highlight is drawn by TextRenderer (Application.cpp:
-        // m_textRenderer.drawRect()) at the same pixel coordinates as the row label, so the two
-        // cannot drift apart.
+        // The selection highlight is drawn by TextRenderer at the same coordinates as the row label
         MainMenu::PutText(grid, cols, rows, cols / 2 - 10, boxY1 - 1, "TAB CLOSE, E READ");
     }
 
@@ -1617,25 +1693,21 @@ bool DungeonScene::buildReadingOverlayGrid(std::vector<unsigned char>& grid, int
 
 void DungeonScene::getReadingBoxBounds(int cols, int rows, int& x0, int& y0, int& x1, int& y1) const
 {
-    // One frame shared by both modes. Its bounds are computed here so Application can place
-    // TextRenderer text exactly inside it.
+    // Frame bounds, shared with Application to place TextRenderer text inside
     x0 = cols / 2 - 38; x1 = cols / 2 + 38;
     y0 = rows / 2 - 20; y1 = rows / 2 + 20;
 }
 
 void DungeonScene::spawnEnemiesAcrossMap(uint32_t seed)
 {
-    // One enemy per map sector so they do not clump (random points over the whole map could put
-    // several in one room). The sector grid is derived from kEnemyCount. Each spawn stays at least
-    // kMinDistFromPlayerSpawn away from the player's start.
+    // One enemy per map sector so they do not clump, each at least kMinDistFromPlayerSpawn from the player's start
     std::mt19937 rng(seed ^ 0x5EED0004u); // own RNG stream, independent of the other generators
 
     const glm::vec3 playerSpawnPos(6.5f, 0.0f, 6.5f);
     const float kMinDistFromPlayerSpawn = 8.0f;
     const int kAttemptsPerSector = 200;
 
-    // Nearest-to-square grid that fits kEnemyCount sectors (e.g. 7 enemies -> 3x3 with two sectors
-    // left empty); the sectors still cover the map evenly.
+    // Near-square grid with at least kEnemyCount sectors (7 enemies -> 3x3, two left empty)
     const int gridCols = (int)std::ceil(std::sqrt((double)std::max(1, kEnemyCount)));
     const int gridRows = (int)std::ceil((double)std::max(1, kEnemyCount) / (double)gridCols);
 
@@ -1648,7 +1720,7 @@ void DungeonScene::spawnEnemiesAcrossMap(uint32_t seed)
         const int sz = (i / gridCols) % gridRows;
 
         const int x0 = sx * sectorW;
-        // the last column extends to the map edge when mapW does not divide evenly
+        // The last column absorbs the remainder
         const int x1 = (sx == gridCols - 1) ? m_mapW : x0 + sectorW;
         const int z0 = sz * sectorH;
         const int z1 = (sz == gridRows - 1) ? m_mapH : z0 + sectorH;
@@ -1676,8 +1748,7 @@ void DungeonScene::spawnEnemiesAcrossMap(uint32_t seed)
 
         if (!found)
         {
-            // Fallback: scan the sector in order. Rare (tiny map, or a sector that is mostly
-            // walls), but deterministic and never leaves an enemy on a wall cell.
+            // Fallback scan in order: deterministic, never leaves an enemy on a wall
             for (int cz = z0; cz < z1 && !found; ++cz)
             {
                 for (int cx = x0; cx < x1 && !found; ++cx)
@@ -1703,8 +1774,7 @@ bool DungeonScene::isEnemyVisibleToPlayer(const glm::vec3& enemyPos) const
     toEnemy.y = 0.0f;
     const float dist = glm::length(toEnemy);
 
-    // Roughly the AI's own running sight range (kSightRadiusRun in EnemyAI.cpp): the player should
-    // not see an enemy from farther than the enemy could see the player.
+    // About the AI's running sight range: the player should not see farther than the enemy
     const float kPlayerSightRadius = 14.0f;
     if (dist > kPlayerSightRadius)
         return false;
@@ -1720,8 +1790,7 @@ bool DungeonScene::isEnemyVisibleToPlayer(const glm::vec3& enemyPos) const
         {
             front /= frontLen;
 
-            // Half view angle. The camera uses a 63° vertical FOV; 45° gives roughly 90° horizontal
-            // on a widescreen ratio, plus some margin for peripheral vision.
+            // 63 degree vertical FOV is about 90 degrees horizontal on widescreen, plus peripheral margin
             const float kPlayerFOVHalfAngleDeg = 45.0f;
             const float cosHalfFOV = std::cos(glm::radians(kPlayerFOVHalfAngleDeg));
             if (glm::dot(front, toEnemyDir) < cosHalfFOV)
@@ -1729,8 +1798,7 @@ bool DungeonScene::isEnemyVisibleToPlayer(const glm::vec3& enemyPos) const
         }
     }
 
-    // Same line-of-sight test as AI perception (LineOfSight::HasLineOfSight), with the camera as
-    // the observer.
+    // Same test as AI perception, with the camera as the observer
     const glm::vec2 fromXZ(playerPos.x, playerPos.z);
     const glm::vec2 toXZ(enemyPos.x, enemyPos.z);
     return LineOfSight::HasLineOfSight(
@@ -1742,8 +1810,7 @@ bool DungeonScene::isEnemyVisibleToPlayer(const glm::vec3& enemyPos) const
 
 void DungeonScene::spawnDevLightAtPlayerView()
 {
-    // Silently refuse past the shader array limit (devLightPos[8] in scene.frag/enemy.frag); this
-    // is a dev tool.
+    // devLightPos[8] in the shaders
     if ((int)m_devSpotlights.size() >= 8)
         return;
 
@@ -1767,14 +1834,13 @@ void DungeonScene::spawnDevDummyEnemyAtPlayerView()
     action.dummyWasActiveBefore = m_devDummyEnemyActive;
     m_devActionHistory.push_back(action);
 
-    // Place the dummy a reasonable distance ahead; at the camera point it would end up inside the
-    // player.
+    // A little ahead, not inside the player
     const glm::vec3 front = glm::normalize(m_player.getFront());
     const glm::vec3 spawnPos = m_player.camPos() + front * 2.0f;
 
     m_enemyAI.setPosition(spawnPos);
     m_testEnemy.setPosition(spawnPos);
-    // Faces the player. Same axis convention as EnemyAI.cpp: atan2(dir.x, dir.z).
+    // Faces the player; same axis convention as EnemyAI.cpp
     const float yawDeg = glm::degrees(std::atan2(-front.x, -front.z));
     m_testEnemy.setYawDegrees(yawDeg);
     m_testEnemy.setState(EnemyCharacter::State::Idle);
@@ -1803,8 +1869,7 @@ void DungeonScene::undoLastDevAction()
 
 void DungeonScene::cycleDevPalette()
 {
-    // -1 (zone palette) -> 0 -> ... -> kPaletteCount-1 -> back to -1. -1 is part of the cycle, so
-    // one key both cycles through palettes and returns to normal.
+    // Cycles -1 (zone palette) -> 0 .. kPaletteCount-1 -> -1
     m_devPaletteOverride++;
     if (m_devPaletteOverride >= Zoning::kPaletteCount)
         m_devPaletteOverride = -1;
@@ -1828,12 +1893,10 @@ glm::vec3 DungeonScene::getFront() const
 bool DungeonScene::init(){
     m_player.init();
 
-    // Standalone instance for the deceptive glitch sounds; not tied to any enemy.
+    // For the deceptive glitch sounds; not tied to an enemy
     m_glitchAudio.init();
 
-    // One-time GL init (scene shader, wall texture, compass, debug overlay). It is independent of
-    // any map, so it runs once here, before the first maze. newGame() can run repeatedly and does
-    // not touch any of this.
+    // One-time GL setup, independent of any map
     const std::string sceneVertSrc = ShaderLoader::LoadSource("assets/shaders/scene.vert");
     const std::string sceneFragSrc = ShaderLoader::LoadSource("assets/shaders/scene.frag");
     GLuint vs = compileShader(GL_VERTEX_SHADER, sceneVertSrc.c_str());
@@ -1841,20 +1904,16 @@ bool DungeonScene::init(){
     m_program = linkProgram(vs, fs);
     cacheUniformLocations();
 
-    // If the wall texture fails to load, walls render untextured (see wallTexLoaded in scene.frag);
-    // no crash.
+    // Without the texture, walls fall back to procedural bricks
     m_wallTex.load(WallTexture::kDefaultName);
 
-    // Wall-torch lit mask: a small R8 texture (kTorchLitMaskDim squared), initially fully lit
-    // (255). placeTorches()/resetTorchLitMask() fill it per map; this only allocates the GPU
-    // resource once.
+    // Wall torch lit mask (R8, kTorchLitMaskDim squared)
+    // Filled per map by placeTorches()/resetTorchLitMask()
     {
-        std::vector<unsigned char> allLit(
-            (size_t)kTorchLitMaskDim * kTorchLitMaskDim, 255);
+        std::vector<unsigned char> allLit((size_t)kTorchLitMaskDim * kTorchLitMaskDim, 255);
         glGenTextures(1, &m_torchLitMaskTex);
         glBindTexture(GL_TEXTURE_2D, m_torchLitMaskTex);
-        // GL_UNPACK_ALIGNMENT defaults to 4, which misaligns rows of single-byte data unless the
-        // width is a multiple of 4. Set it explicitly instead of relying on the size.
+        // Single-byte rows: the default alignment of 4 would misalign them
         glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
         glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, kTorchLitMaskDim, kTorchLitMaskDim,
                      0, GL_RED, GL_UNSIGNED_BYTE, allLit.data());
@@ -1870,9 +1929,7 @@ bool DungeonScene::init(){
     m_debugMapOverlay.create();
     m_playerTorch.init();
 
-    // Enemy: skeletal animation (see EnemyCharacter.h/SkinnedModel.h) with its own shader
-    // (enemy.vert/enemy.frag). Same lighting model as the scene (torch shadows, hand light, fog),
-    // but vertex color instead of wall textures.
+    // Enemy: skinned model with its own shader, lit like the scene
     {
         const std::string enemyVertSrc = ShaderLoader::LoadSource("assets/shaders/enemy.vert");
         const std::string enemyFragSrc = ShaderLoader::LoadSource("assets/shaders/enemy.frag");
@@ -1882,14 +1939,13 @@ bool DungeonScene::init(){
         cacheEnemyUniformLocations();
     }
 
-    // One enemy model shared by the dummy and all real enemies, loaded once; each gets a pointer.
-    // If the file is missing, no enemy is drawn; no crash. The diffuse texture is not loaded here
-    // (load() defaults to loadDiffuseTexture=false); see the note where hasDiffuseTex is set.
+    // One model shared by all enemies. A missing file means no enemies are drawn
+    // Loaded without the diffuse texture (see hasDiffuseTex in render())
     const bool enemyModelLoaded = m_enemySharedModel.load("assets/models/enemy/the_wrapped.glb");
     if (!enemyModelLoaded)
     {
         std::fprintf(stderr,
-            "[EnemyCharacter] no model at assets/models/enemy/the_wrapped.glb — "
+            "[EnemyCharacter] no model at assets/models/enemy/the_wrapped.glb: "
             "enemies will not render until this file is provided (see EnemyCharacter.h).\n");
     }
 
@@ -1903,14 +1959,12 @@ bool DungeonScene::init(){
         c.setClipName(EnemyCharacter::State::Scream,   "Scream");
     };
 
-    // Dev dummy (K key): position and state are driven by EnemyAI (m_enemyAI.update() in render()).
-    // Here only the shared model and the clip mapping are attached.
+    // The dev dummy does not think; spawnDevDummyEnemyAtPlayerView() places it
     m_testEnemy.attachSharedModel(enemyModelLoaded ? &m_enemySharedModel : nullptr);
     if (m_testEnemy.isLoaded())
         assignClipNames(m_testEnemy);
 
-    // Flickering silhouette of the unreliable-vision effect: another standalone EnemyCharacter on
-    // the shared model, driven by updateGlitchEffects() instead of AI.
+    // The glitch silhouette, driven by updateGlitchEffects() instead of AI
     m_glitchGhost.attachSharedModel(enemyModelLoaded ? &m_enemySharedModel : nullptr);
     if (m_glitchGhost.isLoaded())
         assignClipNames(m_glitchGhost);
@@ -1922,8 +1976,7 @@ bool DungeonScene::init(){
             assignClipNames(m_enemies[i]);
     }
 
-    // The session's first map, used only as the main menu background (see
-    // generateMenuBackgroundMaze()).
+    // The first map only serves as the menu background
     generateMenuBackgroundMaze();
 
     return m_program != 0 && m_compass.isReady();
@@ -1951,8 +2004,8 @@ void DungeonScene::cacheUniformLocations()
     m_uniViewmodelSway        = glGetUniformLocation(m_program, "uViewmodelSway");
     m_uniTime              = glGetUniformLocation(m_program, "uTime");
     m_uniRenderDistance    = glGetUniformLocation(m_program, "renderDistance");
-    m_uniMonumentFadeAlpha = glGetUniformLocation(m_program, "uMonumentFadeAlpha");
-    m_uniMapTex            = glGetUniformLocation(m_program, "mapTex");
+    m_uniDepthOnly         = glGetUniformLocation(m_program, "uDepthOnly");
+    m_uniAlpha             = glGetUniformLocation(m_program, "uAlpha");
     m_uniWallTex           = glGetUniformLocation(m_program, "wallTex");
     m_uniWallTexEnabled    = glGetUniformLocation(m_program, "wallTexEnabled");
     m_uniWallTexContrast   = glGetUniformLocation(m_program, "wallTexContrast");
@@ -1961,11 +2014,8 @@ void DungeonScene::cacheUniformLocations()
     m_uniTorchColor        = glGetUniformLocation(m_program, "torchColor");
     m_uniTorchIntensity    = glGetUniformLocation(m_program, "torchIntensity");
     m_uniTorchCount        = glGetUniformLocation(m_program, "torchCount");
-    // Columns: the shader needs them for the ray-vs-circle shadow test, since a column cell is
-    // floor in the map texture and would not cast a shadow by itself.
-    m_uniColumnPos         = glGetUniformLocation(m_program, "columnPos");
-    m_uniColumnCount       = glGetUniformLocation(m_program, "columnCount");
-    m_uniColumnRadius      = glGetUniformLocation(m_program, "columnRadius");
+    m_uniTorchShadowRow    = glGetUniformLocation(m_program, "torchShadowRow");
+    m_uniTorchShadowMap    = glGetUniformLocation(m_program, "uTorchShadowMap");
 
     m_uniEnemyOccluderPosXZ  = glGetUniformLocation(m_program, "enemyOccluderPosXZ");
     m_uniEnemyOccluderCount  = glGetUniformLocation(m_program, "enemyOccluderCount");
@@ -1994,10 +2044,8 @@ void DungeonScene::cacheEnemyUniformLocations()
     m_uEnemyTorchColor           = glGetUniformLocation(m_enemyProgram, "torchColor");
     m_uEnemyTorchIntensity       = glGetUniformLocation(m_enemyProgram, "torchIntensity");
     m_uEnemyTorchCount           = glGetUniformLocation(m_enemyProgram, "torchCount");
-    m_uEnemyMapTex               = glGetUniformLocation(m_enemyProgram, "mapTex");
-    m_uEnemyColumnPos            = glGetUniformLocation(m_enemyProgram, "columnPos");
-    m_uEnemyColumnCount          = glGetUniformLocation(m_enemyProgram, "columnCount");
-    m_uEnemyColumnRadius         = glGetUniformLocation(m_enemyProgram, "columnRadius");
+    m_uEnemyTorchShadowRow       = glGetUniformLocation(m_enemyProgram, "torchShadowRow");
+    m_uEnemyTorchShadowMap       = glGetUniformLocation(m_enemyProgram, "uTorchShadowMap");
     m_uEnemyRenderDistance       = glGetUniformLocation(m_enemyProgram, "renderDistance");
     m_uEnemyDiffuseTex           = glGetUniformLocation(m_enemyProgram, "diffuseTex");
     m_uEnemyHasDiffuseTex        = glGetUniformLocation(m_enemyProgram, "hasDiffuseTex");
@@ -2010,14 +2058,14 @@ void DungeonScene::shutdown()
     m_debugMapOverlay.destroy();
 
     m_geometry.destroy();
+    m_torchShadowMap.destroy();
 
     m_playerTorch.destroy();
 
     m_testEnemy.destroy();
     for (int i = 0; i < kEnemyCount; ++i)
         m_enemies[i].destroy();
-    // The only place the shared model's GPU resources are freed: neither m_testEnemy nor
-    // m_enemies[] own them.
+    // The only owner of the shared model's GPU resources
     m_enemySharedModel.destroy();
     if (m_enemyProgram)
     {
@@ -2035,8 +2083,7 @@ void DungeonScene::shutdown()
         m_torchLitMaskTex = 0;
     }
 
-    // Stone buffers are created lazily. They may not exist if the player never went near or threw a
-    // stone, hence the zero check.
+    // Created lazily, may not exist
     if (m_stonePickupVao)
     {
         glDeleteVertexArrays(1, &m_stonePickupVao);
@@ -2058,708 +2105,343 @@ void DungeonScene::shutdown()
         glDeleteBuffers(1, &m_landmarkPropEbo);
         m_landmarkPropVao = m_landmarkPropVbo = m_landmarkPropEbo = 0;
     }
-    if (m_winMonumentVao)
+    for (GLuint* vao : { &m_exitDoorVao, &m_donutVao })
     {
-        glDeleteVertexArrays(1, &m_winMonumentVao);
-        glDeleteBuffers(1, &m_winMonumentVbo);
-        glDeleteBuffers(1, &m_winMonumentEbo);
-        m_winMonumentVao = m_winMonumentVbo = m_winMonumentEbo = 0;
+        if (*vao)
+            glDeleteVertexArrays(1, vao);
+        *vao = 0;
     }
-    // A new map has an intact pedestal. Reset the win-sequence state, otherwise starting a new game
-    // mid-sequence would leave the donut floating without a pedestal.
-    m_winSequenceState = WinSequenceState::None;
-    m_winSequenceTimer = 0.0f;
-    m_winMonumentFadeAlpha = 1.0f;
-    m_winMonumentBuiltOnce = false;
+    for (GLuint* buffer : { &m_exitDoorVbo, &m_exitDoorEbo, &m_donutVbo, &m_donutEbo })
+    {
+        if (*buffer)
+            glDeleteBuffers(1, buffer);
+        *buffer = 0;
+    }
+    m_donutIndexCount = 0;
+    m_exitDoorBuiltOnce = false;
 
     if (m_program)
     {
-        glDeleteProgram(
-            m_program
-        );
+        glDeleteProgram(m_program);
 
         m_program = 0;
     }
 }
 
-void DungeonScene::render(
-    int viewportWidth,
-    int viewportHeight,
-    bool gameplayActive)
+void DungeonScene::uploadDevLights(GLint posLoc, GLint dirLoc, GLint countLoc) const
+{
+    glm::vec3 positions[8];
+    glm::vec3 directions[8];
+    const int count = std::min((int)m_devSpotlights.size(), 8);
+    for (int i = 0; i < count; ++i)
+    {
+        positions[i] = m_devSpotlights[(size_t)i].position;
+        directions[i] = m_devSpotlights[(size_t)i].direction;
+    }
+    if (count > 0)
+    {
+        glUniform3fv(posLoc, count, glm::value_ptr(positions[0]));
+        glUniform3fv(dirLoc, count, glm::value_ptr(directions[0]));
+    }
+    glUniform1i(countLoc, count);
+}
+
+void DungeonScene::render(int viewportWidth, int viewportHeight, bool gameplayActive)
 {
     m_minimapFog.updateMinimap(
         m_mapW, m_mapH, m_map, m_player.camPos(), m_player.yaw(),
         [this](int x, int z) { return isWall(x, z); },
-        m_torchCellLookup,
-        m_guideTorchCellLookup,
-        m_diaryReadWallLookup
-    );
+        m_torchCellLookup, m_guideTorchCellLookup, m_diaryReadWallLookup);
 
+    // Overlays drawn after the previous frame may leave blending on
+    // Opaque geometry must not blend: flames and handles write alpha 0 (an ASCII edge mask) and would turn black
     glEnable(GL_DEPTH_TEST);
+    glDisable(GL_BLEND);
 
-    glm::vec3 front =
-    getFront();
+    const glm::vec3 front = getFront();
+    const glm::vec3 renderCamPos = m_player.getCameraRenderPosition();
+    const glm::mat4 view = glm::lookAt(renderCamPos, renderCamPos + front, m_player.getCameraRenderUp());
 
-    glm::vec3 renderCamPos =
-        m_player.getCameraRenderPosition();
-
-    glm::vec3 renderCamUp =
-        m_player.getCameraRenderUp();
-
-    glm::mat4 view =
-        glm::lookAt(
-            renderCamPos,
-            renderCamPos + front,
-            renderCamUp
-        );
-
-    float aspect =
-        (float)viewportWidth /
-        (float)viewportHeight;
-
-    // Draw/fog distance. Always 16 for a regular player: the multiplier is 1.0 without DevTools or
-    // outside noclip. In noclip it is adjusted with +/- for cinematic shots.
+    // 16 for a regular player; +/- scale it in noclip (DevTools.h)
     const float kBaseRenderDistance = 16.0f;
     m_currentRenderDistance = kBaseRenderDistance * getViewDistanceMultiplier();
 
-    glm::mat4 proj =
-        glm::perspective(
-            glm::radians(63.0f),
-            aspect,
-            0.05f,
-            std::max(50.0f, m_currentRenderDistance + 10.0f)
-        );
+    const float aspect = (float)viewportWidth / (float)viewportHeight;
+    const glm::mat4 proj = glm::perspective(glm::radians(63.0f), aspect, nearPlane(), farPlane());
+    const float now = (float)glfwGetTime();
 
     glUseProgram(m_program);
+    glUniformMatrix4fv(m_uniView, 1, GL_FALSE, glm::value_ptr(view));
+    glUniformMatrix4fv(m_uniProjection, 1, GL_FALSE, glm::value_ptr(proj));
+    glUniform3fv(m_uniCamPos, 1, glm::value_ptr(renderCamPos));
+    glUniformMatrix4fv(m_uniInvView, 1, GL_FALSE, glm::value_ptr(glm::inverse(view)));
+    glUniform1f(m_uniTime, now);
+    glUniform1f(m_uniRenderDistance, m_currentRenderDistance);
+    glUniform1i(m_uniDepthOnly, 0);
+    glUniform1f(m_uniAlpha, 1.0f);
 
-    glUniformMatrix4fv(
-        m_uniView,
-        1,
-        GL_FALSE,
-        glm::value_ptr(view)
-    );
+    // The hand light starts at the camera: the viewmodel flame can end up inside a wall when the player hugs it torch
+    // Blend fades it with the raise/lower animation
 
-    glUniformMatrix4fv(
-        m_uniProjection,
-        1,
-        GL_FALSE,
-        glm::value_ptr(proj)
-    );
+    const glm::vec3 handLightColor(1.0f, 0.60f, 0.15f);
+    const float handLightIntensity = m_player.torchBlend();
+    glUniform3fv(m_uniPlayerLightPos, 1, glm::value_ptr(renderCamPos));
+    glUniform3fv(m_uniPlayerLightDir, 1, glm::value_ptr(glm::normalize(front)));
+    glUniform3fv(m_uniPlayerLightColor, 1, glm::value_ptr(handLightColor));
+    glUniform1f(m_uniPlayerLightIntensity, handLightIntensity);
 
-    glUniform3fv(
-        m_uniCamPos,
-        1,
-        glm::value_ptr(renderCamPos)
-    );
-
-    // The hand torch is static in camera space (see PlayerTorchViewmodel.h). scene.vert
-    // (uIsViewmodelDraw) reconstructs world coordinates with the inverse view matrix, computed once
-    // per frame here instead of once per vertex.
-
-    const glm::mat4 invView = glm::inverse(view);
-    glUniformMatrix4fv(
-        m_uniInvView,
-        1,
-        GL_FALSE,
-        glm::value_ptr(invView)
-    );
-
-    // Light originates from the camera position, not from the viewmodel's flame point. That point
-    // sits ~0.46 units ahead and can end up inside a wall when the player stands close to it, which
-    // made the light vanish near walls. The camera position can never be inside a wall.
-    glUniform3fv(
-        m_uniPlayerLightPos,
-        1,
-        glm::value_ptr(renderCamPos)
-    );
-    glUniform3fv(
-        m_uniPlayerLightDir,
-        1,
-        glm::value_ptr(glm::normalize(front))
-    );
-    // Warm orange like the torch flames; a neutral white would read like a flashlight.
-    glUniform3f(
-        m_uniPlayerLightColor,
-        1.0f, 0.60f, 0.15f
-    );
-    glUniform1f(
-        m_uniPlayerLightIntensity,
-        // torchBlend fades the light out while the torch is lowered, on the same curve as the model
-        // animation.
-        1.0f * m_player.torchBlend()
-    );
-
-    if (!m_devSpotlights.empty())
-    {
-        std::vector<glm::vec3> devLightPositions;
-        std::vector<glm::vec3> devLightDirections;
-        devLightPositions.reserve(m_devSpotlights.size());
-        devLightDirections.reserve(m_devSpotlights.size());
-        for (const DevSpotlight& light : m_devSpotlights)
-        {
-            devLightPositions.push_back(light.position);
-            devLightDirections.push_back(light.direction);
-        }
-        glUniform3fv(m_uniDevLightPos, (int)devLightPositions.size(), glm::value_ptr(devLightPositions[0]));
-        glUniform3fv(m_uniDevLightDir, (int)devLightDirections.size(), glm::value_ptr(devLightDirections[0]));
-    }
-    glUniform1i(m_uniDevLightCount, (int)m_devSpotlights.size());
+    uploadDevLights(m_uniDevLightPos, m_uniDevLightDir, m_uniDevLightCount);
     glUniform1i(m_uniDevPaletteOverride, m_devPaletteOverride);
 
-    glUniform1f(
-        m_uniTime,
-        (float)glfwGetTime()
-    );
-
-    // Unreliable-vision torch tremble: index -1 means none. The shader's torchId == -1.0 test never
-    // matches a real index (always >= 0).
+    // -1 = no torch is trembling; real indices are >= 0
     glUniform1f(m_uniGlitchTorchIndex, (float)m_torchGlitchIndex);
     glUniform1f(m_uniGlitchTorchUntilTime, (float)m_torchGlitchUntilTime);
 
-    glUniform1f(
-        m_uniRenderDistance,
-        m_currentRenderDistance
-    );
-
-    glActiveTexture(
-        GL_TEXTURE0
-    );
-
-    glBindTexture(
-        GL_TEXTURE_2D,
-        m_minimapFog.mapTexture()
-    );
-
-    glUniform1i(
-        m_uniMapTex,
-        0
-    );
-
+    // Texture units:
+    // 0 = torch shadow map
+    // 1 = wall texture
+    // 2 = torch lit mask
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, m_torchShadowMap.texture());
+    glUniform1i(m_uniTorchShadowMap, 0);
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_2D, m_wallTex.id());
     glUniform1i(m_uniWallTex, 1);
     glUniform1f(m_uniWallTexEnabled, m_wallTex.id() != 0 ? 1.0f : 0.0f);
     glUniform1f(m_uniWallTexContrast, m_wallTex.contrast);
-    glActiveTexture(GL_TEXTURE0);
-
-    // Taken-torch lit mask on texture unit 2 (0 = map, 1 = wall texture).
     glActiveTexture(GL_TEXTURE2);
     glBindTexture(GL_TEXTURE_2D, m_torchLitMaskTex);
     glUniform1i(m_uniTorchLitMask, 2);
     glActiveTexture(GL_TEXTURE0);
 
     m_lighting.update(m_player.camPos(), m_currentRenderDistance, MAX_ACTIVE_TORCHES,
-                       m_torchFlamePos, m_torchColor, m_torchIntensity,
-                       glfwGetTime());
-
-    const std::vector<glm::vec3>& activeTorchPos = m_lighting.activePositions();
-    const std::vector<glm::vec3>& activeTorchColor = m_lighting.activeColors();
-    const std::vector<float>& activeTorchIntensity = m_lighting.activeIntensities();
-    int count = m_lighting.activeCount();
-
-    if (count > 0)
-    {
-        glUniform3fv(
-            m_uniTorchPos,
-            count,
-            glm::value_ptr(
-                activeTorchPos[0]
-            )
-        );
-
-        glUniform3fv(
-            m_uniTorchColor,
-            count,
-            glm::value_ptr(
-                activeTorchColor[0]
-            )
-        );
-
-        glUniform1fv(
-            m_uniTorchIntensity,
-            count,
-            activeTorchIntensity.data()
-        );
-    }
-
-    glUniform1i(
-        m_uniTorchCount,
-        count
-    );
-
-    // Columns for the ray-vs-circle shadow test. They are rare, so the whole list is uploaded
-    // (capped at the shader array size, MAX_COLUMNS) instead of picking the nearest N.
-
-    {
-        const int columnCount = std::min((int)m_columnCentersXZ.size(), 16); // MAX_COLUMNS in scene.frag
-        if (columnCount > 0)
+                      m_torchFlamePos, m_torchColor, m_torchIntensity, now);
+    const int torchCount = m_lighting.activeCount();
+    auto uploadTorches = [&](GLint posLoc, GLint colorLoc, GLint intensityLoc, GLint rowLoc, GLint countLoc) {
+        if (torchCount > 0)
         {
-            glUniform2fv(
-                m_uniColumnPos,
-                columnCount,
-                glm::value_ptr(m_columnCentersXZ[0])
-            );
+            glUniform3fv(posLoc, torchCount, glm::value_ptr(m_lighting.activePositions()[0]));
+            glUniform3fv(colorLoc, torchCount, glm::value_ptr(m_lighting.activeColors()[0]));
+            glUniform1fv(intensityLoc, torchCount, m_lighting.activeIntensities().data());
+            glUniform1iv(rowLoc, torchCount, m_lighting.activeIndices().data());
         }
-        glUniform1i(m_uniColumnCount, columnCount);
-        glUniform1f(m_uniColumnRadius, Columns::kColumnRadius);
-    }
+        glUniform1i(countLoc, torchCount);
+    };
+    uploadTorches(m_uniTorchPos, m_uniTorchColor, m_uniTorchIntensity, m_uniTorchShadowRow, m_uniTorchCount);
 
-    // Enemy XZ positions go into a small uniform array (no extra pass or texture), culled by
-    // distance: each enemy multiplies the per-torch shadow cost, so distant ones that cannot affect
-    // the frame are not uploaded.
+    // Enemy shadow casters. Each one costs a test per lit pixel and torch, so only enemies that can be within reach of a visible torch are uploaded (mewomeow)
     {
-        const glm::vec3 camPosXZ = m_player.camPos();
-        // margin for a torch right at the draw-distance edge
+        const glm::vec3 cam = m_player.camPos();
         const float cullRadius = m_currentRenderDistance + 2.0f;
-        const float cullRadiusSq = cullRadius * cullRadius;
-
         auto withinCullRadius = [&](const glm::vec3& p) {
-            const float dx = p.x - camPosXZ.x;
-            const float dz = p.z - camPosXZ.z;
-            return (dx * dx + dz * dz) <= cullRadiusSq;
+            const float dx = p.x - cam.x, dz = p.z - cam.z;
+            return dx * dx + dz * dz <= cullRadius * cullRadius;
         };
 
         m_enemyOccluderScratch.clear();
         for (int i = 0; i < kEnemyCount; ++i)
         {
-            if (m_enemies[i].isLoaded())
+            if (m_enemies[i].isLoaded() && withinCullRadius(m_enemyAIs[i].position()))
             {
                 const glm::vec3 p = m_enemyAIs[i].position();
-                if (withinCullRadius(p))
-                    m_enemyOccluderScratch.push_back(glm::vec2(p.x, p.z));
+                m_enemyOccluderScratch.emplace_back(p.x, p.z);
             }
         }
-        if (m_devDummyEnemyActive && m_testEnemy.isLoaded())
+        if (m_devDummyEnemyActive && m_testEnemy.isLoaded() && withinCullRadius(m_testEnemy.position()))
         {
             const glm::vec3 p = m_testEnemy.position();
-            if (withinCullRadius(p))
-                m_enemyOccluderScratch.push_back(glm::vec2(p.x, p.z));
+            m_enemyOccluderScratch.emplace_back(p.x, p.z);
         }
 
-        // MAX_ENEMY_OCCLUDERS in scene.frag
-        const int enemyOccluderCount = std::min((int)m_enemyOccluderScratch.size(), 8);
-        if (enemyOccluderCount > 0)
-        {
-            glUniform2fv(m_uniEnemyOccluderPosXZ, enemyOccluderCount,
-                         glm::value_ptr(m_enemyOccluderScratch[0]));
-        }
-        glUniform1i(m_uniEnemyOccluderCount, enemyOccluderCount);
+        const int occluderCount = std::min((int)m_enemyOccluderScratch.size(), 8); // MAX_ENEMY_OCCLUDERS
+        if (occluderCount > 0)
+            glUniform2fv(m_uniEnemyOccluderPosXZ, occluderCount, glm::value_ptr(m_enemyOccluderScratch[0]));
+        glUniform1i(m_uniEnemyOccluderCount, occluderCount);
 
-        // Radius is the silhouette's shoulder width; height is the in-world enemy height (bind pose
-        // 1.75 * kModelScale 0.6 = 1.05). Keep in sync if kModelScale changes.
-        const float kEnemyOccluderRadius = 0.30f;
-        const float kEnemyOccluderHeight = 1.05f;
-        glUniform1f(m_uniEnemyOccluderRadius, kEnemyOccluderRadius);
-        glUniform1f(m_uniEnemyOccluderHeight, kEnemyOccluderHeight);
+        // Shoulder width and in-world height (bind pose 1.75 * kModelScale 0.6)
+        glUniform1f(m_uniEnemyOccluderRadius, 0.30f);
+        glUniform1f(m_uniEnemyOccluderHeight, 1.05f);
     }
 
-    // Frustum and distance culling: each chunk's AABB (see buildGeometry()) is tested against the
-    // camera frustum and the render/fog distance, so chunks behind the player or beyond the fog
-    // cost no GPU work.
-
+    // Chunk culling: PVS from the camera's chunk, then distance, then frustum
+    // The distance slack keeps chunks from popping while they are still fading in
     glm::vec4 frustumPlanes[6];
     Culling::ExtractFrustumPlanes(proj * view, frustumPlanes);
-
-    // Slack beyond the fog distance so chunks do not pop out while still fading in.
     const float cullDistance = m_currentRenderDistance + (float)SceneGeometry::kChunkSize;
     const float cullDistanceSq = cullDistance * cullDistance;
 
-    auto chunkWithinRange = [&](const GeoChunk& c) {
-        glm::vec3 closest = glm::clamp(renderCamPos, c.aabbMin, c.aabbMax);
-        glm::vec3 delta = closest - renderCamPos;
-        return glm::dot(delta, delta) <= cullDistanceSq;
-    };
-
-    // Visibility is computed once per chunk and shared by both draw passes.
-    // m_chunkPvsMask[camChunk] is a conservative superset of possibly visible chunks
-    // (buildChunkPVS(), computed at load); it complements the frustum/distance test. Point-sampled
-    // occlusion culling was tried and removed: it produced black holes through narrow or diagonal
-    // gaps.
     int camChunk = -1;
     if (m_geometry.pvsEnabled() && m_geometry.chunksX() > 0 && m_mapW > 0 && m_mapH > 0)
     {
-        int camCellX = std::clamp((int)std::floor(renderCamPos.x), 0, m_mapW - 1);
-        int camCellZ = std::clamp((int)std::floor(renderCamPos.z), 0, m_mapH - 1);
-        camChunk = (camCellZ / SceneGeometry::kChunkSize) * m_geometry.chunksX() + (camCellX / SceneGeometry::kChunkSize);
-        if (camChunk < 0 || camChunk >= (int)m_geometry.pvsMask().size())
+        const int camCellX = std::clamp((int)std::floor(renderCamPos.x), 0, m_mapW - 1);
+        const int camCellZ = std::clamp((int)std::floor(renderCamPos.z), 0, m_mapH - 1);
+        camChunk = (camCellZ / SceneGeometry::kChunkSize) * m_geometry.chunksX() + camCellX / SceneGeometry::kChunkSize;
+        if (camChunk >= (int)m_geometry.pvsMask().size())
             camChunk = -1;
     }
-    const bool pvsUsable = (camChunk >= 0);
-    const uint64_t camPvsMask = pvsUsable ? m_geometry.pvsMask()[(size_t)camChunk] : ~0ull;
+    const uint64_t camPvsMask = camChunk >= 0 ? m_geometry.pvsMask()[(size_t)camChunk] : ~0ull;
 
-    // Per-frame scratch vectors (m_chunkVisible, m_mainCounts, ...) are sized once by
-    // reserveRenderScratchBuffers(); clear() keeps their capacity, so the push_backs below do not
-    // allocate.
-    for (size_t i = 0; i < m_geometry.chunks().size(); ++i)
-    {
-        const GeoChunk& c = m_geometry.chunks()[i];
-
-        if ((c.mainIndexCount <= 0) && (c.particleCount <= 0))
-        {
-            m_chunkVisible[i] = 0;
-            continue;
-        }
-
-        if (pvsUsable && !((camPvsMask >> i) & 1ull))
-        {
-            m_chunkVisible[i] = 0;
-            continue;
-        }
-
-        if (!chunkWithinRange(c))
-        {
-            m_chunkVisible[i] = 0;
-            continue;
-        }
-
-        if (!Culling::AabbInFrustum(c.aabbMin, c.aabbMax, frustumPlanes))
-        {
-            m_chunkVisible[i] = 0;
-            continue;
-        }
-
-        m_chunkVisible[i] = 1;
-    }
-
-    // One glMultiDrawElements for all visible chunks instead of one glDrawElements per chunk, to
-    // cut draw-call overhead.
-
+    const std::vector<GeoChunk>& chunks = m_geometry.chunks();
     m_mainCounts.clear();
     m_mainOffsets.clear();
+    m_particleFirsts.clear();
+    m_particleCounts.clear();
+    int visibleChunks = 0, visibleTriangles = 0, visibleParticles = 0;
 
-    for (size_t i = 0; i < m_geometry.chunks().size(); ++i)
+    for (size_t i = 0; i < chunks.size(); ++i)
     {
-        const GeoChunk& chunk = m_geometry.chunks()[i];
-        if (!m_chunkVisible[i] || chunk.mainIndexCount <= 0)
+        const GeoChunk& c = chunks[i];
+        const glm::vec3 closest = glm::clamp(renderCamPos, c.aabbMin, c.aabbMax);
+        const glm::vec3 delta = closest - renderCamPos;
+        const bool visible = (c.mainIndexCount > 0 || c.particleCount > 0)
+            && (camChunk < 0 || ((camPvsMask >> i) & 1ull))
+            && glm::dot(delta, delta) <= cullDistanceSq
+            && Culling::AabbInFrustum(c.aabbMin, c.aabbMax, frustumPlanes);
+        m_chunkVisible[i] = visible ? 1 : 0;
+        if (!visible)
             continue;
 
-        m_mainCounts.push_back(chunk.mainIndexCount);
-        m_mainOffsets.push_back(
-            (const GLvoid*)(uintptr_t)(chunk.mainIndexFirst * sizeof(GLuint))
-        );
+        ++visibleChunks;
+        if (c.mainIndexCount > 0)
+        {
+            m_mainCounts.push_back(c.mainIndexCount);
+            m_mainOffsets.push_back((const GLvoid*)(uintptr_t)(c.mainIndexFirst * sizeof(GLuint)));
+            visibleTriangles += c.mainIndexCount / 3;
+        }
+        if (c.particleCount > 0)
+        {
+            m_particleFirsts.push_back(c.particleFirst);
+            m_particleCounts.push_back(c.particleCount);
+            visibleParticles += c.particleCount;
+        }
     }
+
+    m_lastVisibleTriangles = visibleTriangles;
+    m_lastVisibleChunkCount = visibleChunks;
+    m_lastVisibleParticles = visibleParticles;
+    m_lastActiveTorchCount = torchCount;
 
     if (!m_mainCounts.empty())
     {
         glBindVertexArray(m_geometry.vao());
 
-        glMultiDrawElements(
-            GL_TRIANGLES,
-            m_mainCounts.data(),
-            GL_UNSIGNED_INT,
-            m_mainOffsets.data(),
-            (GLsizei)m_mainCounts.size()
-        );
+        // Depth pre-pass: the lighting shader then runs once per visible pixel instead of once per
+        // overlapping wall. With depth writes off, the shading pass keeps early-Z despite discard.
+        glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+        glUniform1i(m_uniDepthOnly, 1);
+        glMultiDrawElements(GL_TRIANGLES, m_mainCounts.data(), GL_UNSIGNED_INT,
+                            m_mainOffsets.data(), (GLsizei)m_mainCounts.size());
+        glUniform1i(m_uniDepthOnly, 0);
+        glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+
+        glDepthFunc(GL_LEQUAL);
+        glDepthMask(GL_FALSE);
+        glMultiDrawElements(GL_TRIANGLES, m_mainCounts.data(), GL_UNSIGNED_INT,
+                            m_mainOffsets.data(), (GLsizei)m_mainCounts.size());
+        glDepthMask(GL_TRUE);
+        glDepthFunc(GL_LESS);
 
         glBindVertexArray(0);
     }
 
-    // Stones (lying and flying) use the same program as the main geometry; the uniforms are already
-    // set this frame. matId 0.0: plain diffuse geometry.
-    if (m_stonePickupIndexCount > 0)
-    {
-        glBindVertexArray(m_stonePickupVao);
-        glDrawElements(GL_TRIANGLES, m_stonePickupIndexCount, GL_UNSIGNED_INT, (const GLvoid*)0);
+    // Small dynamic meshes share the scene program; matId 0 = plain diffuse geometry
+    auto drawMesh = [](GLuint vao, int indexCount) {
+        if (indexCount <= 0)
+            return;
+        glBindVertexArray(vao);
+        glDrawElements(GL_TRIANGLES, indexCount, GL_UNSIGNED_INT, nullptr);
         glBindVertexArray(0);
-    }
-    if (m_thrownStoneIndexCount > 0)
+    };
+    drawMesh(m_stonePickupVao, m_stonePickupIndexCount);
+    drawMesh(m_thrownStoneVao, m_thrownStoneIndexCount);
+    drawMesh(m_landmarkPropVao, m_landmarkPropIndexCount);
+    drawMesh(m_exitDoorVao, m_exitDoorIndexCount);
+
+    if (m_donutIndexCount > 0 && m_winSequenceState == WinSequenceState::Spinning)
     {
-        glBindVertexArray(m_thrownStoneVao);
-        glDrawElements(GL_TRIANGLES, m_thrownStoneIndexCount, GL_UNSIGNED_INT, (const GLvoid*)0);
-        glBindVertexArray(0);
-    }
-    if (m_landmarkPropIndexCount > 0)
-    {
-        glBindVertexArray(m_landmarkPropVao);
-        glDrawElements(GL_TRIANGLES, m_landmarkPropIndexCount, GL_UNSIGNED_INT, (const GLvoid*)0);
-        glBindVertexArray(0);
-    }
-    if (m_winMonumentIndexCount > 0)
-    {
-        // Monument dissolve / spinning torus (WinSequenceState). Same VAO and shader as the props
-        // above, so it gets the ASCII post-process. Blending and depth-write-off are enabled only
-        // while alpha < 1: without depth writes the tube's far side shows through its near side.
-        const bool actuallyFading = m_winMonumentFadeAlpha < 0.999f;
-        glUniform1f(m_uniMonumentFadeAlpha, m_winMonumentFadeAlpha);
-        if (actuallyFading)
+        if (m_donutAlpha < 0.999f)
         {
+            // Depth first, then blend only the nearest surface:
+            // without it the donut's far side would show through its near side. Destination alpha (the ASCII edge mask) is kept
+            glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+            drawMesh(m_donutVao, m_donutIndexCount);
+            glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+
             glEnable(GL_BLEND);
-            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ZERO, GL_ONE);
+            glDepthFunc(GL_LEQUAL);
             glDepthMask(GL_FALSE);
-        }
-
-        glBindVertexArray(m_winMonumentVao);
-        glDrawElements(GL_TRIANGLES, m_winMonumentIndexCount, GL_UNSIGNED_INT, (const GLvoid*)0);
-        glBindVertexArray(0);
-
-        if (actuallyFading)
-        {
+            glUniform1f(m_uniAlpha, m_donutAlpha);
+            drawMesh(m_donutVao, m_donutIndexCount);
+            glUniform1f(m_uniAlpha, 1.0f);
             glDepthMask(GL_TRUE);
+            glDepthFunc(GL_LESS);
             glDisable(GL_BLEND);
         }
-    }
-
-    // Perf diagnostics: triangles, chunks and active torches submitted this frame, read by
-    // Application::tick()'s [perf] log so fps dips can be matched to what was on screen.
-    {
-        int totalIndices = 0;
-        for (GLsizei c : m_mainCounts)
-            totalIndices += (int)c;
-        m_lastVisibleTriangles = totalIndices / 3;
-
-        int visibleChunks = 0;
-        for (char v : m_chunkVisible)
-            if (v) visibleChunks++;
-        m_lastVisibleChunkCount = visibleChunks;
-
-        m_lastActiveTorchCount = count;
-    }
-
-    m_particleFirsts.clear();
-    m_particleCounts.clear();
-
-    for (size_t i = 0; i < m_geometry.chunks().size(); ++i)
-    {
-        const GeoChunk& chunk = m_geometry.chunks()[i];
-        if (!m_chunkVisible[i] || chunk.particleCount <= 0)
-            continue;
-
-        m_particleFirsts.push_back(chunk.particleFirst);
-        m_particleCounts.push_back(chunk.particleCount);
-    }
-
-    {
-        int totalParticles = 0;
-        for (GLsizei c : m_particleCounts)
-            totalParticles += (int)c;
-        m_lastVisibleParticles = totalParticles;
+        else
+        {
+            drawMesh(m_donutVao, m_donutIndexCount);
+        }
     }
 
     if (!m_particleFirsts.empty())
     {
-        glEnable(
-            GL_PROGRAM_POINT_SIZE
-        );
-
-        glEnable(
-            GL_BLEND
-        );
-
-        glBlendFunc(
-            GL_SRC_ALPHA,
-            GL_ONE
-        );
-
-        glDepthMask(
-            GL_FALSE
-        );
-
-        glBindVertexArray(
-            m_geometry.particleVao()
-        );
-
-        glMultiDrawArrays(
-            GL_POINTS,
-            m_particleFirsts.data(),
-            m_particleCounts.data(),
-            (GLsizei)m_particleFirsts.size()
-        );
-
-        glBindVertexArray(
-            0
-        );
-
-        glDepthMask(
-            GL_TRUE
-        );
-
-        glDisable(
-            GL_BLEND
-        );
-
-        glDisable(
-            GL_PROGRAM_POINT_SIZE
-        );
+        glEnable(GL_PROGRAM_POINT_SIZE);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+        glDepthMask(GL_FALSE);
+        glBindVertexArray(m_geometry.particleVao());
+        glMultiDrawArrays(GL_POINTS, m_particleFirsts.data(), m_particleCounts.data(),
+                          (GLsizei)m_particleFirsts.size());
+        glBindVertexArray(0);
+        glDepthMask(GL_TRUE);
+        glDisable(GL_BLEND);
+        glDisable(GL_PROGRAM_POINT_SIZE);
     }
 
-    // Torch sway: inertia on turning plus an idle breathing motion (uViewmodelSway in scene.vert).
-    // Computed from the difference between the current yaw and a lagging, smoothed copy of it.
+    updateViewmodelSway();
 
-    {
-        const double nowTime = glfwGetTime();
-        float dt = 0.0f;
-        if (m_playerTorchLagInit)
-        {
-            // Clamp dt so one huge step after a pause or lag cannot make the smoothing snap.
-            dt = (float)std::min(nowTime - m_playerTorchLastSwayTime, 0.1);
-        }
-        m_playerTorchLastSwayTime = nowTime;
-
-        const float currentYaw = m_player.yaw();
-        if (!m_playerTorchLagInit)
-        {
-            m_playerTorchLagYaw = currentYaw;
-            m_playerTorchLagInit = true;
-        }
-
-        // Shortest angular difference (correct across the ±180° wrap).
-        float yawDiff = currentYaw - m_playerTorchLagYaw;
-        yawDiff = std::fmod(yawDiff + 540.0f, 360.0f) - 180.0f;
-
-        // The lagging yaw chases the real one; a lower kLagSpeed means a longer, more visible lag
-        // on sharp turns.
-        const float kLagSpeed = 8.0f; // 1/sec
-        m_playerTorchLagYaw += yawDiff * std::min(1.0f, dt * kLagSpeed);
-
-        // Sign chosen so a left turn moves the torch right (+X in model space); flip it if the sway
-        // goes the wrong way.
-        const float kSwayScale = -0.010f;
-        float rawTargetSway = yawDiff * kSwayScale;
-
-        // Clamp the target amplitude: a sharp mouse flick (tens of degrees in one frame) would
-        // otherwise push the torch out of view.
-        const float kMaxSway = 0.08f;
-        rawTargetSway = std::clamp(rawTargetSway, -kMaxSway, kMaxSway);
-
-        // Second smoothing stage: the clamp bounds the target but yawDiff can still jump within one
-        // frame on a sharp mouse move, so the visible offset chases the target through its own
-        // continuous variable.
-        const float kSwayVisualSpeed = 25.0f; // 1/sec: how fast the visible offset catches up to the target
-        m_playerTorchSwayVisual +=
-            (rawTargetSway - m_playerTorchSwayVisual) * std::min(1.0f, dt * kSwayVisualSpeed);
-
-        const float swayX = m_playerTorchSwayVisual;
-
-        // Idle breathing: a small time-based sine, independent of turning, so the torch is never
-        // completely frozen.
-        const float idleBobX = std::sin((float)nowTime * 1.3f) * 0.006f;
-        const float idleBobY = std::sin((float)nowTime * 1.7f + 1.0f) * 0.005f;
-
-        // Walk/run bob uses its own phase accumulator (m_playerTorchBobPhase) instead of time, so
-        // the frequency follows footstep speed and the bob stops the moment the player does.
-        // Running has a higher frequency and a larger amplitude.
-        const bool isMoving = m_player.isMoving();
-        const bool isRunning = m_player.isRunning();
-
-        const float walkBobFreq = 6.0f;
-        const float runBobFreq = 8.0f;
-        const float bobFreq = isRunning ? runBobFreq : walkBobFreq;
-
-        if (isMoving)
-            m_playerTorchBobPhase += dt * bobFreq;
-
-        const float walkBobAmp = 0.010f;
-        const float runBobAmp = 0.016f;
-        const float bobAmp = isRunning ? runBobAmp : walkBobAmp;
-
-        const float targetMoveBlend = isMoving ? 1.0f : 0.0f;
-        const float moveBlendSpeed = isRunning ? 12.0f : 10.0f;
-        m_playerTorchMoveBlend += (targetMoveBlend - m_playerTorchMoveBlend) * std::min(1.0f, dt * moveBlendSpeed);
-
-        const float walkRunBobY = m_playerTorchMoveBlend * std::sin(m_playerTorchBobPhase * 2.0f) * bobAmp;
-
-        // Raise/lower on LMB (PlayerController::torchBlend()): shifts the model far enough down to
-        // leave the frame when put away (0), rising smoothly toward 1.
-        const float torchBlend = m_player.torchBlend();
-        const float raiseOffsetY = -(1.0f - torchBlend) * 0.9f;
-
-        glUniform2f(m_uniViewmodelSway, swayX + idleBobX, idleBobY + walkRunBobY + raiseOffsetY);
-    }
-
-    // The viewmodel geometry is static, but uIsViewmodelDraw must be set while drawing it so
-    // scene.vert treats its coordinates as camera-local. Turn it off right after: otherwise the
-    // rest of the geometry would also go through inverse(view), which is slower and wrong.
-
-    glUniform1i(m_uniIsViewmodelDraw, 1);
-    // Torch fuel (uViewmodelTorchFuel): set before draw() because the flame animation reads it in
-    // the shader.
-    glUniform1f(m_uniViewmodelTorchFuel, m_player.torchFuel());
-    m_playerTorch.draw();
-    glUniform1i(m_uniIsViewmodelDraw, 0);
-
-    // Enemy pass: a separate shader (enemy.vert/enemy.frag), so glUseProgram is called again and
-    // the shared values (camera, torches, columns, hand light, fog) are uploaded to that program's
-    // uniform locations.
-
-    // Whether anything needs drawing this frame: any real enemy or the dev dummy. Shared uniforms
-    // (camera, lighting, torches, palette) are set once here, before the enemy loop.
     bool anyEnemyToDraw = m_devDummyEnemyActive && m_testEnemy.isLoaded();
     for (int i = 0; i < kEnemyCount && !anyEnemyToDraw; ++i)
         anyEnemyToDraw = m_enemies[i].isLoaded();
-    // The glitch silhouette uses the same enemy pass; if it is the only thing active, the pass
-    // still has to run.
     if (!anyEnemyToDraw)
         anyEnemyToDraw = m_silhouetteActiveTimer > 0.0f && m_glitchGhost.isLoaded();
 
     if (anyEnemyToDraw)
     {
         glUseProgram(m_enemyProgram);
-
         glUniformMatrix4fv(m_uEnemyView, 1, GL_FALSE, glm::value_ptr(view));
         glUniformMatrix4fv(m_uEnemyProjection, 1, GL_FALSE, glm::value_ptr(proj));
         glUniform3fv(m_uEnemyCamPos, 1, glm::value_ptr(renderCamPos));
-        glUniform1f(m_uEnemyTime, (float)glfwGetTime());
+        glUniform1f(m_uEnemyTime, now);
         glUniform1f(m_uEnemyRenderDistance, m_currentRenderDistance);
 
         glUniform3fv(m_uEnemyPlayerLightPos, 1, glm::value_ptr(renderCamPos));
         glUniform3fv(m_uEnemyPlayerLightDir, 1, glm::value_ptr(glm::normalize(front)));
-        glUniform3f(m_uEnemyPlayerLightColor, 1.0f, 0.60f, 0.15f);
-        glUniform1f(m_uEnemyPlayerLightIntensity, 1.0f * m_player.torchBlend());
+        glUniform3fv(m_uEnemyPlayerLightColor, 1, glm::value_ptr(handLightColor));
+        glUniform1f(m_uEnemyPlayerLightIntensity, handLightIntensity);
 
-        if (!m_devSpotlights.empty())
-        {
-            std::vector<glm::vec3> devLightPositions;
-            std::vector<glm::vec3> devLightDirections;
-            devLightPositions.reserve(m_devSpotlights.size());
-            devLightDirections.reserve(m_devSpotlights.size());
-            for (const DevSpotlight& light : m_devSpotlights)
-            {
-                devLightPositions.push_back(light.position);
-                devLightDirections.push_back(light.direction);
-            }
-            glUniform3fv(m_uEnemyDevLightPos, (int)devLightPositions.size(), glm::value_ptr(devLightPositions[0]));
-            glUniform3fv(m_uEnemyDevLightDir, (int)devLightDirections.size(), glm::value_ptr(devLightDirections[0]));
-        }
-        glUniform1i(m_uEnemyDevLightCount, (int)m_devSpotlights.size());
+        uploadDevLights(m_uEnemyDevLightPos, m_uEnemyDevLightDir, m_uEnemyDevLightCount);
         glUniform1i(m_uEnemyDevPaletteOverride, m_devPaletteOverride);
+        uploadTorches(m_uEnemyTorchPos, m_uEnemyTorchColor, m_uEnemyTorchIntensity,
+                      m_uEnemyTorchShadowRow, m_uEnemyTorchCount);
 
-        if (count > 0)
-        {
-            glUniform3fv(m_uEnemyTorchPos, count, glm::value_ptr(activeTorchPos[0]));
-            glUniform3fv(m_uEnemyTorchColor, count, glm::value_ptr(activeTorchColor[0]));
-            glUniform1fv(m_uEnemyTorchIntensity, count, activeTorchIntensity.data());
-        }
-        glUniform1i(m_uEnemyTorchCount, count);
-
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, m_minimapFog.mapTexture());
-        glUniform1i(m_uEnemyMapTex, 0);
-
-        // Enemy is drawn with vertex color only: the model is loaded without its diffuse texture
-        // (SkinnedModel::load defaults to loadDiffuseTexture=false) and hasDiffuseTex is forced to
-        // 0. Enabling the texture changes the enemy's look, so check it visually first. (Diffuse
-        // unit 1; unit 0 is mapTex.)
+        // Unit 0 still holds the torch shadow map. The model is drawn with vertex colors only:
+        // enabling its diffuse texture changes the enemy's look
+        glUniform1i(m_uEnemyTorchShadowMap, 0);
         glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_2D, 0);
         glUniform1i(m_uEnemyDiffuseTex, 1);
         glUniform1f(m_uEnemyHasDiffuseTex, 0.0f);
 
-        const int enemyColumnCount = std::min((int)m_columnCentersXZ.size(), 16);
-        if (enemyColumnCount > 0)
-            glUniform2fv(m_uEnemyColumnPos, enemyColumnCount, glm::value_ptr(m_columnCentersXZ[0]));
-        glUniform1i(m_uEnemyColumnCount, enemyColumnCount);
-        glUniform1f(m_uEnemyColumnRadius, Columns::kColumnRadius);
-
-        double nowT = glfwGetTime();
-        float enemyDt = m_enemyUpdateInit ? (float)std::min(nowT - m_lastEnemyUpdateTime, 0.1) : 0.0f;
+        const double nowT = glfwGetTime();
+        const float enemyDt = m_enemyUpdateInit ? (float)std::min(nowT - m_lastEnemyUpdateTime, 0.1) : 0.0f;
         m_lastEnemyUpdateTime = nowT;
         m_enemyUpdateInit = true;
 
-        // Each of the kEnemyCount enemies has an independent AI instance. playerCanSeeThisEnemy is
-        // computed per enemy (isEnemyVisibleToPlayer()) and only affects the minimap.
         if (gameplayActive)
         {
-            // Same interval as the AI's own perception (kPerceptionInterval in EnemyAI.cpp).
+            // Same interval as the AI's own perception (kPerceptionInterval in EnemyAI.cpp)
             const float kPlayerVisibilityCheckInterval = 0.2f;
 
             for (int i = 0; i < kEnemyCount; ++i)
@@ -2773,75 +2455,108 @@ void DungeonScene::render(
                     m_playerVisibilityCheckTimers[i] = 0.0f;
                     m_cachedPlayerCanSeeEnemy[i] = isEnemyVisibleToPlayer(m_enemyAIs[i].position());
                 }
-                const bool playerSeesThis = m_cachedPlayerCanSeeEnemy[i];
 
-                m_enemyAIs[i].update(
-                    enemyDt, renderCamPos,
-                    m_player.isRunning(), m_player.isMoving(),
-                    m_player.invisibleToEnemy(), playerSeesThis,
-                    m_player.lightLevel(),
-                    m_enemies[i]);
+                m_enemyAIs[i].update(enemyDt, renderCamPos,
+                                     m_player.isRunning(), m_player.isMoving(),
+                                     m_player.invisibleToEnemy(), m_cachedPlayerCanSeeEnemy[i],
+                                     m_player.lightLevel(), m_enemies[i]);
 
                 if (m_enemyAIs[i].consumeJustCaughtPlayer())
                 {
                     m_player.applyCaughtDebuff();
-                    // Fixed damage per Attack_Lunge hit: four hits kill at full health (100).
-                    m_player.applyDamage(25.0f);
+                    m_player.applyDamage(25.0f); // four hits kill at full health
                 }
             }
 
-            // Tick stone physics after all enemies are updated: collisions need this frame's
-            // positions.
+            // After all enemies moved: stone collisions need this frame's positions
             updateThrownStones(enemyDt);
         }
 
         for (int i = 0; i < kEnemyCount; ++i)
-        {
             if (m_enemies[i].isLoaded())
                 m_enemies[i].draw(m_uEnemyModel, m_uEnemyBoneMatrices);
-        }
 
-        // Dev dummy (K key): it does not move or think, but its clip clock must tick for Idle to
-        // animate. EnemyAI::update() normally does that as its last step, so it is called directly.
-        if (m_devDummyEnemyActive && gameplayActive)
-        {
-            m_testEnemy.update(enemyDt);
-        }
-
+        // The dev dummy does not think, but its clip clock must still advance
         if (m_devDummyEnemyActive)
         {
+            if (gameplayActive)
+                m_testEnemy.update(enemyDt);
             m_testEnemy.draw(m_uEnemyModel, m_uEnemyBoneMatrices);
         }
 
-        // Flickering silhouette: position and pose are set in updateGlitchEffects(); it is drawn
-        // here like the other enemies.
         if (m_silhouetteActiveTimer > 0.0f && m_glitchGhost.isLoaded())
-        {
             m_glitchGhost.draw(m_uEnemyModel, m_uEnemyBoneMatrices);
-        }
 
         glUseProgram(m_program);
     }
 
-    glActiveTexture(
-        GL_TEXTURE0
-    );
+    // Hand torch last:
+    // it has no depth test, so anything drawn after it would cover it.
+    // The enemy pass unbound texture unit 1, so the wall texture is restored first
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, m_wallTex.id());
+    glActiveTexture(GL_TEXTURE0);
+    glUniform1i(m_uniIsViewmodelDraw, 1);
+    glUniform1f(m_uniViewmodelTorchFuel, m_player.torchFuel());
+    m_playerTorch.draw();
+    glUniform1i(m_uniIsViewmodelDraw, 0);
 
-    glBindTexture(
-        GL_TEXTURE_2D,
-        0
-    );
+    glBindTexture(GL_TEXTURE_2D, 0);
 }
 
-// Called after ascii.end(), directly onto the window framebuffer, so the ASCII post-process never
-// reprocesses the compass and blurs its crisp glyphs.
+// Viewmodel sway: turning inertia, idle breathing and a walk/run bob, uploaded as uViewmodelSway (scene.vert)
+void DungeonScene::updateViewmodelSway()
+{
+    const double nowTime = glfwGetTime();
+    // Clamped so a pause or a hitch cannot make the smoothing snap
+    const float dt = m_playerTorchLagInit ? (float)std::min(nowTime - m_playerTorchLastSwayTime, 0.1) : 0.0f;
+    m_playerTorchLastSwayTime = nowTime;
+
+    const float currentYaw = m_player.yaw();
+    if (!m_playerTorchLagInit)
+    {
+        m_playerTorchLagYaw = currentYaw;
+        m_playerTorchLagInit = true;
+    }
+
+    // Shortest angular difference across the +-180 wrap
+    float yawDiff = std::fmod(currentYaw - m_playerTorchLagYaw + 540.0f, 360.0f) - 180.0f;
+
+    const float kLagSpeed = 8.0f;          // 1/s, lower = longer lag on sharp turns
+    const float kSwayScale = -0.010f;      // negative: a left turn pushes the torch right
+    const float kMaxSway = 0.08f;          // keeps a mouse flick from throwing it out of view
+    const float kSwayVisualSpeed = 25.0f;  // 1/s, smooths jumps of the clamped target
+    m_playerTorchLagYaw += yawDiff * std::min(1.0f, dt * kLagSpeed);
+    const float targetSway = std::clamp(yawDiff * kSwayScale, -kMaxSway, kMaxSway);
+    m_playerTorchSwayVisual += (targetSway - m_playerTorchSwayVisual) * std::min(1.0f, dt * kSwayVisualSpeed);
+
+    const float idleBobX = std::sin((float)nowTime * 1.3f) * 0.006f;
+    const float idleBobY = std::sin((float)nowTime * 1.7f + 1.0f) * 0.005f;
+
+    // The bob phase advances with movement, so it follows footstep speed and stops with the player
+    const bool isMoving = m_player.isMoving();
+    const bool isRunning = m_player.isRunning();
+    if (isMoving)
+        m_playerTorchBobPhase += dt * (isRunning ? 8.0f : 6.0f);
+    const float bobAmp = isRunning ? 0.016f : 0.010f;
+    const float moveBlendSpeed = isRunning ? 12.0f : 10.0f;
+    m_playerTorchMoveBlend += ((isMoving ? 1.0f : 0.0f) - m_playerTorchMoveBlend) * std::min(1.0f, dt * moveBlendSpeed);
+    const float walkBobY = m_playerTorchMoveBlend * std::sin(m_playerTorchBobPhase * 2.0f) * bobAmp;
+
+    // Lowered torch (torchBlend = 0) drops out of the frame
+    const float raiseOffsetY = -(1.0f - m_player.torchBlend()) * 0.9f;
+
+    glUniform2f(m_uniViewmodelSway, m_playerTorchSwayVisual + idleBobX, idleBobY + walkBobY + raiseOffsetY);
+}
+
+// Drawn on the window framebuffer after ascii.end()
+// the post-process does not touch the compass glyphs
 void DungeonScene::renderCompassOverlay(int viewportWidth, int viewportHeight)
 {
     glViewport(0, 0, viewportWidth, viewportHeight);
 
-    // Minimap enemy markers (enemies the player has seen): offset = enemy whole cell minus player
-    // whole cell on X, reversed on Z (the minimap is north-up). Real enemies only; the dev dummy
-    // has nothing to give away.
+    // Enemies the player has seen; offset in whole cells, Z flipped (the minimap is north-up)
+    // The dev dummy is not shown
     const glm::vec3 playerWorldPos = m_player.camPos();
 
     std::vector<float> enemySpottedAlphas;
@@ -2870,8 +2585,7 @@ void DungeonScene::renderCompassOverlay(int viewportWidth, int viewportHeight)
 
 void DungeonScene::renderDebugMap(int viewportWidth, int viewportHeight)
 {
-    // Debug map (M): positions of all real enemies, plus the dev dummy if spawned, to see where it
-    // was placed.
+    // All real enemies plus the dev dummy
     std::vector<glm::vec3> enemyPositions;
     enemyPositions.reserve(kEnemyCount + 1);
     for (int i = 0; i < kEnemyCount; ++i)

@@ -5,12 +5,13 @@
 #include "app/FatalError.h"
 #include "app/WindowManager.h"
 #include "app/Application.h"
+#include "audio/AudioMixer.h"
 #include "render/AsciiEffect.h"
 #include "scene/DungeonScene.h"
 
-// The mouse moves the camera only during actual gameplay (FADE_TO_GAME/PLAYING): see
-// Application::isMouseLookEnabled(), updated every frame in Application::tick(). Otherwise (menu,
-// pause, fades) the cursor is visible/free for the UI, not FPS look.
+//meowmeowmeowmeowmeowmeowmeowmeowmeow
+
+// Mouse look only during gameplay; the cursor is free in menus
 static bool s_mouseLookEnabled = false;
 
 static void mouseCallback(GLFWwindow* window, double xpos, double ypos) {
@@ -29,13 +30,11 @@ static int run() {
     DungeonScene scene;
     scene.init();
 
-    // The internal scene render is always 1280x720; the cinematic sizes (noclip/trailer) come from
-    // DevTools.h via DungeonScene's getters (see Application::tick()).
-    const int kNormalSceneW = 1280, kNormalSceneH = 720;
-    const int kNormalCellSize = 11;
+    const int kSceneW = 1280, kSceneH = 720;
+    const int kDefaultCellSize = 11;
 
     AsciiEffect ascii;
-    ascii.init(kNormalSceneW, kNormalSceneH, kNormalCellSize);
+    ascii.init(kSceneW, kSceneH, kDefaultCellSize);
 
     scene.setCompassUiFont(
         ascii.getUiFontTexture(),
@@ -44,8 +43,7 @@ static int run() {
 
     glfwSetWindowUserPointer(window, &scene);
     glfwSetCursorPosCallback(window, mouseCallback);
-    // Start with a plain visible cursor: the session begins in the menu, which needs clickable
-    // buttons. Application::tick() switches to GLFW_CURSOR_DISABLED once actual gameplay starts.
+    // The session starts in the menu with a visible cursor
     glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
 
     Application app;
@@ -59,6 +57,18 @@ static int run() {
         lastTime = now;
         deltaTime = std::min(deltaTime, 0.05f); // guard against a dt spike after pause/lag
 
+        // Minimized: nothing is visible, so do not render or advance the game.
+        // Wake up often enough to keep the streamed music fed (two ~100 ms chunks are queued)
+        int fbW = 0, fbH = 0;
+        glfwGetFramebufferSize(window, &fbW, &fbH);
+        if (glfwGetWindowAttrib(window, GLFW_ICONIFIED) || fbW == 0 || fbH == 0)
+        {
+            AudioMixer::instance().update(deltaTime);
+            app.restartPerfCounter();
+            glfwWaitEventsTimeout(0.05);
+            continue;
+        }
+
         app.tick(window, scene, ascii, windowManager, deltaTime);
         s_mouseLookEnabled = app.isMouseLookEnabled();
 
@@ -66,8 +76,9 @@ static int run() {
         glfwPollEvents();
     }
 
-    // autosave on window close (X button/Alt+F4); a no-op if there is no active game session
+    // Autosave on window close; a no-op without an active session
     scene.saveActiveSlot();
+    app.shutdown();
     scene.shutdown();
     ascii.shutdown();
     windowManager.destroy();

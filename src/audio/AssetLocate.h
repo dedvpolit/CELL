@@ -12,9 +12,8 @@
 #include <windows.h>
 #endif
 
-// Finds assets/audio/<subfolder>/<name> by walking up from both the executable's folder and the
-// working directory (up to kMaxLevelsUp levels), so it works from an IDE and from the exe alone.
-// Returns an empty string if not found (always on non-Windows).
+// Finds assets/audio/<subfolder>/<name> by walking up from the executable and the working directory
+// Empty if not found
 inline std::wstring LocateAudioAsset(const wchar_t* subfolder, const wchar_t* name)
 {
 #ifdef _WIN32

@@ -10,7 +10,7 @@ void DrawWornEdgeV(std::vector<unsigned char>& grid, int cols, int rows,
                            int x, int y0, int y1, int seed, bool thin) {
     for (int y = y0; y <= y1; ++y) {
         const unsigned int h = Hash(y, seed);
-        const unsigned int skipMod = thin ? 3u : 6u; // thin skips more often — less frequently visible
+        const unsigned int skipMod = thin ? 3u : 6u; // thin skips more often: less frequently visible
         if (h % skipMod == 0u) continue;
         unsigned char g = GLYPH_VLINE;
         if (h % 13u == 0u)      g = GLYPH_DRIP_BIG;
@@ -32,9 +32,7 @@ void DrawWornEdgeH(std::vector<unsigned char>& grid, int cols, int rows,
     }
 }
 
-// Ring sigil from structural glyphs: a Bresenham circle whose points take HLINE/VLINE/CORNER by
-// local slope, with a few outward ray ticks and GLYPH_CIRCLE at the center. Deliberately imperfect
-// (skipped rim points and rays) so it reads as asymmetric and dimmed.
+// Ring sigil from line glyphs: a Bresenham circle with a few outward ticks, deliberately imperfect.
 void DrawRuneCircle(std::vector<unsigned char>& grid, int cols, int rows,
                             int cx, int cy, int radius, int seed) {
     int x = radius, y = 0, err = 0;
@@ -47,7 +45,7 @@ void DrawRuneCircle(std::vector<unsigned char>& grid, int cols, int rows,
         };
         for (int i = 0; i < 8; ++i) {
             const unsigned int h = Hash(pts[i][0] * 61 + pts[i][1] * 37, seed);
-            if (h % 6u == 0u) continue; // a ragged rim — not every point lands
+            if (h % 6u == 0u) continue; // a ragged rim: not every point lands
             const int ddx = pts[i][0] - cx;
             const int ddy = pts[i][1] - cy;
             unsigned char g;
@@ -65,8 +63,7 @@ void DrawRuneCircle(std::vector<unsigned char>& grid, int cols, int rows,
         if (Hash(seed + i * 271, 909) % 3u == 0u) continue; // some rays are missing
         const int rx = cx + dirs[i][0] * (radius + 2);
         const int ry = cy + dirs[i][1] * (radius + 2);
-        PutGlyph(grid, cols, rows, rx, ry,
-                 (dirs[i][0] != 0) ? GLYPH_HLINE : GLYPH_VLINE);
+        PutGlyph(grid, cols, rows, rx, ry, (dirs[i][0] != 0) ? GLYPH_HLINE : GLYPH_VLINE);
     }
 
     PutGlyph(grid, cols, rows, cx, cy, GLYPH_CIRCLE);
@@ -81,8 +78,7 @@ void DrawCrack(std::vector<unsigned char>& grid, int cols, int rows,
     int wobble = 0;
     for (int i = 0; i < maxLen; ++i) {
         const unsigned int h = Hash(i * 97, seed);
-        // The main step is diagonal; every few steps a 1-cell sideways wobble accumulates, so the
-        // crack drifts smoothly to one side instead of jittering back and forth.
+        // Occasional sideways steps accumulate, so the crack drifts rather than jitters.
         if (h % 4u == 0u) wobble += ((h >> 3) & 1u) ? 1 : -1;
         wobble = std::clamp(wobble, -3, 3);
 
@@ -96,31 +92,26 @@ void DrawCrack(std::vector<unsigned char>& grid, int cols, int rows,
                          : GLYPH_HLINE;
         PutGlyph(grid, cols, rows, gx, gy, g);
 
-        // The crack fades out toward the end: not every cell of the last third is drawn, which
-        // gives a ragged tip instead of a blunt one.
+        // Ragged tip: skip some cells of the last third.
         if (i > maxLen * 2 / 3 && h % 3u == 0u) continue;
     }
 }
 
 
-// A wall torch (GLYPH_TORCH) with a few ember/spark fragments (GLYPH_CIRCLE/DRIP_SMALL) scattered
-// asymmetrically around it: a detail for a wall sconce or candelabra.
+// Wall torch glyph with a few embers around it.
 void DrawTorch(std::vector<unsigned char>& grid, int cols, int rows,
                        int x, int y, int seed) {
     PutGlyph(grid, cols, rows, x, y, GLYPH_TORCH);
     for (int i = 0; i < 3; ++i) {
         const unsigned int h = Hash(seed + i * 17, x * 53 + y * 91);
-        if (h % 5u == 0u) continue; // not always all three — otherwise it looks stamped out
+        if (h % 5u == 0u) continue; // not always all three: otherwise it looks stamped out
         const int dx = (int)(h % 3u) - 1;      // -1,0,1
         const int dy = 1 + (int)((h >> 4) % 2u); // drips down, not up
-        PutGlyph(grid, cols, rows, x + dx, y + dy,
-                 (h & 1u) ? GLYPH_DRIP_SMALL : GLYPH_CIRCLE);
+        PutGlyph(grid, cols, rows, x + dx, y + dy, (h & 1u) ? GLYPH_DRIP_SMALL : GLYPH_CIRCLE);
     }
 }
 
-// Draws a short horizontal "crossbar" between a pylon's top and the outer frame (variants with
-// pylonCrossbar = true), so the pylon does not look like it floats. It uses the same worn line
-// (DrawWornEdgeH), just shorter.
+// Crossbar from a pylon's top to the outer frame, so the pylon does not float.
 void DrawPylonCrossbar(std::vector<unsigned char>& grid, int cols, int rows,
                                int pylonX, int frameEdgeY, int towardCol, int seed) {
     const int x0 = std::min(pylonX, towardCol);
@@ -129,18 +120,15 @@ void DrawPylonCrossbar(std::vector<unsigned char>& grid, int cols, int rows,
     DrawWornEdgeH(grid, cols, rows, frameEdgeY, x0, x1, seed, true);
 }
 
-// A small diagonal tick at a corner: an alternative or addition to cornerOrGap() in
-// DrawDarkFantasyAtmosphere, a pair of ticks running inward from the frame's corner instead of (or
-// alongside) a collapsed GLYPH_CORNER. dx/dy is the inward screen direction (+1/-1).
+// Diagonal ticks running inward from a frame corner; dx/dy is the inward direction.
 void DrawCornerTick(std::vector<unsigned char>& grid, int cols, int rows,
                             int x, int y, int dx, int dy, int seed) {
-    if (Hash(x * 13 + y * 7, seed) % 4u == 0u) return; // not always — asymmetry
+    if (Hash(x * 13 + y * 7, seed) % 4u == 0u) return; // not always: asymmetry
     PutGlyph(grid, cols, rows, x + dx, y, GLYPH_HLINE);
     PutGlyph(grid, cols, rows, x, y + dy, GLYPH_VLINE);
 }
 
-// Two small runes, symmetric on either side of the top gap (instead of one centered rune), used by
-// runeMode = 4. cx/cy is the center between them.
+// Two runes on either side of the top gap (runeMode 4).
 void DrawTwinRunes(std::vector<unsigned char>& grid, int cols, int rows,
                            int cx, int cy, int spacing, int radius, int seed) {
     DrawRuneCircle(grid, cols, rows, cx - spacing, cy, radius, seed);
@@ -148,9 +136,7 @@ void DrawTwinRunes(std::vector<unsigned char>& grid, int cols, int rows,
 }
 
 
-// Additional atmosphere motifs. All of them operate only outside the content bbox. They do not
-// replace the guard logic of the existing composition, they add independent decorative layers, so a
-// new design cannot encroach on the menu text even at a tight resolution.
+// Extra motifs. Each draws only outside the content box, on top of the base composition.
 bool AtmosphereFreeCell(int x, int y, int cols, int rows,
                                const AtmosphereBounds& content, int pad) {
     if (x < 0 || x >= cols || y < 0 || y >= rows) return false;
@@ -166,8 +152,7 @@ void SafeAtmosphereGlyph(std::vector<unsigned char>& grid, int cols, int rows,
     }
 }
 
-// Vertical "blood" streaks: in monochrome ASCII, blood is conveyed by characteristic heavy drips
-// and occasional clot circles, not by color.
+// Blood in monochrome: heavy drips and occasional clots.
 void DrawBloodDrips(std::vector<unsigned char>& grid, int cols, int rows,
                            const AtmosphereBounds& content, int seed,
                            bool fromTop, bool fromBottom, int count) {
@@ -187,8 +172,7 @@ void DrawBloodDrips(std::vector<unsigned char>& grid, int cols, int rows,
                         (k == len - 1 || s % 7u == 0u) ? GLYPH_DRIP_BIG : GLYPH_DRIP_SMALL,
                         content, 3);
                 }
-                SafeAtmosphereGlyph(grid, cols, rows, x, y + len,
-                                   GLYPH_CIRCLE, content, 3);
+                SafeAtmosphereGlyph(grid, cols, rows, x, y + len, GLYPH_CIRCLE, content, 3);
             }
         }
 
@@ -203,15 +187,13 @@ void DrawBloodDrips(std::vector<unsigned char>& grid, int cols, int rows,
                         (k == len - 1 || s % 7u == 0u) ? GLYPH_DRIP_BIG : GLYPH_DRIP_SMALL,
                         content, 3);
                 }
-                SafeAtmosphereGlyph(grid, cols, rows, x, y - len,
-                                   GLYPH_CIRCLE, content, 3);
+                SafeAtmosphereGlyph(grid, cols, rows, x, y - len, GLYPH_CIRCLE, content, 3);
             }
         }
     }
 }
 
-// Chains: an interleaving of | + O + |. They read well as hangers/candelabras without duplicating
-// the straight pylons.
+// Chains of | + O +.
 void DrawHangingChains(std::vector<unsigned char>& grid, int cols, int rows,
                               const AtmosphereBounds& content, int seed,
                               int count, bool bothSides) {
@@ -244,8 +226,7 @@ void DrawHangingChains(std::vector<unsigned char>& grid, int cols, int rows,
     }
 }
 
-// Broken "ribs" around the empty field: bony, collapsed architecture. Deliberately not a closed
-// rectangle, so it does not become yet another frame.
+// Broken ribs around the empty field, deliberately not a closed rectangle.
 void DrawBrokenRibs(std::vector<unsigned char>& grid, int cols, int rows,
                            const AtmosphereBounds& content, int seed,
                            int ribCount, bool topHeavy) {
@@ -270,8 +251,7 @@ void DrawBrokenRibs(std::vector<unsigned char>& grid, int cols, int rows,
                 SafeAtmosphereGlyph(grid, cols, rows, x, y, g, content, 3);
             }
             if (!topHeavy && topRoom >= 6) {
-                SafeAtmosphereGlyph(grid, cols, rows, x0 + len / 2, y + 1,
-                                    GLYPH_VLINE, content, 3);
+                SafeAtmosphereGlyph(grid, cols, rows, x0 + len / 2, y + 1, GLYPH_VLINE, content, 3);
             }
         }
     }
@@ -321,8 +301,7 @@ void DrawObelisks(std::vector<unsigned char>& grid, int cols, int rows,
     }
 }
 
-// Ritual crosses without a circle: the distinctive mark can be built purely from +, | and =, so
-// GLYPH_CIRCLE is deliberately absent.
+// Ritual crosses from +, | and = only.
 void DrawRitualCrosses(std::vector<unsigned char>& grid, int cols, int rows,
                               const AtmosphereBounds& content, int seed,
                               int count, bool onSides) {
@@ -352,8 +331,7 @@ void DrawRitualCrosses(std::vector<unsigned char>& grid, int cols, int rows,
     }
 }
 
-// A ragged "curtain" of streaks/chains. Unlike pylons it is not tied to one vertical line and
-// creates a dense silhouette along the frame's edges.
+// A ragged curtain of streaks along the frame edges.
 void DrawHangingCurtain(std::vector<unsigned char>& grid, int cols, int rows,
                                const AtmosphereBounds& content, int seed,
                                bool leftSide, bool rightSide) {
@@ -378,8 +356,7 @@ void DrawHangingCurtain(std::vector<unsigned char>& grid, int cols, int rows,
     if (rightSide) side(false, 911);
 }
 
-// A scattered swarm of ash/sparks: looser particles, less architecture. It works standalone and
-// does not affect the ash vignette.
+// Loose ash and sparks.
 void DrawEmberSwarm(std::vector<unsigned char>& grid, int cols, int rows,
                            const AtmosphereBounds& content, int seed,
                            int density, bool heavy) {
@@ -400,8 +377,7 @@ void DrawEmberSwarm(std::vector<unsigned char>& grid, int cols, int rows,
     }
 }
 
-// Multi-tier "scars": horizontal fractures in the top/bottom field, unlike the usual diagonal
-// DrawCrack().
+// Horizontal fractures above and below the content.
 void DrawHorizontalScars(std::vector<unsigned char>& grid, int cols, int rows,
                                 const AtmosphereBounds& content, int seed,
                                 int count, bool bottomOnly) {
@@ -438,9 +414,8 @@ void DrawHorizontalScars(std::vector<unsigned char>& grid, int cols, int rows,
 }
 
 
-// A shared layer of dread on top of each variant's motif: blood, empty eyes, ash rain, broken
-// ritual marks. Every cell still passes through AtmosphereFreeCell(), so it cannot encroach on the
-// content bbox.
+// Shared dread layer: blood, empty eyes, ash rain, broken ritual marks. Still bounded by
+// AtmosphereFreeCell().
 void DrawDeadEyes(std::vector<unsigned char>& grid, int cols, int rows,
                          const AtmosphereBounds& content, int seed, int count) {
     const int edge = 2;
@@ -461,8 +436,7 @@ void DrawDeadEyes(std::vector<unsigned char>& grid, int cols, int rows,
 
         SafeAtmosphereGlyph(grid, cols, rows, x, y, GLYPH_CIRCLE, content, 3);
         SafeAtmosphereGlyph(grid, cols, rows, x + (left ? 2 : -2), y, GLYPH_CIRCLE, content, 3);
-        // A rare "tear" under the eyes, so they do not read as a decorative pattern but resemble a
-        // watching, dead creature.
+        // An occasional tear under the eyes.
         if ((h & 7u) == 0u) {
             SafeAtmosphereGlyph(grid, cols, rows, x + (left ? 1 : -1), y + 1,
                                 GLYPH_DRIP_SMALL, content, 3);
@@ -563,9 +537,7 @@ void DrawDespairLayer(std::vector<unsigned char>& grid, int cols, int rows,
     }
 }
 
-// The composition recipe: what to draw and with what parameters. Every element still goes through
-// the same guard logic (hasSideRoom/topGap/bottomGap/distance to content); the recipe only decides
-// what to attempt to draw and does not bypass the safety checks.
+// Composition recipes. They only choose what to try; every element still passes the room checks.
 AtmosphereVariant GetAtmosphereVariant(int index) {
     static const AtmosphereVariant table[kAtmosphereVariantCount] = {
         /*00 Icon*/ { true, true, true, false, true, false, 0, 0, 0.90f, true, true, false, false, 1.00f, 0, 0, false },
@@ -605,17 +577,13 @@ AtmosphereVariant GetAtmosphereVariant(int index) {
     return table[index];
 }
 
-// Deterministic variant pick from (seed, entryCounter), called once on entering MENU/PAUSED so the
-// composition does not drift within a visit. seed is the per-session menuSeed; it hashes with
-// different multipliers than the pattern to avoid correlation.
+// Deterministic from (seed, entryCounter), picked once per visit.
 int PickAtmosphereVariant(int entryCounter, int seed) {
     const unsigned int h = Hash(entryCounter * 104729 + 7, seed + 31337);
     return (int)(h % (unsigned int)kAtmosphereVariantCount);
 }
 
-// The same distribution, but guarantees a fresh variant differs from the previous one when the same
-// menu is reopened. Important for PAUSED: if the hash returned the same index, the player would
-// think the pause decorations stopped changing.
+// Never repeats the previous variant, so reopening pause always looks different.
 int PickNextAtmosphereVariant(int previousVariant, int entryCounter, int seed) {
     int next = PickAtmosphereVariant(entryCounter, seed);
     if (kAtmosphereVariantCount <= 1) return 0;
@@ -640,9 +608,7 @@ void DrawDarkFantasyAtmosphere(std::vector<unsigned char>& grid, int cols, int r
 
     const int edge = 2;
 
-    // Outer frame: the same worn line as the buttons. On cramped windows the content can start near
-    // the top, so frame segments that fall within contentPadFrame (the ash vignette margin) are not
-    // drawn instead of overlapping the content.
+    // Outer frame; segments within contentPadFrame of the content are skipped on cramped windows.
     const int contentPadFrame = 2;
     const bool topEdgeNearContent    = edge >= content.y0 - contentPadFrame && edge <= content.y1 + contentPadFrame;
     const bool bottomEdgeNearContent = (rows - edge - 1) >= content.y0 - contentPadFrame &&
@@ -679,9 +645,7 @@ void DrawDarkFantasyAtmosphere(std::vector<unsigned char>& grid, int cols, int r
     drawVEdgeAvoidingContent(edge, 73);
     drawVEdgeAvoidingContent(cols - edge - 1, 89);
 
-    // Frame corners may be skipped (a collapsed corner) instead of all four being guaranteed:
-    // asymmetry matters more than tidiness. If the variant has cornerTicks, small inward ticks are
-    // added at each corner whether or not the corner glyph survived.
+    // Corners may collapse; asymmetry is intended. cornerTicks add inward ticks either way.
     auto cornerOrGap = [&](int x, int y, int cornerSeed, int dx, int dy) {
         if (Hash(cornerSeed, seed) % 5u != 0u) {
             PutGlyph(grid, cols, rows, x, y, GLYPH_CORNER);
@@ -695,8 +659,7 @@ void DrawDarkFantasyAtmosphere(std::vector<unsigned char>& grid, int cols, int r
     cornerOrGap(edge, rows - edge - 1, 103, 1, -1);
     cornerOrGap(cols - edge - 1, rows - edge - 1, 104, -1, -1);
 
-    // Ash vignette: denser toward the edges, skipped over the content zone to save passes on cells
-    // that get overwritten. ashDensityMul shrinks the divisor (denser), not the threshold.
+    // Ash vignette, denser toward the edges, skipped over the content.
     const int contentPad = 2;
     for (int y = edge + 1; y <= rows - edge - 2; ++y) {
         if (y >= content.y0 - contentPad && y <= content.y1 + contentPad) continue;
@@ -711,9 +674,7 @@ void DrawDarkFantasyAtmosphere(std::vector<unsigned char>& grid, int cols, int r
         }
     }
 
-    // Diagonal cracks: the mode depends on the variant (v.crackMode), but every crack's length from
-    // any corner is computed from the real distance to the content zone from that corner, so in any
-    // mode it cannot reach text or buttons.
+    // Crack length from each corner is bounded by the distance to the content in that direction.
     const int distToContentTL = std::max(2, std::min(content.x0 - edge, content.y0 - edge) - 3);
     const int distToContentTR = std::max(2, std::min((cols - edge - 1) - content.x1, content.y0 - edge) - 3);
     const int distToContentBL = std::max(2, std::min(content.x0 - edge, (rows - edge - 1) - content.y1) - 3);
@@ -755,7 +716,7 @@ void DrawDarkFantasyAtmosphere(std::vector<unsigned char>& grid, int cols, int r
                            std::min(longMax, distToContentBR), seed + 1213);
             break;
         }
-        case 3: // no cracks — a restrained variant
+        case 3: // no cracks: a restrained variant
             break;
         case 4: // only from TL
             DrawCrack(grid, cols, rows, edge + 2, edge + 2, 1, 1,
@@ -767,8 +728,7 @@ void DrawDarkFantasyAtmosphere(std::vector<unsigned char>& grid, int cols, int r
             break;
     }
 
-    // Side pylons sit outside the content zone with a guaranteed gap; each side has its own room
-    // check and a post is skipped when there is not enough room (narrow windows).
+    // Side pylons, each skipped when there is not enough room.
     const int sideGap = 3;
     const int wingLeft = content.x0 - sideGap;
     const int wingRight = content.x1 + sideGap;
@@ -797,14 +757,11 @@ void DrawDarkFantasyAtmosphere(std::vector<unsigned char>& grid, int cols, int r
         if (v.pylonCrossbar)      DrawPylonCrossbar(grid, cols, rows, wingRight, wingTop + 2, cols - edge - 1, seed + 347);
     }
 
-    // Rune sigil: rare (variants 0, 8, 17 use the ring). On 16:9 the title often leaves no room
-    // above, so it tries above first and otherwise moves to free side space. bottomGapAvailable is
-    // computed here because runeMode 5 and the base section need it.
+    // Ring sigil (variants 0, 8, 17): above the content if there is room, otherwise at the side.
     const int topGapAvailable = content.y0 - (edge + 1);
     const int bottomGapAvailable = (rows - edge - 2) - content.y1;
 
-    // DrawRuneCircle also draws ray ticks 2 cells beyond the radius, so the safe radius is half the
-    // available strip minus a 1-cell margin; returns 0 if it does not fit.
+    // The ticks reach 2 cells past the radius; 0 if it does not fit.
     auto safeRuneRadius = [](int availableSpan, float mul) -> int {
         const int half = availableSpan / 2;
         const int maxRadius = half - 3; // -2 for the ray, -1 cell margin
@@ -845,7 +802,7 @@ void DrawDarkFantasyAtmosphere(std::vector<unsigned char>& grid, int cols, int r
 
     bool runePlaced = false;
     switch (v.runeMode) {
-        case 0: // top-center (same slight shift for the main menu as before), fallback to the side
+        case 0: // top-center (shifted for the main menu), fallback to the side
             runePlaced = tryTopRune(pauseMenu ? 0 : 6);
             if (!runePlaced) runePlaced = trySideRune();
             break;
@@ -882,8 +839,6 @@ void DrawDarkFantasyAtmosphere(std::vector<unsigned char>& grid, int cols, int r
             break;
     }
 
-    // The current recipe's unique motif. These motifs do not create ring sigils; the ring is kept
-    // only in variants 0, 8 and 17.
     switch (v.motifMode) {
         case 1:
             DrawBloodDrips(grid, cols, rows, content, seed + 5000, true, true,
@@ -954,8 +909,7 @@ void DrawDarkFantasyAtmosphere(std::vector<unsigned char>& grid, int cols, int r
             DrawEmberSwarm(grid, cols, rows, content, seed + 6310, 26, false);
             break;
         case 15:
-            DrawHangingCurtain(grid, cols, rows, content, seed + 6400,
-                               true, v.motifBothSides);
+            DrawHangingCurtain(grid, cols, rows, content, seed + 6400, true, v.motifBothSides);
             break;
         case 17:
             DrawRitualCrosses(grid, cols, rows, content, seed + 6500, 2, false);
@@ -965,8 +919,7 @@ void DrawDarkFantasyAtmosphere(std::vector<unsigned char>& grid, int cols, int r
                            std::max(3, v.motifDensity), false);
             break;
         case 19:
-            DrawObelisks(grid, cols, rows, content, seed + 6700,
-                         std::max(2, v.motifDensity), true);
+            DrawObelisks(grid, cols, rows, content, seed + 6700, std::max(2, v.motifDensity), true);
             DrawHangingChains(grid, cols, rows, content, seed + 6710, 2, true);
             break;
         case 22:
@@ -980,8 +933,7 @@ void DrawDarkFantasyAtmosphere(std::vector<unsigned char>& grid, int cols, int r
             DrawEmberSwarm(grid, cols, rows, content, seed + 6910, 36, false);
             break;
         case 26:
-            DrawObelisks(grid, cols, rows, content, seed + 7000,
-                         std::max(2, v.motifDensity), true);
+            DrawObelisks(grid, cols, rows, content, seed + 7000, std::max(2, v.motifDensity), true);
             DrawHorizontalScars(grid, cols, rows, content, seed + 7010, 3, true);
             break;
         case 28:
@@ -1003,15 +955,12 @@ void DrawDarkFantasyAtmosphere(std::vector<unsigned char>& grid, int cols, int r
             break;
     }
 
-    // Final layer of hopelessness: each recipe gets its own threat over its base architecture. It
-    // is called after the main motif but before the base, so small traces can run over larger
-    // decorative strokes and feel like organic grime rather than tidy UI ornamentation.
+    // Drawn after the motif and before the base, so small traces run over larger strokes.
     DrawDespairLayer(grid, cols, rows, content, seed + 9000, variantIndex,
                      std::max(3, v.motifDensity));
 
-    // Base: a ragged line under the content zone only if there is room for a full line. A single
-    // bottom torch needs less room and is main-menu only. bottomDoubleRule adds a thinner second
-    // band if there is room for both.
+    // Base line under the content only if a full line fits; the single bottom torch is main-menu
+    // only.
     if (!pauseMenu && v.bottomTorch && bottomGapAvailable >= 2) {
         const int torchX = (content.x0 + content.x1) / 2 - std::min(20, (content.x1 - content.x0) / 3);
         DrawTorch(grid, cols, rows, torchX, content.y1 + 1, seed + 15);

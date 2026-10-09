@@ -1,0 +1,128 @@
+#version 430 core
+// Glyph selection: one work group per ASCII cell of cellSize x cellSize window pixels; the 8x8
+// threads stride over larger cells. The pixels vote on the stroke direction; if at least
+// edgeThreshold of the cell agrees, the cell gets that stroke glyph, otherwise a fill glyph ranked
+// by luminance. Strokes are drawn only where the fill would not be blank, so unlit geometry stays
+// dark. The cell color is the scene's mip chain sampled at the cell center, at the level matching
+// the cell footprint.
+//
+// Output: one texel per cell, rgb = glyph tint, a = glyph index / 255. ascii_post.frag expands it
+// into pixels with the same glyph atlas.
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(rgba8, binding = 0) uniform writeonly image2D cellImg;
+
+uniform sampler2D sceneTex;
+uniform sampler2D directionTex;   // acerola_sobel.frag
+uniform int cellSize;
+uniform ivec2 outSize;            // window size in pixels
+uniform ivec2 sceneSize;
+uniform float mipLevel;           // log2 of the cell footprint in scene pixels
+uniform float lensStrength;       // barrel distortion, 0 = off
+uniform float edgeThreshold;      // fraction of the cell's pixels
+uniform float colorEnabled;
+uniform float glitchActive;
+uniform vec2 glitchUV;
+uniform float glitchRadiusCells;
+
+const int kFillLevels = 21;       // fill glyphs in AcerolaAscii.cpp
+const int kFirstFillGlyph = 4;
+
+// Applied after the gamma lift; it moves the result more than the torch light scales do.
+const float kExposure = 1.2;
+
+// 1 = glyph intensity follows cell brightness (kShadeMin for the dimmest glyph); 0 = brightness
+// is carried by glyph density alone.
+const float kShadeByBrightness = 0.0;
+const float kShadeMin = 0.5;
+
+shared uint s_buckets[4];
+
+float hash11(float p) { return fract(sin(p * 12.9898) * 43758.5453); }
+
+// Edges are detected on the unwarped scene and only looked up through the lens, so the lens
+// cannot create edges of its own.
+vec2 lensWarp(vec2 uv)
+{
+    vec2 d = (uv - 0.5) * 2.0;
+    return 0.5 + (uv - 0.5) * (1.0 + lensStrength * dot(d, d));
+}
+
+void main()
+{
+    ivec2 cell = ivec2(gl_WorkGroupID.xy);
+    ivec2 origin = cell * cellSize;
+    ivec2 lid = ivec2(gl_LocalInvocationID.xy);
+    uint threadIndex = gl_LocalInvocationIndex;
+    ivec2 cellExtent = min(ivec2(cellSize), outSize - origin);
+    int span = (cellSize + 7) / 8;
+
+    if (threadIndex < 4u)
+        s_buckets[threadIndex] = 0u;
+    barrier();
+
+    for (int sy = 0; sy < span; ++sy)
+    {
+        for (int sx = 0; sx < span; ++sx)
+        {
+            ivec2 local = lid + ivec2(sx, sy) * 8;
+            if (any(greaterThanEqual(local, cellExtent)))
+                continue;
+            vec2 uv = lensWarp((vec2(origin + local) + 0.5) / vec2(outSize));
+            if (any(lessThan(uv, vec2(0.0))) || any(greaterThanEqual(uv, vec2(1.0))))
+                continue;
+            int code = int(texelFetch(directionTex, ivec2(uv * vec2(sceneSize)), 0).r * 4.0 + 0.5);
+            if (code > 0)
+                atomicAdd(s_buckets[code - 1], 1u);
+        }
+    }
+    barrier();
+
+    if (threadIndex != 0u)
+        return;
+
+    int commonEdge = -1;
+    uint best = 0u;
+    for (int d = 0; d < 4; ++d)
+    {
+        if (s_buckets[d] > best)
+        {
+            best = s_buckets[d];
+            commonEdge = d;
+        }
+    }
+    if (float(best) < edgeThreshold * float(cellExtent.x * cellExtent.y))
+        commonEdge = -1;
+
+    vec2 centerUV = lensWarp(clamp((vec2(cell) + 0.5) * float(cellSize) / vec2(outSize), 0.0, 1.0));
+    vec3 cellColor = textureLod(sceneTex, centerUV, mipLevel).rgb;
+
+    // Fill level: gamma-lifted luminance, split into kFillLevels steps with a per-cell 4x4 Bayer
+    // dither against banding.
+    float lum = dot(cellColor, vec3(0.2126, 0.7152, 0.0722));
+    lum = pow(clamp(lum, 0.0, 1.0), 0.75) * kExposure;
+    float shade = mix(1.0, mix(kShadeMin, 1.0, clamp(lum, 0.0, 1.0)), kShadeByBrightness);
+    const float bayer[16] = float[](0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0,
+                                    3.0, 11.0, 1.0, 9.0, 15.0, 7.0, 13.0, 5.0);
+    float dither = bayer[(cell.y & 3) * 4 + (cell.x & 3)] / 16.0 - 0.5;
+    lum = clamp(lum + dither / float(kFillLevels), 0.0, 1.0);
+    int level = int(floor(clamp(lum, 0.0, 0.999) * float(kFillLevels)));
+
+    int glyph = (commonEdge >= 0 && level > 0) ? commonEdge : kFirstFillGlyph + level;
+
+    // "Unreliable vision": cells inside a ragged spot (per-cell radius 0.5x..1.3x) go blank.
+    if (glitchActive > 0.5)
+    {
+        vec2 targetCell = floor(glitchUV * (vec2(outSize) / float(cellSize)));
+        float noise = hash11(float(cell.x) * 12.9898 + float(cell.y) * 78.233
+                             + glitchUV.x * 991.0 + glitchUV.y * 397.0);
+        if (distance(vec2(cell), targetCell) <= glitchRadiusCells * mix(0.5, 1.3, noise))
+            glyph = kFirstFillGlyph;
+    }
+
+    // Tint by hue normalized to the brightest channel: brightness is already in the glyph choice.
+    float maxc = max(cellColor.r, max(cellColor.g, cellColor.b));
+    vec3 hue = maxc > 0.001 ? cellColor / maxc : vec3(1.0);
+    vec3 tint = mix(vec3(1.0), mix(hue, vec3(1.0), 0.12), colorEnabled) * shade;
+
+    imageStore(cellImg, cell, vec4(tint, float(glyph) / 255.0));
+}

@@ -2,6 +2,10 @@
 #include "ProcessMemory.h"
 #include "save/SaveSystem.h"
 #include "audio/AudioMixer.h"
+#include "audio/UiAudio.h"
+#if __has_include("dev/DevTools.h")
+#include "dev/DevTools.h"
+#endif
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -33,18 +37,78 @@ int Application::slider01ToCellSize(float t) {
     return std::clamp((int)std::lround(raw), AsciiEffect::kMinCellSize, AsciiEffect::kMaxCellSize);
 }
 
+namespace {
+
+// Blank lines end a stanza (see StoryText)
+const std::vector<std::string> kIntroText = {
+    "It was a dream",
+    "A dream of the Sun",
+    "",
+    "I saw the Sun",
+    "I saw my eyes",
+    "I saw my face",
+    "",
+    "I saw nothing",
+    "",
+    "I lost my eyes",
+    "I lost my face",
+    "",
+    "The Sun burned me",
+    "",
+    "It was a dream",
+    "",
+    "Hey, Mom?",
+    "",
+    "I'm still dreaming.",
+};
+
+const std::vector<std::string> kOutroText = {
+    "Hey, Mom?",
+    "",
+    "I'm awake.",
+};
+
+} // namespace
+
+int Application::currentUiHoverId() const
+{
+    if (m_appState == AppState::SETTINGS) {
+        const bool hovered[] = { m_backHovered, m_sliderHovered, m_sharpnessSliderHovered,
+                                 m_musicSliderHovered, m_masterSliderHovered, m_colorCheckboxHovered,
+                                 m_lensCheckboxHovered, m_crtCheckboxHovered, m_shadersCheckboxHovered };
+        for (int i = 0; i < (int)std::size(hovered); ++i)
+            if (hovered[i]) return 1000 + i;
+        return -1;
+    }
+    if (m_appState == AppState::MENU && m_titleHovered)
+        return 900;
+    if (m_hoveredButton >= 0)
+        return (int)m_appState * 100 + m_hoveredButton;
+    return -1;
+}
+
+void Application::startStory(bool leadsToCredits)
+{
+    m_storyText.start(leadsToCredits ? kOutroText : kIntroText, m_menuSeed);
+    m_storyLeadsToCredits = leadsToCredits;
+    // A Space held over from the previous screen does not count toward skipping
+    m_storySkipArmed = false;
+    m_storySkipHold = 0.0f;
+    // The scene is not rendered, so the screen stays black without the fade
+    m_fadeAlpha = 0.0f;
+    m_appState = AppState::STORY_TEXT;
+}
+
 void Application::init(GLFWwindow* window, DungeonScene& scene, AsciiEffect& ascii)
 {
     (void)window;
     (void)scene;
     (void)ascii;
 
-    m_currentSceneW = m_normalSceneW;
-    m_currentSceneH = m_normalSceneH;
+    m_gpuTimer.init();
+    m_crt.init();
 
-    // Non-fatal if the TTF renderer fails to init (e.g. the font file is missing): isReady() is
-    // checked before every use, and diary text just does not show (the frame and blood drips still
-    // render through the grid path).
+    // Non-fatal: without the TTF renderer diary text is simply not shown
     if (!m_textRenderer.create())
         std::fprintf(stderr, "Application::init: TextRenderer failed to initialize\n");
 
@@ -54,8 +118,7 @@ void Application::init(GLFWwindow* window, DungeonScene& scene, AsciiEffect& asc
 
 void Application::confirmNameEntry(DungeonScene& scene)
 {
-    // Default name if the player left it blank: SLOT1/SLOT2/SLOT3 by slot number, not an empty
-    // string and not a blocked confirm.
+    // An empty name defaults to SLOT{n}.
     const int slot = m_nameEntryForNewGame ? m_pendingNewGameSlot : m_pendingSaveSlot;
     std::string effectiveName = m_saveNameBuffer;
     if (effectiveName.empty() && slot >= 0) {
@@ -63,9 +126,8 @@ void Application::confirmNameEntry(DungeonScene& scene)
     }
 
     if (m_nameEntryForNewGame) {
-        // Do not save now: the new game has not been generated yet. Stash the name in
-        // m_saveNameBuffer (it survives FADE_TO_BLACK) and fade to black like a plain NEW GAME; the
-        // map is regenerated once the screen is fully black.
+        // The new game does not exist yet: keep the name and fade to black; the map is generated
+        // once the screen is black
         m_saveNameBuffer = effectiveName;
         m_pendingAction = PendingAction::NEW_GAME_IN_SLOT;
         m_appState = AppState::FADE_TO_BLACK;
@@ -83,44 +145,42 @@ void Application::tick(GLFWwindow* window, DungeonScene& scene, AsciiEffect& asc
 {
         deltaTime = std::min(deltaTime, 0.05f); // guard against a dt spike after pause/lag
 
-        // Console FPS counter: average fps and frame time once a second. Console-only on purpose
-        // (no on-screen overlay), so it can be dropped once real numbers are collected from the
-        // target (weak) hardware.
+        // Once a second: fps, GPU time per section and what the scene submitted
+        // Uses deltaTime is clamped to 50 ms, which would hide anything below 20 fps
         {
-            static int s_fpsFrameCount = 0;
-            static double s_fpsAccum = 0.0;
-            s_fpsFrameCount++;
-            s_fpsAccum += (double)deltaTime;
-            if (s_fpsAccum >= 1.0)
+            const double now = glfwGetTime();
+            if (m_perfLastTime < 0.0)
+                m_perfLastTime = now;
+            ++m_perfFrameCount;
+            const double elapsed = now - m_perfLastTime;
+            if (elapsed >= 1.0)
             {
-                // MB, matching Windows Task Manager; computed once a second with the fps, not every
-                // frame.
-                const size_t ramBytes = GetProcessWorkingSetBytes();
-                const double ramMb = (double)ramBytes / (1024.0 * 1024.0);
-
+                const double ramMb = (double)GetProcessWorkingSetBytes() / (1024.0 * 1024.0);
                 std::printf(
-                    "[perf] fps = %.1f (avg frame time %.2f ms) | tris=%d chunks=%d torches=%d particles=%d lens=%d | ram=%.1f MB\n",
-                    (double)s_fpsFrameCount / s_fpsAccum,
-                    1000.0 * s_fpsAccum / (double)s_fpsFrameCount,
+                    "[perf] fps = %.1f (avg frame time %.2f ms) | gpu scene=%.2f ascii=%.2f crt=%.2f ms | "
+                    "tris=%d chunks=%d torches=%d particles=%d lens=%d | ram=%.1f MB\n",
+                    m_perfFrameCount / elapsed,
+                    1000.0 * elapsed / m_perfFrameCount,
+                    m_gpuTimer.averageMs(GpuTimer::Scene),
+                    m_gpuTimer.averageMs(GpuTimer::Ascii),
+                    m_gpuTimer.averageMs(GpuTimer::Crt),
                     scene.getLastVisibleTriangles(),
                     scene.getLastVisibleChunks(),
                     scene.getLastActiveTorchCount(),
                     scene.getLastVisibleParticles(),
                     m_lensEnabled ? 1 : 0,
-                    ramMb
-                );
-                s_fpsFrameCount = 0;
-                s_fpsAccum = 0.0;
+                    ramMb);
+                m_perfFrameCount = 0;
+                m_perfLastTime = now;
+                m_gpuTimer.resetAverages();
             }
         }
 
-        // ESC pauses in gameplay and acts as BACK in the menu states. It never quits the app: EXIT
-        // on the start screen (QUIT_APP) or ESC on the credits screen does.
+        // ESC pause
         const bool escKeyDown = glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS;
         if (escKeyDown && !m_escKeyWasDown) {
             if (m_appState == AppState::PLAYING && scene.isReadingOverlayOpen()) {
-                // A diary is open: Escape closes it instead of opening pause (the same key means
-                // back/close everywhere else).
+                // Escape closes an open diary
                 scene.closeDiaryOrJournal();
             } else if (m_appState == AppState::PLAYING) {
                 m_appState = AppState::PAUSED;
@@ -128,13 +188,13 @@ void Application::tick(GLFWwindow* window, DungeonScene& scene, AsciiEffect& asc
                 m_titleHovered = false;
                 m_pauseLayoutDirty = true;
                 ++m_pauseOpenCount;
-                // Every pause entry gets a fresh look: the previous variant is not repeated.
+                // Never repeat the previous pause
                 m_pauseVariant = MainMenu::PickNextAtmosphereVariant(
                     m_pauseVariant, m_pauseOpenCount, m_menuSeed + 777);
             } else if (m_appState == AppState::PAUSED) {
                 m_appState = AppState::PLAYING;
             } else if (m_appState == AppState::SETTINGS) {
-                m_appState = m_settingsReturnState; // back to wherever it was opened from (MENU or PAUSED)
+                m_appState = m_settingsReturnState; // back to wherever it was opened
                 m_backHovered = false;
                 m_sliderHovered = false;
                 m_sliderDragging = false;
@@ -157,25 +217,20 @@ void Application::tick(GLFWwindow* window, DungeonScene& scene, AsciiEffect& asc
                 m_hoveredButton = -1;
                 m_saveLayoutDirty = true;
             } else if (m_appState == AppState::SAVE_NAME_ENTRY) {
-                // ESC acts as BACK: it discards the typed name and returns to where the screen was
-                // opened from (SAVE from pause or NEW GAME from the main menu, see
-                // m_nameEntryForNewGame).
+                // BACK
                 m_appState = m_nameEntryForNewGame ? AppState::NEWGAME_SELECT : AppState::SAVE_SELECT;
                 m_hoveredButton = -1;
                 m_saveNameBuffer.clear();
                 if (m_nameEntryForNewGame) m_newGameLayoutDirty = true;
                 else                       m_saveLayoutDirty = true;
             } else if (m_appState == AppState::CREDITS) {
-                // The one exception to "ESC never quits the app": the credits screen already is the
-                // end of the game (PendingAction::SHOW_CREDITS), so ESC is the only way out from
-                // here.
+                // Credits are the end of the game; ESC is way out
                 glfwSetWindowShouldClose(window, true);
             }
         }
         m_escKeyWasDown = escKeyDown;
 
-        // Letters are plain text input in SAVE_NAME_ENTRY (F included), so the fullscreen hotkey is
-        // disabled there.
+        // F is a letter while typing a save name
         bool fKeyDown = m_appState != AppState::SAVE_NAME_ENTRY &&
                         glfwGetKey(window, GLFW_KEY_F) == GLFW_PRESS;
         if (fKeyDown && !m_fKeyWasDown) {
@@ -183,9 +238,8 @@ void Application::tick(GLFWwindow* window, DungeonScene& scene, AsciiEffect& asc
         }
         m_fKeyWasDown = fKeyDown;
 
-        // Performance/Stability mode (F1): locks to a stable ~30 fps instead of an unstable "up to
-        // 60" that dips under sustained load on weak or thermally limited hardware (integrated-GPU
-        // laptops, see README_PERF.txt).
+        // F1: stable ~30 fps instead of an unstable "up to 60" on thermally limited hardware
+        // (see README_PERF.txt)
         bool f1KeyDown = glfwGetKey(window, GLFW_KEY_F1) == GLFW_PRESS;
         if (f1KeyDown && !m_f1KeyWasDown) {
             windowManager.togglePerformanceMode();
@@ -196,33 +250,48 @@ void Application::tick(GLFWwindow* window, DungeonScene& scene, AsciiEffect& asc
         }
         m_f1KeyWasDown = f1KeyDown;
 
+        // F3: vsync off (see README_PERF.txt).
+        const bool f3KeyDown = glfwGetKey(window, GLFW_KEY_F3) == GLFW_PRESS;
+        if (f3KeyDown && !m_f3KeyWasDown) {
+            windowManager.toggleUncapped();
+            std::printf("[perf] vsync = %s\n", windowManager.isUncapped() ? "OFF (benchmark)" : "ON");
+        }
+        m_f3KeyWasDown = f3KeyDown;
+
+        // The story and credits screens show no scene, so they skip the ASCII pipeline.
+        const bool sceneVisible = m_appState != AppState::STORY_TEXT && m_appState != AppState::CREDITS;
+        AsciiEffect::RenderView renderView = (m_shadersEnabled && sceneVisible)
+            ? AsciiEffect::RenderView::Ascii
+            : AsciiEffect::RenderView::Plain;
+#ifdef DEV_TOOLS_ACTIVE
+        // T is a letter while typing a save name. A dev view overrides the player's choice.
+        if (m_appState != AppState::SAVE_NAME_ENTRY)
+            DevTools::CycleRenderView(window);
+        if (DevTools::s_renderView != 0)
+            renderView = static_cast<AsciiEffect::RenderView>(DevTools::s_renderView);
+#endif
+        ascii.setRenderView(renderView);
+
         const bool gameplayActive =
             (m_appState == AppState::FADE_TO_GAME || m_appState == AppState::PLAYING);
 
-        // Push the volume sliders to the mixer before update() refills the streaming chunk, so a
-        // slider drag takes effect this frame.
+        // Apply slider values before update() fills the next chunk
         AudioMixer::instance().setMusicVolume(m_musicVolume);
         AudioMixer::instance().setMasterVolume(m_masterVolume);
 
-        // Every frame, unconditionally: the duck ramp and the streamed chunks must keep advancing
-        // even while gameplay logic is paused (e.g. the diary overlay).
+        // Every frame, even while gameplay logic is paused
         AudioMixer::instance().update(deltaTime);
 
-        // Active only during real gameplay; it stops or idles itself otherwise.
         scene.tickAmbientMusic(deltaTime, gameplayActive);
 
-        // No mouse look while the reading screen is open: movement/E/Tab are frozen there, and
-        // unconscious mouse movement would otherwise turn the camera, leaving the diary out of view
-        // when the screen closes.
+        // No mouse look while reading: stray mouse movement would turn the camera away from where
+        // the diary was
         m_mouseLookEnabled = gameplayActive && !scene.isReadingOverlayOpen();
 
-        // The cursor is visible and free until gameplay starts (menu/fade), then hidden and
-        // captured for mouse look.
+        // Cursor free in menus, captured for mouse look in gameplay
         if (gameplayActive != m_cursorCaptured) {
             if (gameplayActive) {
-                // GLFW_CURSOR_DISABLED can move the system cursor: reset the mouse-look baseline
-                // before glfwSetInputMode() so the first event after the switch is not read as a
-                // camera turn.
+                // Reset the mouse-look baseline first, or the cursor jump reads as a camera turn
                 scene.resetMouseLook();
             }
 
@@ -235,44 +304,35 @@ void Application::tick(GLFWwindow* window, DungeonScene& scene, AsciiEffect& asc
             m_cursorCaptured = gameplayActive;
         }
 
-        // SETTINGS has no background of its own: the screen it was opened from shows through
-        // (m_settingsReturnState), so the pause check below is extended with settingsFromPause.
-        // From the start screen it falls into the "menu camera stays put" branch.
+        // SETTINGS draws over the screen it was opened from
         const bool settingsFromPause =
             m_appState == AppState::SETTINGS && m_settingsReturnState == AppState::PAUSED;
 
         if (gameplayActive && scene.isReadingOverlayOpen()) {
-            // Diary screen open: movement and E are frozen (see
-            // DungeonScene::isReadingOverlayOpen()); only reading input (E/Tab/arrows) and the idle
-            // camera sway (as in pause) work.
+            // Reading: movement and E are frozen
             scene.tickReadingOverlayInput(window);
             scene.tickPauseCameraIdle(deltaTime);
         } else if (gameplayActive) {
             scene.processInput(window, deltaTime);
 
-            // Check the credits request right after processInput(), in the frame it may have been
-            // set.
+            // In the same frame processInput() may have set it
             if (m_appState == AppState::PLAYING && scene.consumeCreditsRequest()) {
                 m_pendingAction = PendingAction::SHOW_CREDITS;
                 m_appState = AppState::FADE_TO_BLACK;
             }
         } else if (m_appState == AppState::PAUSED || settingsFromPause) {
-            // Gameplay input is frozen in pause, but the camera keeps its idle motion, as if the
-            // player just stood still.
+            // Paused: the camera keeps its idle motion
             scene.tickPauseCameraIdle(deltaTime);
         }
-        // Menu/fade, or SETTINGS from the start screen: the camera does not update and the frame
-        // sits still (the menu background must not spin).
+        // Menu and fades: the camera stays still
 
-        // Stamina must finish draining in step with the fade after death
-        // (PlayerController::tickDeathFade()). processInput() has already stopped by then
-        // (gameplayActive is false), so the ticks do not overlap.
+        // Stamina finishes draining in step with the death fade; processInput() is no longer
+        // running here
         if (!gameplayActive) {
             scene.tickDeathFade(deltaTime);
         }
 
-        // Autosave periodically during real gameplay so CONTINUE reflects actual progress. It does
-        // not accumulate in pause: no extra disk I/O while the game is frozen.
+        // Periodic autosave during gameplay
         if (m_appState == AppState::PLAYING) {
             m_autosaveTimer += deltaTime;
             if (m_autosaveTimer >= kAutosaveIntervalSeconds) {
@@ -281,14 +341,11 @@ void Application::tick(GLFWwindow* window, DungeonScene& scene, AsciiEffect& asc
             }
         }
 
-        // Death: fade out once (consumeDeathFadeTrigger()) without scene.saveActiveSlot(), so the
-        // save is not overwritten with "died at zero health". PAUSED is handled too: the death
-        // sequence still plays out while paused.
+        // Death fades out without saving
         const bool canProcessDeathFade =
             m_appState == AppState::PLAYING || m_appState == AppState::PAUSED;
         if (canProcessDeathFade && scene.consumeDeathFadeTrigger()) {
-            // DIED, not RETURN_TO_MENU (which assumes an open pause menu over the fade): a clean
-            // fade with no menu that also generates a fresh map.
+            // DIED fades without a pause menu and generates a fresh map
             m_pendingAction = PendingAction::DIED;
             ++m_menuOpenCount;
             m_menuVariant = MainMenu::PickAtmosphereVariant(m_menuOpenCount, m_menuSeed);
@@ -296,9 +353,7 @@ void Application::tick(GLFWwindow* window, DungeonScene& scene, AsciiEffect& asc
             m_appState = AppState::FADE_TO_BLACK;
         }
 
-        // CELL title shatter animation: only on the start screen. Shard and tilt physics update
-        // every frame while the title is visible, so speeds change over time instead of following a
-        // linear interpolation.
+        // Title shatter animation; start screen only
         const bool mainMenuVisible =
             (m_appState == AppState::MENU) ||
             (m_appState == AppState::FADE_TO_MENU) ||
@@ -309,24 +364,26 @@ void Application::tick(GLFWwindow* window, DungeonScene& scene, AsciiEffect& asc
         if (mainMenuVisible) {
             MainMenu::UpdateTitleBreakup(m_titleBreakup, deltaTime);
 
-            // Rebuild the overlay every frame while CELL is moving, otherwise the UI texture would
-            // stay at the old position.
+            if (!m_shadersUnlocked && m_titleBreakup.fullFalling &&
+                m_titleBreakup.fallTime >= m_titleBreakup.fallDuration) {
+                m_shadersUnlocked = true;
+                m_settingsLayoutDirty = true;
+            }
+
+            // The overlay must follow the moving title
             if (MainMenu::HasActiveTitleAnimation(m_titleBreakup) ||
                 m_titleBreakup.clickCount > 0) {
                 m_menuLayoutDirty = true;
             }
         }
 
-        // Menu hover/confirm (start screen and pause): m_hoveredButton is recomputed every frame
-        // from the cursor position (no "last selection"); click/Enter confirms only the button
-        // under the cursor. Shared by MENU and PAUSED: the same mechanic over different buttons.
+        // Menu and pause
         if (m_appState == AppState::MENU || m_appState == AppState::PAUSED ||
             m_appState == AppState::SETTINGS || m_appState == AppState::CONTINUE_SELECT ||
             m_appState == AppState::SAVE_SELECT || m_appState == AppState::SAVE_CONFIRM ||
             m_appState == AppState::NEWGAME_SELECT || m_appState == AppState::NEWGAME_CONFIRM ||
             m_appState == AppState::SAVE_NAME_ENTRY) {
-            // Cursor pixels -> the menu grid the UI overlay uses (menuCellSizeForWindow());
-            // independent of the SHARPNESS cell size, otherwise clicks would drift.
+            // Cursor to menu-grid cells
             double mx = 0.0, my = 0.0;
             glfwGetCursorPos(window, &mx, &my);
 
@@ -339,9 +396,7 @@ void Application::tick(GLFWwindow* window, DungeonScene& scene, AsciiEffect& asc
             int hoverCol = -1, hoverRow = -1;
             if (cellSize > 0 && uiRows > 0) {
                 hoverCol = (int)std::floor(mx / (double)cellSize);
-                // The shader counts cells bottom-up (cellIndex.y = 0 at the bottom edge) while the
-                // MainMenu layout is top-down (row 0 at the title): the same flip as in the shader
-                // (see AsciiEffect.cpp).
+                // The shader counts rows bottom-up, the layout top-down
                 const int cellIndexY = (int)std::floor((winH - my) / (double)cellSize);
                 hoverRow = uiRows - 1 - cellIndexY;
             }
@@ -351,9 +406,6 @@ void Application::tick(GLFWwindow* window, DungeonScene& scene, AsciiEffect& asc
                        hoverRow >= r.y0 && hoverRow <= r.y1;
             };
 
-            // Confirm is LMB or Enter/Space. For MENU/PAUSED it only counts when the cursor is over
-            // a button; SETTINGS handles it separately below (LMB can also start dragging a
-            // slider).
             const bool confirmDown =
                 (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS ||
                  glfwGetKey(window, GLFW_KEY_ENTER)    == GLFW_PRESS ||
@@ -368,12 +420,17 @@ void Application::tick(GLFWwindow* window, DungeonScene& scene, AsciiEffect& asc
                 const bool newMasterSliderHovered = insideRect(m_settingsLayout.masterSliderPanel);
                 const bool newColorCheckboxHovered = insideRect(m_settingsLayout.colorCheckbox);
                 const bool newLensCheckboxHovered = insideRect(m_settingsLayout.lensCheckbox);
+                const bool newCrtCheckboxHovered = insideRect(m_settingsLayout.crtCheckbox);
+                const bool newShadersCheckboxHovered =
+                    m_settingsLayout.hasShadersCheckbox && insideRect(m_settingsLayout.shadersCheckbox);
                 if (newBackHovered != m_backHovered || newSliderHovered != m_sliderHovered ||
                     newSharpnessSliderHovered != m_sharpnessSliderHovered ||
                     newMusicSliderHovered != m_musicSliderHovered ||
                     newMasterSliderHovered != m_masterSliderHovered ||
                     newColorCheckboxHovered != m_colorCheckboxHovered ||
-                    newLensCheckboxHovered != m_lensCheckboxHovered) {
+                    newLensCheckboxHovered != m_lensCheckboxHovered ||
+                    newCrtCheckboxHovered != m_crtCheckboxHovered ||
+                    newShadersCheckboxHovered != m_shadersCheckboxHovered) {
                     m_backHovered = newBackHovered;
                     m_sliderHovered = newSliderHovered;
                     m_sharpnessSliderHovered = newSharpnessSliderHovered;
@@ -381,14 +438,15 @@ void Application::tick(GLFWwindow* window, DungeonScene& scene, AsciiEffect& asc
                     m_masterSliderHovered = newMasterSliderHovered;
                     m_colorCheckboxHovered = newColorCheckboxHovered;
                     m_lensCheckboxHovered = newLensCheckboxHovered;
+                    m_crtCheckboxHovered = newCrtCheckboxHovered;
+                    m_shadersCheckboxHovered = newShadersCheckboxHovered;
                     m_settingsLayoutDirty = true;
                 }
 
                 const bool lmbDown = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
 
-                // Dragging starts only by clicking the slider panel, but once started it holds
-                // while LMB is down even if the cursor leaves the track vertically (standard slider
-                // behavior).
+                // A drag starts on the slider panel and holds while LMB is down, even if the cursor
+                // leaves the track.
                 if (lmbDown && !m_sliderDragging && newSliderHovered) {
                     m_sliderDragging = true;
                 }
@@ -403,9 +461,8 @@ void Application::tick(GLFWwindow* window, DungeonScene& scene, AsciiEffect& asc
                     m_settingsLayoutDirty = true;
                 }
 
-                // SHARPNESS: like SENSITIVITY but calls ascii.setUserCellSize(). The atlas
-                // regeneration is costly, but the value is rounded to an int so real calls are far
-                // fewer than frames.
+                // SHARPNESS rebuilds glyph atlases; the value is an int, so that happens far less
+                // often than every frame
                 if (lmbDown && !m_sharpnessSliderDragging && newSharpnessSliderHovered) {
                     m_sharpnessSliderDragging = true;
                 }
@@ -420,8 +477,7 @@ void Application::tick(GLFWwindow* window, DungeonScene& scene, AsciiEffect& asc
                     m_settingsLayoutDirty = true;
                 }
 
-                // MUSIC slider: the same drag pattern; the value is already a plain 0..1 volume and
-                // is stored here rather than in scene/ascii (see m_musicVolume in Application.h).
+                // MUSIC: plain 0..1 volume, stored in Application
                 if (lmbDown && !m_musicSliderDragging && newMusicSliderHovered) {
                     m_musicSliderDragging = true;
                 }
@@ -450,8 +506,7 @@ void Application::tick(GLFWwindow* window, DungeonScene& scene, AsciiEffect& asc
                     m_settingsLayoutDirty = true;
                 }
 
-                // COLOR checkbox: a plain edge-triggered click/Enter/Space that flips a bool (not a
-                // drag, so it does not touch m_sliderDragging).
+                // COLOR: edge-triggered toggle
                 if (confirmDown && !m_confirmKeyWasDown && !m_sliderDragging && !m_sharpnessSliderDragging && m_colorCheckboxHovered) {
                     m_colorEnabled = !m_colorEnabled;
                     m_settingsLayoutDirty = true;
@@ -463,6 +518,16 @@ void Application::tick(GLFWwindow* window, DungeonScene& scene, AsciiEffect& asc
                     std::printf("[lens] toggled -> %s\n", m_lensEnabled ? "ON" : "OFF");
                 }
 
+                if (confirmDown && !m_confirmKeyWasDown && !m_sliderDragging && !m_sharpnessSliderDragging && m_crtCheckboxHovered) {
+                    m_crtEnabled = !m_crtEnabled;
+                    m_settingsLayoutDirty = true;
+                }
+
+                if (confirmDown && !m_confirmKeyWasDown && !m_sliderDragging && !m_sharpnessSliderDragging && m_shadersCheckboxHovered) {
+                    m_shadersEnabled = !m_shadersEnabled;
+                    m_settingsLayoutDirty = true;
+                }
+
                 if (confirmDown && !m_confirmKeyWasDown && !m_sliderDragging && !m_sharpnessSliderDragging && m_backHovered) {
                     m_appState = m_settingsReturnState;
                     m_backHovered = false;
@@ -471,11 +536,12 @@ void Application::tick(GLFWwindow* window, DungeonScene& scene, AsciiEffect& asc
                     m_musicSliderHovered = false;
                     m_masterSliderHovered = false;
                     m_colorCheckboxHovered = false;
+                    m_lensCheckboxHovered = false;
+                    m_crtCheckboxHovered = false;
+                    m_shadersCheckboxHovered = false;
                 }
             } else if (m_appState == AppState::CONTINUE_SELECT) {
-                // Slots highlight and click only if filled (m_continueLayout.slotFilled[i]): an
-                // empty slot never gets newHoveredButton (it stays -1, or hover falls through to
-                // BACK), so clicking it does nothing.
+                // Only filled slots can be hovered or clicked
                 int newHoveredButton = -1;
                 for (int i = 0; i < 3; ++i) {
                     if (m_continueLayout.slotFilled[i] && insideRect(m_continueLayout.slotButtons[i])) {
@@ -496,9 +562,7 @@ void Application::tick(GLFWwindow* window, DungeonScene& scene, AsciiEffect& asc
                         m_appState = AppState::MENU;
                         m_hoveredButton = -1;
                     } else {
-                        // The slot is guaranteed filled (see above): load it through the normal
-                        // black fade, like NEW GAME/EXIT. The heavy map regeneration happens once
-                        // the screen is fully black (see FADE_TO_BLACK).
+                        // Load through the black fade; the map is rebuilt once the screen is black
                         m_pendingLoadSlot = m_hoveredButton;
                         m_pendingAction = PendingAction::LOAD_GAME;
                         m_appState = AppState::FADE_TO_BLACK;
@@ -506,9 +570,8 @@ void Application::tick(GLFWwindow* window, DungeonScene& scene, AsciiEffect& asc
                     }
                 }
             } else if (m_appState == AppState::SAVE_SELECT) {
-                // Unlike CONTINUE_SELECT, all 3 slots are clickable here: an empty one goes
-                // straight to name entry (AppState::SAVE_NAME_ENTRY), a filled one asks for
-                // overwrite confirmation first (AppState::SAVE_CONFIRM).
+                // All slots are clickable: an empty one goes to name entry, a filled one asks to
+                // overwrite first
                 int newHoveredButton = -1;
                 for (int i = 0; i < 3; ++i) {
                     if (insideRect(m_saveLayout.slotButtons[i])) {
@@ -535,7 +598,7 @@ void Application::tick(GLFWwindow* window, DungeonScene& scene, AsciiEffect& asc
                         m_saveConfirmLayoutDirty = true;
                     } else {
                         m_pendingSaveSlot = m_hoveredButton;
-                        // reset: it could stay true from an earlier NEW GAME flow
+                        // May be left over from a NEW GAME flow
                         m_nameEntryForNewGame = false;
                         m_saveNameBuffer.clear();
                         m_appState = AppState::SAVE_NAME_ENTRY;
@@ -557,9 +620,7 @@ void Application::tick(GLFWwindow* window, DungeonScene& scene, AsciiEffect& asc
 
                 if (confirmDown && !m_confirmKeyWasDown && m_hoveredButton != -1) {
                     if (m_hoveredButton == 0) {
-                        // YES: go to name entry (nothing is saved yet), prefilled with the name
-                        // already in this slot, so the player can press ENTER to keep it or clear
-                        // it and type a new one.
+                        // Name entry, prefilled with the slot's current name
                         m_saveNameBuffer = SaveSystem::LoadSlot(m_pendingSaveSlot).name;
                         m_nameEntryForNewGame = false; // reset, see SAVE_SELECT above
                         m_appState = AppState::SAVE_NAME_ENTRY;
@@ -574,8 +635,7 @@ void Application::tick(GLFWwindow* window, DungeonScene& scene, AsciiEffect& asc
                     m_hoveredButton = -1;
                 }
             } else if (m_appState == AppState::NEWGAME_SELECT) {
-                // Same pattern as SAVE_SELECT (all 3 slots clickable, filled ones included), for
-                // NEW GAME from the main menu.
+                // Same as SAVE_SELECT, for NEW GAME
                 int newHoveredButton = -1;
                 for (int i = 0; i < 3; ++i) {
                     if (insideRect(m_newGameLayout.slotButtons[i])) {
@@ -585,6 +645,12 @@ void Application::tick(GLFWwindow* window, DungeonScene& scene, AsciiEffect& asc
                 if (newHoveredButton == -1 && insideRect(m_newGameLayout.backButton)) {
                     newHoveredButton = 3;
                 }
+                // 4.. = difficulty picker entries
+                for (int d = 0; d < kDifficultyCount && newHoveredButton == -1; ++d) {
+                    if (insideRect(m_newGameLayout.difficultyButtons[d])) {
+                        newHoveredButton = 4 + d;
+                    }
+                }
 
                 if (newHoveredButton != m_hoveredButton) {
                     m_hoveredButton = newHoveredButton;
@@ -592,7 +658,10 @@ void Application::tick(GLFWwindow* window, DungeonScene& scene, AsciiEffect& asc
                 }
 
                 if (confirmDown && !m_confirmKeyWasDown && m_hoveredButton != -1) {
-                    if (m_hoveredButton == 3) {
+                    if (m_hoveredButton >= 4) {
+                        m_selectedDifficulty = (Difficulty)(m_hoveredButton - 4);
+                        m_newGameLayoutDirty = true;
+                    } else if (m_hoveredButton == 3) {
                         m_appState = AppState::MENU;
                         m_hoveredButton = -1;
                     } else if (m_newGameLayout.slotFilled[m_hoveredButton]) {
@@ -623,8 +692,7 @@ void Application::tick(GLFWwindow* window, DungeonScene& scene, AsciiEffect& asc
 
                 if (confirmDown && !m_confirmKeyWasDown && m_hoveredButton != -1) {
                     if (m_hoveredButton == 0) {
-                        // YES: go to name entry. Unlike SAVE_CONFIRM the buffer is not prefilled
-                        // with the old name: this is a new game, not a continuation.
+                        // A new game starts with an empty name
                         m_nameEntryForNewGame = true;
                         m_saveNameBuffer.clear();
                         m_appState = AppState::SAVE_NAME_ENTRY;
@@ -639,9 +707,7 @@ void Application::tick(GLFWwindow* window, DungeonScene& scene, AsciiEffect& asc
                     m_hoveredButton = -1;
                 }
             } else if (m_appState == AppState::SAVE_NAME_ENTRY) {
-                // The mouse handles only BACK (cancel) and OK (confirm, the same logic as ENTER
-                // below, see confirmNameEntry()); typing is handled by the keyboard block further
-                // down.
+                // Mouse handles BACK and OK only; typing is below
                 const bool newBackHovered = insideRect(m_nameEntryLayout.backButton);
                 const bool newConfirmHovered = insideRect(m_nameEntryLayout.confirmButton);
                 if (newBackHovered != m_backHoveredNameEntry || newConfirmHovered != m_confirmHoveredNameEntry) {
@@ -690,10 +756,8 @@ void Application::tick(GLFWwindow* window, DungeonScene& scene, AsciiEffect& asc
 
                 if (confirmDown && !m_confirmKeyWasDown) {
                     if (m_appState == AppState::MENU && m_titleHovered) {
-                        // CELL is a clickable area, not a button: it shatters the logo. The hitbox
-                        // is titleBoxRect (same as the hover box) but the particle origin is
-                        // titleRect (the bare text); swapping them desyncs the scatter from the
-                        // letters.
+                        // The title is a click area that shatters the logo. Hit test uses
+                        // titleBoxRect, the particles originate from titleRect (the text itself)
                         const int titleScaleBase = std::max(1, uiRows / 60);
                         const float titleScale = (float)titleScaleBase * 1.5f;
 
@@ -711,8 +775,8 @@ void Application::tick(GLFWwindow* window, DungeonScene& scene, AsciiEffect& asc
                         m_menuLayoutDirty = true;
                     } else if (m_hoveredButton != -1) {
                         if (m_appState == AppState::MENU) {
-                            // NEW GAME and CONTINUE open a slot picker; SETTINGS is instant (no
-                            // fade); EXIT is the only way to close the app.
+                            // NEW GAME and CONTINUE open a slot picker; SETTINGS is instant; EXIT
+                            // closes the app
                             if (m_hoveredButton == 0) {
                                 m_appState = AppState::NEWGAME_SELECT;
                                 m_hoveredButton = -1;
@@ -733,8 +797,7 @@ void Application::tick(GLFWwindow* window, DungeonScene& scene, AsciiEffect& asc
                                 m_appState = AppState::FADE_TO_BLACK;
                             }
                         } else {
-                            // RESUME, SAVE (slot picker) and SETTINGS are instant; MENU fades and
-                            // does not close the app.
+                            // RESUME, SAVE and SETTINGS are instant; MENU fades to the start screen
                             if (m_hoveredButton == 0) {
                                 m_appState = AppState::PLAYING;
                             } else if (m_hoveredButton == 1) {
@@ -749,9 +812,8 @@ void Application::tick(GLFWwindow* window, DungeonScene& scene, AsciiEffect& asc
                                 m_sliderHovered = false;
                                 m_settingsLayoutDirty = true;
                             } else {
-                                // Pick the menu variant now so FADE_TO_MENU uses it from the first
-                                // frame, and autosave first so CONTINUE reflects the progress at
-                                // the moment of leaving.
+                                // Pick the menu variant now so the fade uses it from its first
+                                // frame; autosave before leaving
                                 scene.saveActiveSlot();
                                 m_pendingAction = PendingAction::RETURN_TO_MENU;
                                 ++m_menuOpenCount;
@@ -763,12 +825,21 @@ void Application::tick(GLFWwindow* window, DungeonScene& scene, AsciiEffect& asc
                     }
                 }
             }
+
+            // Interface sounds
+            const int hoverId = currentUiHoverId();
+            if (confirmDown && !m_confirmKeyWasDown && m_uiHoverId != -1)
+                UiAudio::PlayClick();
+            else if (!confirmDown && hoverId != -1 && hoverId != m_uiHoverId)
+                UiAudio::PlayHover();
+            m_uiHoverId = hoverId;
+
             m_confirmKeyWasDown = confirmDown;
+        } else {
+            m_uiHoverId = -1;
         }
 
-        // Save-name text entry: separate from the menu handling above (that is mouse, this is
-        // keyboard). Keys are polled (glfwGetKey) and compared with m_textEntryKeyWasDown for edge
-        // triggering, otherwise a held key would type every frame.
+        // Save-name entry÷
         if (m_appState == AppState::SAVE_NAME_ENTRY) {
             auto keyPressed = [&](int glfwKey) {
                 const bool down = glfwGetKey(window, glfwKey) == GLFW_PRESS;
@@ -779,8 +850,7 @@ void Application::tick(GLFWwindow* window, DungeonScene& scene, AsciiEffect& asc
 
             bool bufferChanged = false;
 
-            // Letters A-Z and digits 0-9: the full set BigFont supports (GetBigGlyph() in
-            // BigFont.cpp).
+            // The characters BigFont can draw
             for (int k = GLFW_KEY_A; k <= GLFW_KEY_Z; ++k) {
                 if (keyPressed(k) && (int)m_saveNameBuffer.size() < SaveSystem::kNameMaxLen) {
                     m_saveNameBuffer.push_back((char)('A' + (k - GLFW_KEY_A)));
@@ -807,54 +877,40 @@ void Application::tick(GLFWwindow* window, DungeonScene& scene, AsciiEffect& asc
         }
 
         if (m_appState == AppState::FADE_TO_BLACK) {
-            // Death gets its own, slower speed (kDeathFadeOutSpeed); the normal menu exit
-            // (RETURN_TO_MENU etc.) is untouched.
             const float fadeOutSpeed =
                 (m_pendingAction == PendingAction::DIED) ? kDeathFadeOutSpeed : kFadeOutSpeed;
             m_fadeAlpha += fadeOutSpeed * deltaTime;
             if (m_fadeAlpha >= 1.0f) {
                 m_fadeAlpha = 1.0f;
 
-                // The screen is fully black: decide what comes next from PendingAction. QUIT_APP is
-                // the only place the app actually closes.
+                // Fully black: run the pending action. QUIT_APP is the only place the app closes
                 if (m_pendingAction == PendingAction::QUIT_APP) {
                     glfwSetWindowShouldClose(window, true);
                 } else if (m_pendingAction == PendingAction::RETURN_TO_MENU) {
                     m_appState = AppState::FADE_TO_MENU;
                 } else if (m_pendingAction == PendingAction::SHOW_CREDITS) {
-                    // Credits fade from alpha 1.0 like FADE_TO_MENU, so the text stays bright. To
-                    // keep the dungeon from showing through, the camera moves outside the map
-                    // geometry (teleportCameraForCredits()): nothing is rendered over a black clear
-                    // color.
-                    scene.teleportCameraForCredits();
-                    m_appState = AppState::CREDITS;
-                    m_creditsScrollPx = 0.0f;
+                    startStory(/*leadsToCredits=*/true);
                 } else if (m_pendingAction == PendingAction::DIED) {
-                    // Generate a fresh map instead of leaving the death map behind the menu;
-                    // newGame() also resets the player state that would still read as "just died".
+                    // Fresh map, the menu is not backed by the death scene; newGame() also
+                    // resets the player
                     scene.newGame();
                     m_appState = AppState::FADE_TO_MENU;
                 } else if (m_pendingAction == PendingAction::NEW_GAME) {
-                    // The screen is fully black: map/GL regeneration is invisible. Not reachable
-                    // through the current UI (NEW GAME always goes through NEW_GAME_IN_SLOT below)
-                    // but kept as a safe fallback.
+                    // Fallback: UI always goes through NEW_GAME_IN_SLOT
                     scene.newGame();
                     m_autosaveTimer = 0.0f;
                     m_appState = AppState::FADE_TO_GAME;
                 } else if (m_pendingAction == PendingAction::NEW_GAME_IN_SLOT) {
-                    // The slot and name were chosen before the fade (confirmNameEntry());
-                    // m_saveNameBuffer already holds the default "SLOT{n}" if the player left it
-                    // empty.
+                    // Slot, name and difficulty were chosen before the fade
+                    scene.setDifficulty(m_selectedDifficulty);
                     scene.newGame(m_pendingNewGameSlot, m_saveNameBuffer);
                     m_pendingNewGameSlot = -1;
                     m_saveNameBuffer.clear();
                     m_nameEntryForNewGame = false;
                     m_autosaveTimer = 0.0f;
-                    m_appState = AppState::FADE_TO_GAME;
+                    startStory(/*leadsToCredits=*/false);
                 } else if (m_pendingAction == PendingAction::LOAD_GAME) {
                     if (!scene.loadSlot(m_pendingLoadSlot)) {
-                        // Should not happen (the UI does not let an empty slot be picked), but a
-                        // fallback new game beats hanging on a black screen without a scene.
                         scene.newGame();
                     }
                     m_pendingLoadSlot = -1;
@@ -880,40 +936,49 @@ void Application::tick(GLFWwindow* window, DungeonScene& scene, AsciiEffect& asc
                 m_hoveredButton = -1;
                 m_titleHovered = false;
                 m_menuLayoutDirty = true;
-                // m_menuVariant was already picked when MENU was clicked in pause; picking it again
-                // here would skip a variant.
+                // The variant was picked when MENU was clicked
+            }
+        } else if (m_appState == AppState::STORY_TEXT) {
+            const bool spaceDown = glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS;
+            if (!spaceDown)
+                m_storySkipArmed = true;
+            m_storySkipHold = (spaceDown && m_storySkipArmed) ? m_storySkipHold + deltaTime : 0.0f;
+            if (m_storySkipHold >= kStorySkipHoldSeconds)
+                m_storyText.skip();
+
+            m_storyText.update(deltaTime);
+            if (m_storyText.finished()) {
+                m_fadeAlpha = 1.0f;
+                if (m_storyLeadsToCredits) {
+                    // Credits fade in from black; the camera moves outside the map so only the
+                    // clear color shows behind the text.
+                    scene.teleportCameraForCredits();
+                    m_appState = AppState::CREDITS;
+                    m_creditsScrollPx = 0.0f;
+                } else {
+                    m_appState = AppState::FADE_TO_GAME;
+                }
             }
         } else if (m_appState == AppState::CREDITS) {
-            // Same fade-out as FADE_TO_MENU, but on reaching 0 it stays in CREDITS instead of
-            // transitioning.
+            // Fade in and stay on CREDITS
             if (m_fadeAlpha > 0.0f) {
                 m_fadeAlpha -= kFadeInSpeed * deltaTime;
                 if (m_fadeAlpha < 0.0f) m_fadeAlpha = 0.0f;
             }
         }
 
-        const bool noclipEnabled = gameplayActive && scene.isNoclipEnabled();
-        const bool wantCinematicBoost =
-            gameplayActive && noclipEnabled && scene.isCinematicResolutionEnabled();
-
-        if (wantCinematicBoost != m_appliedCinematicBoost) {
-            m_currentSceneW = wantCinematicBoost ? scene.getCinematicSceneWidth()  : m_normalSceneW;
-            m_currentSceneH = wantCinematicBoost ? scene.getCinematicSceneHeight() : m_normalSceneH;
-            ascii.resize(m_currentSceneW, m_currentSceneH);
-            ascii.setCinematicMode(wantCinematicBoost, scene.getCinematicCellSize());
-            m_appliedCinematicBoost = wantCinematicBoost;
-            m_menuLayoutDirty = true;
-        }
-
         int w, h;
         glfwGetFramebufferSize(window, &w, &h);
 
-        ascii.begin();
-        scene.render(m_currentSceneW, m_currentSceneH, gameplayActive);
+        const bool noclipEnabled = gameplayActive && scene.isNoclipEnabled();
 
-        // Stamina bar: gameplay only, not in menu/fade. The fill is stamina, the "dripping" frame
-        // is health. It fades out in noclip (a debug mode for trailer shots, where the HUD gets in
-        // the way).
+        m_gpuTimer.begin(GpuTimer::Scene);
+        ascii.begin();
+        if (m_appState != AppState::STORY_TEXT)
+            scene.render(ascii.sceneWidth(), ascii.sceneHeight(), gameplayActive);
+        m_gpuTimer.end();
+
+        // Stamina bar (fill = stamina, dripping frame = health) during gameplay; hidden in noclip
         ascii.setStamina(scene.getStaminaFraction(), /*enabled=*/gameplayActive && !noclipEnabled);
         ascii.setHealth(scene.getHealthFraction());
 
@@ -922,16 +987,16 @@ void Application::tick(GLFWwindow* window, DungeonScene& scene, AsciiEffect& asc
             scene.glyphGlitchUV().x, scene.glyphGlitchUV().y,
             scene.glyphGlitchRadiusCells());
 
-        // Pick the UI overlay for the current state. The FADE_TO_BLACK overlay depends on what
-        // triggered it (start screen, or the slot list for PendingAction::LOAD_GAME); save screens
-        // never fade because the write is instant. SETTINGS shows the same overlay wherever it was
-        // opened from.
-        enum class OverlayMode { NONE, MAIN_MENU, CONTINUE_MENU, SAVE_MENU, SAVE_CONFIRM_MENU, SAVE_NAME_MENU, NEWGAME_MENU, NEWGAME_CONFIRM_MENU, PAUSE_MENU, SETTINGS_MENU, DIARY_READING, DIARY_HINT, WIN_BLOCKED_MSG, WIN_READY_MSG, WIN_ACTIVATE_HINT, TORCH_HINT, TORCH_EMPTY_MSG, CREDITS_SCREEN };
+        // UI overlay for the current state. The FADE_TO_BLACK overlay depends on what triggered it
+        // SETTINGS shows the same overlay wherever it was opened from
+        enum class OverlayMode { NONE, MAIN_MENU, CONTINUE_MENU, SAVE_MENU, SAVE_CONFIRM_MENU, SAVE_NAME_MENU, NEWGAME_MENU, NEWGAME_CONFIRM_MENU, PAUSE_MENU, SETTINGS_MENU, DIARY_READING, DIARY_HINT, WIN_BLOCKED_MSG, WIN_READY_MSG, WIN_ACTIVATE_HINT, TORCH_HINT, TORCH_EMPTY_MSG, CREDITS_SCREEN, STORY_SCREEN };
         OverlayMode overlay = OverlayMode::NONE;
         if (m_appState == AppState::MENU || m_appState == AppState::FADE_TO_MENU) {
             overlay = OverlayMode::MAIN_MENU;
         } else if (m_appState == AppState::CREDITS) {
             overlay = OverlayMode::CREDITS_SCREEN;
+        } else if (m_appState == AppState::STORY_TEXT) {
+            overlay = OverlayMode::STORY_SCREEN;
         } else if (m_appState == AppState::CONTINUE_SELECT) {
             overlay = OverlayMode::CONTINUE_MENU;
         } else if (m_appState == AppState::SAVE_SELECT) {
@@ -950,8 +1015,7 @@ void Application::tick(GLFWwindow* window, DungeonScene& scene, AsciiEffect& asc
             } else if (m_pendingAction == PendingAction::LOAD_GAME) {
                 overlay = OverlayMode::CONTINUE_MENU;
             } else if (m_pendingAction == PendingAction::DIED) {
-                // Death can happen mid-gameplay with no pause open: the screen just darkens on its
-                // own.
+                // Death during gameplay: just darken.
                 overlay = OverlayMode::NONE;
             } else if (m_pendingAction == PendingAction::SHOW_CREDITS) {
                 overlay = OverlayMode::NONE; // same logic as DIED
@@ -964,15 +1028,13 @@ void Application::tick(GLFWwindow* window, DungeonScene& scene, AsciiEffect& asc
             overlay = OverlayMode::SETTINGS_MENU;
         }
 
-        // The diary screen is not its own AppState (an overlay on top of PLAYING), so it is checked
-        // separately from the chain above.
+        // The diary screen is an overlay on PLAYING, not an AppState
         if (m_appState == AppState::PLAYING && scene.isReadingOverlayOpen()) {
             overlay = OverlayMode::DIARY_READING;
         } else if (m_appState == AppState::PLAYING && scene.winReadyToPressE()) {
-            // "[E] PRESS TO WIN" has the highest priority among the hints below (no real conflict:
-            // the player cannot be at two points of interest at once).
+            // Highest priority hint; the player cannot be at two points of interest at once
             overlay = OverlayMode::WIN_READY_MSG;
-        } else if (m_appState == AppState::PLAYING && scene.nearWinMonumentReadyToActivate()) {
+        } else if (m_appState == AppState::PLAYING && scene.nearExitDoorReadyToActivate()) {
             overlay = OverlayMode::WIN_ACTIVATE_HINT;
         } else if (m_appState == AppState::PLAYING && scene.showWinBlockedMessage()) {
             overlay = OverlayMode::WIN_BLOCKED_MSG; // short-lived; takes priority over DIARY_HINT
@@ -984,31 +1046,24 @@ void Application::tick(GLFWwindow* window, DungeonScene& scene, AsciiEffect& asc
             overlay = OverlayMode::TORCH_HINT;
         }
 
-        // The grid is built from the actual window size (as passed to ascii.end()), not the
-        // internal 1280x720 FBO, or menu text would drift on fullscreen/resize. cols/rows are also
-        // needed outside the overlay branch: the HUD icons above the stamina bar are visible
-        // throughout gameplay.
+        // Grid from the real window size, not the 1280x720 scene FBO, or menu text drifts on
+        // resize. Also needed for the HUD icons during gameplay
         const int cols = ascii.getMenuGridColsForWindow(w, h);
         const int rows = ascii.getMenuGridRowsForWindow(w, h);
         const size_t expectedGridSize = (size_t)std::max(0, cols) * std::max(0, rows);
 
-        // Torch/stone/diary count icons: shown exactly when the stamina bar is, hidden while
-        // reading a diary. Rebuilt every frame (small grid). hudIconsGrid is the base layer for the
-        // hint branches below, so icons stay visible with a hint.
+        // Item icons show with the stamina bar and hide while reading
         const bool showHudIcons =
             gameplayActive && !scene.isNoclipEnabled() && !scene.isReadingOverlayOpen();
 
-        // Reusable m_hudIconsGridScratch. The icon position depends on the live cellSize, not on
-        // the grid size, so a size-preserving cellSize change would leave the old icon stamped:
-        // hence a full std::fill every frame.
+        // The icon row depends on the live cell size, so the grid is cleared every frame
         if (m_hudIconsGridScratch.size() != expectedGridSize) {
             m_hudIconsGridScratch.assign(expectedGridSize, 0);
         }
         if (showHudIcons) {
             std::fill(m_hudIconsGridScratch.begin(), m_hudIconsGridScratch.end(), 0);
-            // The stamina bar lives in the shader's live grid, the icons in the fixed menu grid:
-            // two coordinate systems. They are converted through window pixels (bar top edge from
-            // the live cellSize -> menu row).
+            // The stamina bar lives in the live scene grid, the icons in the menu grid; converted
+            // through window pixels
             const int liveCellSize = ascii.getUserCellSize();
             const float staminaBarTopPx = 6.0f * (float)liveCellSize; // BOTTOM_PAD(2)+4 rows
             const float staminaBarTopFrac = (h > 0) ? (staminaBarTopPx / (float)h) : 0.0f;
@@ -1044,9 +1099,7 @@ void Application::tick(GLFWwindow* window, DungeonScene& scene, AsciiEffect& asc
                 ascii.setUIOverlay(true, m_pauseLayout.grid, cols, rows);
             } else if (overlay == OverlayMode::CONTINUE_MENU) {
                 if (m_continueLayoutDirty || m_continueLayout.grid.size() != expectedGridSize) {
-                    // Full load of each slot (not just SlotExists()): the button label needs the
-                    // actual name. The files are tiny, so parsing three of them once per screen
-                    // entry costs nothing.
+                    // Full load, not SlotExists(): the button shows the save name
                     const bool slotFilled[3] = {
                         SaveSystem::SlotExists(0),
                         SaveSystem::SlotExists(1),
@@ -1091,15 +1144,16 @@ void Application::tick(GLFWwindow* window, DungeonScene& scene, AsciiEffect& asc
                         slotLabel(slotFilled[1], SaveSystem::LoadSlot(1).name, 1),
                         slotLabel(slotFilled[2], SaveSystem::LoadSlot(2).name, 2)
                     };
+                    const int hoveredDifficulty = m_hoveredButton >= 4 ? m_hoveredButton - 4 : -1;
                     m_newGameLayout = MainMenu::BuildNewGameMenu(
-                        cols, rows, m_hoveredButton, m_menuSeed, slotLabels, slotFilled, m_menuVariant);
+                        cols, rows, m_hoveredButton < 4 ? m_hoveredButton : -1, m_menuSeed, slotLabels,
+                        slotFilled, m_menuVariant, (int)m_selectedDifficulty, hoveredDifficulty);
                     m_newGameLayoutDirty = false;
                 }
                 ascii.setUIOverlay(true, m_newGameLayout.grid, cols, rows);
             } else if (overlay == OverlayMode::SAVE_CONFIRM_MENU) {
                 if (m_saveConfirmLayoutDirty || m_saveConfirmLayout.grid.size() != expectedGridSize) {
-                    // Compact multi-line message in a small font instead of a giant "OVERWRITE"
-                    // title: the full warning would not fit that way, width-wise or stylistically.
+                    // A small multi-line message
                     static const std::vector<std::string> kOverwriteMessage = {
                         "ARE YOU SURE YOU",
                         "WANT TO OVERWRITE",
@@ -1132,14 +1186,12 @@ void Application::tick(GLFWwindow* window, DungeonScene& scene, AsciiEffect& asc
                 }
                 ascii.setUIOverlay(true, m_nameEntryLayout.grid, cols, rows);
             } else if (overlay == OverlayMode::DIARY_READING) {
-                // Reusable m_diaryReadingGridScratch: rebuilt every frame without allocating
-                // (E/Tab/arrows change it too often to track invalidation).
+                // Rebuilt every frame into a reused buffer
                 scene.buildReadingOverlayGrid(m_diaryReadingGridScratch, cols, rows);
                 ascii.setUIOverlay(true, m_diaryReadingGridScratch, cols, rows);
             } else if (overlay == OverlayMode::DIARY_HINT) {
-                // BigFont cannot go below a 5x7 cell block, a jump of about 7x over regular text.
-                // Instead of sizing it up, draw a "key" outline around a normal-size E, so it reads
-                // as a keyboard button and not a giant letter.
+                // BigFont is far larger than regular text, so the key is drawn as an outline around
+                // a normal E
                 m_hintGridScratch = m_hudIconsGridScratch;
 
                 const std::string text = "E READ DIARY";
@@ -1172,9 +1224,7 @@ void Application::tick(GLFWwindow* window, DungeonScene& scene, AsciiEffect& asc
                                    cols / 2 - (int)msg.size() / 2, rows / 2 + 2, msg);
                 ascii.setUIOverlay(true, m_hintGridScratch, cols, rows);
             } else if (overlay == OverlayMode::WIN_READY_MSG) {
-                // Start from m_hudIconsGridScratch so the icons do not disappear while the hint is
-                // shown: it can stay up for a while as the player admires the donut without
-                // pressing E.
+                // On top of the HUD icons
                 const std::string msg = "[E] PRESS TO WIN";
                 m_hintGridScratch = m_hudIconsGridScratch;
                 MainMenu::PutText(m_hintGridScratch, cols, rows,
@@ -1188,16 +1238,29 @@ void Application::tick(GLFWwindow* window, DungeonScene& scene, AsciiEffect& asc
                 ascii.setUIOverlay(true, m_hintGridScratch, cols, rows);
             } else if (overlay == OverlayMode::WIN_BLOCKED_MSG) {
                 const int have = scene.diariesReadCount();
-                const int need = std::max(0, PlayerController::kMinDiariesToWin - have);
+                const int need = std::max(0, scene.diariesToWin() - have);
                 const std::string msg = "NEED " + std::to_string(need) + " MORE DIARIES";
                 m_hintGridScratch = m_hudIconsGridScratch;
                 MainMenu::PutText(m_hintGridScratch, cols, rows,
                                    cols / 2 - (int)msg.size() / 2, rows / 2 + 2, msg);
                 ascii.setUIOverlay(true, m_hintGridScratch, cols, rows);
+            } else if (overlay == OverlayMode::STORY_SCREEN) {
+                m_storyGrid.resize(expectedGridSize);
+                m_storyText.draw(m_storyGrid, cols, rows);
+
+                // Bottom-right hint; while Space is held it turns into '#' from left to right
+                const std::string hint = "HOLD SPACE TO SKIP";
+                const int hintCol = cols - (int)hint.size() - 2;
+                const int hintRow = rows - 2;
+                const float progress = std::min(m_storySkipHold / kStorySkipHoldSeconds, 1.0f);
+                const int filled = (int)(progress * (float)hint.size());
+                for (int i = 0; i < (int)hint.size(); ++i) {
+                    MainMenu::PutGlyph(m_storyGrid, cols, rows, hintCol + i, hintRow,
+                                       i < filled ? MainMenu::GLYPH_HASH : MainMenu::CharToGlyph(hint[(size_t)i]));
+                }
+                ascii.setUIOverlay(true, m_storyGrid, cols, rows);
             } else if (overlay == OverlayMode::CREDITS_SCREEN) {
-                // Just the frame (grid UI font); the text is a separate TTF layer drawn after
-                // ascii.end() (see the block below, gated on m_appState == CREDITS). Reuses
-                // m_hintGridScratch because the credits screen can stay open for minutes.
+                // Frame only; the text is a TTF layer drawn after ascii.end()
                 m_hintGridScratch.assign(expectedGridSize, 0);
                 const int margin = std::max(2, cols / 12);
                 MainMenu::DrawBox(m_hintGridScratch, cols, rows,
@@ -1205,13 +1268,11 @@ void Application::tick(GLFWwindow* window, DungeonScene& scene, AsciiEffect& asc
                                    1, /*filled=*/false, /*seed=*/777);
                 ascii.setUIOverlay(true, m_hintGridScratch, cols, rows);
             } else {
-                // Rebuild every frame in which the value could have changed: dragging a slider
-                // changes it continuously, not only at hover/click boundaries like regular buttons.
+                // Sliders change continuously while dragged
                 if (m_settingsLayoutDirty || m_sliderDragging || m_sharpnessSliderDragging ||
                     m_musicSliderDragging || m_masterSliderDragging ||
                     m_settingsLayout.grid.size() != expectedGridSize) {
-                    // The settings atmosphere uses the same composition as its "parent" screen
-                    // (menu or pause), so it does not flash a different pattern on entry/exit.
+                    // Same composition as the parent screen, so entering settings does not flash
                     const int settingsVariant =
                         (m_settingsReturnState == AppState::PAUSED) ? m_pauseVariant : m_menuVariant;
                     m_settingsLayout = MainMenu::BuildSettingsMenu(
@@ -1224,6 +1285,8 @@ void Application::tick(GLFWwindow* window, DungeonScene& scene, AsciiEffect& asc
                         m_musicSliderHovered, m_masterSliderHovered,
                         m_colorEnabled, m_colorCheckboxHovered,
                         m_lensEnabled, m_lensCheckboxHovered,
+                        m_crtEnabled, m_crtCheckboxHovered,
+                        m_shadersUnlocked, m_shadersEnabled, m_shadersCheckboxHovered,
                         settingsVariant);
                     m_settingsLayoutDirty = false;
                 }
@@ -1241,20 +1304,27 @@ void Application::tick(GLFWwindow* window, DungeonScene& scene, AsciiEffect& asc
         ascii.setColorEnabled(m_colorEnabled);
         ascii.setLensEffectEnabled(m_lensEnabled);
         ascii.setTime((float)glfwGetTime());
-        // The compass/minimap are drawn by a separate shader after ascii.end(), so the color mode
-        // is passed through here too.
+        // The compass is drawn by its own shader after ascii.end()
         scene.setColorEnabled(m_colorEnabled);
 
+        ascii.setDepthRange(scene.nearPlane(), scene.farPlane());
+        // Persistence trails smear ASCII glyphs, so they are only used for the plain 3D view
+        m_crt.setEnabled(m_crtEnabled);
+        m_crt.setPersistence(!m_shadersEnabled);
+        ascii.setWindowFramebuffer(m_crt.beginFrame(w, h));
+        m_gpuTimer.begin(GpuTimer::Ascii);
         ascii.end(w, h);
+        m_gpuTimer.end();
+        m_gpuTimer.endFrame();
 
         if (gameplayActive) {
             scene.renderCompassOverlay(w, h);
 
             scene.renderDebugMap(w, h);
 
-            // Diary prose is a separate TTF layer drawn after ascii.end() (the ASCII post-process
-            // would break the letters into glyphs); only the text is added here, inside the frame
-            // from getReadingBoxBounds().
+            // Diary prose is a TTF layer after ascii.end()
+            //inside the frame from getReadingBoxBounds()
+
             if (scene.isReadingOverlayOpen() && m_textRenderer.isReady()) {
                 const int cols = ascii.getMenuGridColsForWindow(w, h);
                 const int rows = ascii.getMenuGridRowsForWindow(w, h);
@@ -1290,19 +1360,32 @@ void Application::tick(GLFWwindow* window, DungeonScene& scene, AsciiEffect& asc
                         lineY += lineH;
                     }
                 } else if (scene.isJournalListMode()) {
-                    // No "LOG" heading: the list starts almost at the frame's top edge with a
-                    // compact step (journalRowScale), so all entries fit without clipping at the
-                    // bottom.
+                    // The list scrolls with the selection when the frame cannot hold every row
                     const int total = scene.diariesTotalCount();
+                    const int selected = scene.journalSelectedIndex();
                     const float rowH = m_textRenderer.lineHeight(journalRowScale);
-                    float rowY = boxTopPx + 40.0f;
-                    for (int i = 0; i < total; ++i) {
-                        if (rowY > boxBottomPx - 30.0f) break;
-                        const bool read = scene.diaryReadAt(i);
+                    const float listTop = boxTopPx + 40.0f;
+                    const float listBottom = boxBottomPx - 30.0f;
+                    const int visible = std::max(1, (int)((listBottom - listTop) / rowH) + 1);
+                    const int first = std::clamp(selected - visible / 2, 0, std::max(0, total - visible));
+                    const int last = std::min(total, first + visible);
+
+                    const glm::vec3 hintColor(0.55f, 0.50f, 0.40f);
+                    if (first > 0)
+                        m_textRenderer.drawLine("...", boxLeftPx + 50.0f, listTop - rowH * 0.9f, 0.5f, hintColor);
+                    if (last < total)
+                        m_textRenderer.drawLine("...", boxLeftPx + 50.0f, listBottom + rowH * 0.6f, 0.5f, hintColor);
+                    const std::string hint = (total > visible) ? "UP/DOWN TO SCROLL - E TO READ - TAB TO CLOSE"
+                                                               : "UP/DOWN TO SELECT - E TO READ - TAB TO CLOSE";
+                    const float hintW = m_textRenderer.textWidth(hint, 0.5f);
+                    m_textRenderer.drawLine(hint, boxCenterX - hintW * 0.5f, boxBottomPx + 10.0f, 0.5f, hintColor);
+
+                    float rowY = listTop;
+                    for (int i = first; i < last; ++i) {
+                        const bool read = scene.journalEntryRead(i);
                         const std::string label = "ENTRY " + std::to_string(i + 1) + (read ? "" : " ---");
 
-                        // Highlight: the same layer and coordinates as the line's text, added to
-                        // the batch before that line's drawLine() so the text ends up on top.
+                        // Queued before the line so the text draws on top
                         if (i == scene.journalSelectedIndex()) {
                             m_textRenderer.drawRect(
                                 boxLeftPx + 40.0f, rowY - rowH * 0.75f,
@@ -1321,8 +1404,7 @@ void Application::tick(GLFWwindow* window, DungeonScene& scene, AsciiEffect& asc
             }
         }
 
-        // Credits (AppState::CREDITS): a standalone block, not gameplay. The same TTF layer as the
-        // diary prose, scrolling because the text does not fit the frame.
+        // Credits: scrolling TTF text
         if (m_appState == AppState::CREDITS && m_textRenderer.isReady()) {
             const int cols = ascii.getMenuGridColsForWindow(w, h);
             const int rows = ascii.getMenuGridRowsForWindow(w, h);
@@ -1344,17 +1426,27 @@ void Application::tick(GLFWwindow* window, DungeonScene& scene, AsciiEffect& asc
             m_creditsUpKeyWasDown = upDown;
             m_creditsDownKeyWasDown = downDown;
 
-            // Text as paragraphs: wrapText() wraps only on spaces, not on embedded "\n", so
-            // paragraphs are assembled as separate calls with a blank line between them.
+            // wrapText() ignores embedded newlines, so paragraphs are wrapped separately
             static const std::vector<std::string> kCreditsParagraphs = {
-                "Thank you for playing this game. This is my first game where I focused more on technology and the technical side than on gameplay. I started this project out of boredom, and decided to just show the world this little game to say: \"LOOK, I CAN DO THIS, MUNDFISH, HIRE ME\" but unfortunately that hasn't happened yet. I probably won't keep developing or improving this project. This \"pseudo-engine\" isn't really worth anything and anyone could make it (you can check the source code on GitHub: dedvpolit).",
-                "I want to say thank you to Mishiki for writing the music for me.",
+                "THANK YOU FOR PLAYING THIS GAME!",
+                "This is my first game where I focused more on technology and the technical side than on gameplay. I started this project out of boredom, and decided to just show the world this little game to say: \"LOOK, I CAN DO THIS\" but unfortunately that hasn't happened yet. I probably won't keep developing or improving this project. This \"pseudo-engine\" isn't really worth anything and anyone could make it.",
+                "(you can check the source code on GitHub: dedvpolit).",
                 "Thanks to Acerola for letting me study his ASCII-shader project so I could later build it into this game.",
-                "And of course, thank you to my parents for putting up with me. I love you.",
-                "Finally, thank you to everyone who downloaded this and is reading these credits right now (and an enormous thank you to those who, despite the boring mechanics, collected all 12 diaries and saw every \"glitch\" effect). I hope you caught the reference to the ASCII donut from those YouTube videos at the end.",
-                "I also want to say that the main character of this game is still out there, wandering this endless maze. I hope your hardware didn't die while you were playing this.",
-                "Good luck, dear player! I hope you'll see my future projects too. I promise there will be an actual interesting story and interesting gameplay next time.",
-                "P.S. MUNDFISH, TAKE ME ON AS AN INTERN. I'LL SOON BE IN MY 3RD YEAR.",
+                "And of course, thanks to my parents for putting up with me. I love you.",
+                "Finally, thank YOU who downloaded this and is reading these credits right now (and an enormous thanks to those who, despite the boring mechanics, collected all 12 diaries and saw every \"glitch\" effect). I hope you caught the reference to the ASCII donut from those YouTube videos at the end.",
+                "I also want to say that the main character of this game is still out there, wandering this endless maze. AND I hope your hardware didn't die while you were playing this.",
+                "Good luck! I hope you'll see my future projects too.",
+                "I promise there will be an actual interesting story and interesting gameplay next time.",
+                "P.S: MUNDFISH, TAKE ME ON AS AN INTERN. I'LL SOON BE IN MY 3RD YEAR",
+                "CREDITS",
+                "ASCII shader: based on AcerolaFX ASCII by Acerola",
+                "Enemy model: THE WRAPPED by Codyanka (CC0)",
+                "Music: Horror Soundscape Ambience by cartoon_music (Pixabay)",
+                "Sound effects: Mixkit, Universfield and yodguard (Pixabay), qubodup (OpenGameArt, CC0). Player footsteps: dedvpolit",
+                "Wall texture: modified from Torment by strideh (strideh.itch.io/torment)",
+                "itch.io arts/banner: gubaduber(@opezlol42)",
+                "Font: VT323 by The VT323 Project Authors (SIL Open Font License)",
+                "Libraries: GLFW, GLEW, cgltf, stb, minimp3",
             };
 
             const float textAreaWidth = boxWidthPx - 60.0f;
@@ -1371,8 +1463,7 @@ void Application::tick(GLFWwindow* window, DungeonScene& scene, AsciiEffect& asc
             }
             const std::vector<std::string>& allLines = m_creditsLinesCache;
 
-            // Do not scroll past the end of the text (with a small margin so the last line does not
-            // stick to the frame).
+            // Stop scrolling at the end of the text with a small margin
             const float totalTextH = (float)allLines.size() * creditsLineH;
             const float visibleH = boxBottomPx - boxTopPx - 80.0f;
             const float maxScrollPx = std::max(0.0f, totalTextH - visibleH);
@@ -1388,7 +1479,7 @@ void Application::tick(GLFWwindow* window, DungeonScene& scene, AsciiEffect& asc
                     m_textRenderer.drawLine(line, boxCenterX - lineW * 0.5f, lineY, creditsScale, textColor);
                 }
                 lineY += creditsLineH;
-                if (lineY > boxBottomPx + creditsLineH) break; // below the frame â€” no need to keep counting
+                if (lineY > boxBottomPx + creditsLineH) break; // below the frame: no need to keep counting
             }
 
             if (maxScrollPx > 0.0f) {
@@ -1405,4 +1496,9 @@ void Application::tick(GLFWwindow* window, DungeonScene& scene, AsciiEffect& asc
 
             m_textRenderer.endFrame();
         }
+
+        // Everything above was drawn into the CRT target when the effect is on
+        m_gpuTimer.begin(GpuTimer::Crt);
+        m_crt.present((float)glfwGetTime(), deltaTime);
+        m_gpuTimer.end();
 }

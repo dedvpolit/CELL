@@ -3,21 +3,20 @@
 #include "BigFont.h"
 #include "Atmosphere.h"
 #include "UiGlyphs.h"
+#include "scene/Difficulty.h"
 #include <algorithm>
 #include <cmath>
+#include <utility>
 
 namespace MainMenu {
 
-// Menu text scale: rows / 60, capped at 1.0 (float division on purpose). The grid always has >=
-// kMenuMinGridRows rows, so on regular windows it sits at the cap; the 0.15 floor is only a safety
-// net.
+// rows / 60, capped at 1. The grid always has at least kMenuMinGridRows rows; the 0.15 floor is a
+// safety net.
 static float ComputeMenuBaseScale(int rows) {
     return std::clamp((float)rows / 60.0f, 0.15f, 1.0f);
 }
 
-// Shrinks the font by one whole finalRes step (used for buttonScale in BuildButtonMenu and for the
-// confirm message). If the font is already at its floor (finalRes == 1) it returns the original
-// scale: faking the difference with a thinner frame or margin elsewhere was tried and looked worse.
+// One finalRes step smaller; returns the input unchanged at the floor (finalRes == 1).
 static float ShrinkTextScale(float baseTextScale, float scaleMultiplier) {
     if (scaleMultiplier >= 1.0f) return baseTextScale;
     const int normalRes = ComputeFinalRes(baseTextScale);
@@ -28,22 +27,16 @@ static float ShrinkTextScale(float baseTextScale, float scaleMultiplier) {
     return (float)reducedRes / (float)kMaskUpsample;
 }
 
-// Shared multiplier for the compact screens (save/load slots, overwrite confirmation, name entry):
-// applied to the title and the buttons through ShrinkTextScale(), about 20% smaller than the main
-// menu and pause.
+// Compact screens (slots, confirmation, name entry): about 20% smaller than the main menu.
 static constexpr float kCompactScale = 0.8f;
 
-// Left-aligned menu (the main menu): the distance of the left edge from the screen edge is
-// cols / kLeftMarginDiv cells, but at least kLeftMarginMin.
+// Left margin of the main menu: cols / kLeftMarginDiv, at least kLeftMarginMin.
 static constexpr int kLeftMarginDiv = 16;
 static constexpr int kLeftMarginMin = 6;
 
 
-// Shared "title + N stacked buttons" layout for the main menu, pause and slot screens (all buttons
-// share one width). selection is the hovered button (others = none); seed is fixed per session so
-// ragged frames do not rebuild on hover. skipTitleDraw bakes everything except the title glyphs so
-// the caller can cache it (see Build()). leftAligned presses the title frame and buttons to the
-// left (main menu); otherwise they are centered.
+// Title plus N stacked buttons of equal width: main menu, pause and slot screens. seed is fixed per
+// session so ragged frames do not change on hover.
 void BuildButtonMenu(std::vector<unsigned char>& grid, int cols, int rows,
                              int selection, int seed,
                              const std::string& title,
@@ -57,7 +50,8 @@ void BuildButtonMenu(std::vector<unsigned char>& grid, int cols, int rows,
                              int atmosphereVariant,
                              bool skipTitleDraw,
                              float buttonScale,
-                             bool leftAligned) {
+                             bool leftAligned,
+                             const ButtonRect* reservedArea) {
     grid.assign((size_t)std::max(0, cols) * std::max(0, rows), 0);
     outButtons.assign(buttonTexts.size(), ButtonRect{});
     outTitle = ButtonRect{};
@@ -65,42 +59,34 @@ void BuildButtonMenu(std::vector<unsigned char>& grid, int cols, int rows,
 
     if (cols <= 0 || rows <= 0 || buttonTexts.empty()) return;
 
-    // Title. It can be empty (pause has none): the title block then takes no space and only the
-    // buttons are centered. The atmosphere (frame, cracks, rune, torches) is drawn further below,
-    // once the buttons and outTitle are known, because it needs the real content rectangle.
+    // Pause has no title; then only the buttons are centered. The atmosphere is drawn later, once
+    // the real content box is known.
     const bool hasTitle = !title.empty();
 
-    // baseScale is an adaptive step for the screen size. The title scale (larger) and the button
-    // scale (much smaller) derive from it separately, so buttons do not look almost as big as the
-    // title.
+    // Title and button scales derive separately from one base, so buttons stay much smaller than
+    // the title.
     const float baseScale = ComputeMenuBaseScale(rows);
 
-    // buttonScale shrinks both the title ("SAVE"/"LOAD") and the buttons; the slot, confirm and
-    // name screens pass kCompactScale. The main menu and pause keep the default 1.0.
+    // Compact screens pass kCompactScale; the main menu and pause use 1.
     const float titleScaleBase = baseScale * 1.5f;
     const float titleScale = ShrinkTextScale(titleScaleBase, buttonScale);
     const int letterH = hasTitle ? BigGlyphHeight(titleScale) : 0;
     const int titleWidth = hasTitle ? BigTextWidth(title, titleScale) : 0;
 
-    // buttonScale shrinks only the text; frame thickness and padding stay regular so screens match.
-    // At 1280x720 the button font is already at its floor (finalRes = 1).
+    // Only the text shrinks; frames and padding stay the same across screens.
     const int buttonBorderThickness = 2;
     const int buttonInnerPadding = 1; // padding between text and frame inside a button
 
-    // The title frame extends titleInnerPadding + border beyond the letters, so its height is
-    // letterH + 2 * titleOverhang; that must be counted in contentHeight/contentTop or the frame
-    // top clips at row < 0.
+    // The title frame extends past the letters; count it in contentHeight or its top clips.
     const int titleInnerPadding = 2;
     const int titleOverhang = hasTitle ? (titleInnerPadding + buttonBorderThickness) : 0;
 
-    // buttonGap/titleToButtonsGap are not const: if the block still does not fit after the button
-    // font reached its floor, a second pass tightens the gaps.
+    // Tightened by the second fitting pass below.
     int buttonGap = pauseMenu ? 4 : 3;
     int titleToButtonsGap = hasTitle ? std::max(4, rows / 10) : 0;
     const int buttonCount = (int)buttonTexts.size();
 
-    // Auto-fit: shrink the button font one finalRes step at a time until the block fits with a
-    // margin; the title height is untouched.
+    // Shrink the button font until the block fits; the title keeps its size.
     float buttonTextScale = ShrinkTextScale(baseScale * 0.5f, buttonScale);
     int buttonTextAreaW = 0, buttonTextAreaH = 0, buttonW = 0, buttonH = 0, contentHeight = 0;
 
@@ -125,8 +111,7 @@ void BuildButtonMenu(std::vector<unsigned char>& grid, int cols, int rows,
         recomputeButtonMetrics();
     }
 
-    // Second pass when the font is at its floor: squeeze the gaps (buttons floor 1, under the title
-    // floor 3); frame and padding stay to match the other screens.
+    // Font at its floor: squeeze the gaps instead.
     for (int guard = 0; guard < 12 && contentHeight > targetHeight; ++guard) {
         const int minButtonGap = 1;
         const int minTitleGap = hasTitle ? 3 : 0;
@@ -139,16 +124,14 @@ void BuildButtonMenu(std::vector<unsigned char>& grid, int cols, int rows,
     const int contentShiftY = pauseMenu ? -1 : 0;
     const int contentTop = std::max(1, (rows - contentHeight) / 2 + contentShiftY);
 
-    // Horizontal placement: centered, or (main menu) pressed to the left. The title frame is the
-    // widest element, so the shared left edge is clamped to keep the whole frame inside the grid
-    // on narrow windows. The title letters sit titleOverhang inside the frame's left edge.
+    // Centered, or left-aligned for the main menu. The title frame is the widest element, so it
+    // clamps the shared left edge.
     const int widestW = hasTitle ? (titleWidth + 2 * titleOverhang) : buttonW;
     const int leftEdge = std::min(std::max(kLeftMarginMin, cols / kLeftMarginDiv),
                                   std::max(0, cols - widestW));
     const int titleCol = leftAligned ? leftEdge + titleOverhang
                                      : std::max(0, (cols - titleWidth) / 2);
-    // titleRow is offset by titleOverhang so the frame above the letters does not start above
-    // contentTop and get clipped.
+    // Offset so the frame above the letters stays inside contentTop.
     const int titleRow = contentTop + titleOverhang;
 
     if (hasTitle) {
@@ -159,8 +142,7 @@ void BuildButtonMenu(std::vector<unsigned char>& grid, int cols, int rows,
             titleRow + std::max(0, letterH - 1)
         };
 
-        // Title frame: more padding around the letters than buttons get (titleInnerPadding 2 vs 1),
-        // since the text is much bigger. Same frame thickness as the buttons, for one visual style.
+        // More padding than buttons (the text is bigger), same frame thickness.
         outTitleBox = ButtonRect{
             outTitle.x0 - titleInnerPadding - buttonBorderThickness,
             outTitle.y0 - titleInnerPadding - buttonBorderThickness,
@@ -179,14 +161,19 @@ void BuildButtonMenu(std::vector<unsigned char>& grid, int cols, int rows,
     }
     outButtons = buttons;
 
-    // Draw the atmosphere around the content bbox (title frame unioned with the buttons, including
-    // their padding and frame). It is drawn before the buttons so they overwrite any decoration
-    // that still reaches them on tiny windows.
+    // Atmosphere around the content box, drawn before the buttons so they overwrite any decoration
+    // that reaches them.
     AtmosphereBounds contentBounds;
     contentBounds.x0 = hasTitle ? std::min(outTitleBox.x0, buttons.front().x0) : buttons.front().x0;
     contentBounds.y0 = hasTitle ? outTitleBox.y0 : buttons.front().y0;
     contentBounds.x1 = hasTitle ? std::max(outTitleBox.x1, buttons.front().x1) : buttons.front().x1;
     contentBounds.y1 = buttons.back().y1;
+    if (reservedArea) {
+        contentBounds.x0 = std::min(contentBounds.x0, reservedArea->x0);
+        contentBounds.y0 = std::min(contentBounds.y0, reservedArea->y0);
+        contentBounds.x1 = std::max(contentBounds.x1, reservedArea->x1);
+        contentBounds.y1 = std::max(contentBounds.y1, reservedArea->y1);
+    }
     DrawDarkFantasyAtmosphere(grid, cols, rows, seed, pauseMenu, contentBounds, atmosphereVariant);
 
     if (hasTitle) {
@@ -207,8 +194,7 @@ void BuildButtonMenu(std::vector<unsigned char>& grid, int cols, int rows,
         centerBigText(buttons[i], buttonTexts[(size_t)i]);
     }
 
-    // The title is drawn after the buttons: on the third click the sagging text may lie over the
-    // first button, and after the fifth the falling title stays on top of every menu element.
+    // After the buttons: the shattered title may fall over them and must stay on top.
     if (hasTitle && !skipTitleDraw) {
         if (titleState) {
             DrawBrokenTitle(grid, cols, rows, title, titleCol, titleRow, titleScale, *titleState);
@@ -218,10 +204,8 @@ void BuildButtonMenu(std::vector<unsigned char>& grid, int cols, int rows,
     }
 }
 
-// The start screen: CELL title with NEW GAME / CONTINUE / SETTINGS / EXIT. variantIndex is picked
-// once on entering MENU so the composition does not drift on relayout. The base grid (atmosphere,
-// buttons) is cached per (cols, rows, selection, seed, titleHovered, variantIndex) in static
-// storage (single instance, not thread-safe); each call draws only the title on a copy.
+// Start screen. The variant is picked once per visit; the base grid is cached and only the title
+// animation is redrawn.
 void Build(Layout& out, int cols, int rows, int selection, int seed,
                           const TitleBreakupState* titleState,
                           bool titleHovered,
@@ -272,8 +256,7 @@ void Build(Layout& out, int cols, int rows, int selection, int seed,
     }
 }
 
-// The pause menu: no title, a rune sigil fills the frame top. variantIndex is picked once on
-// entering PAUSED (own counter, pauseOpenCount).
+// Pause: no title, a rune sigil at the top of the frame.
 PauseLayout BuildPauseMenu(int cols, int rows, int selection, int seed,
                                     int variantIndex) {
     PauseLayout out;
@@ -290,9 +273,7 @@ PauseLayout BuildPauseMenu(int cols, int rows, int selection, int seed,
     return out;
 }
 
-// Shared by the Continue/Save/NewGame menus: an identical "3 slots + BACK" layout differing only in
-// the title. The caller prepares the labels; kCompactScale makes the buttons smaller than on the
-// main menu.
+// Continue, Save and New Game share a 3 slots + BACK layout.
 static SlotMenuLayout BuildSlotMenu(int cols, int rows, int selection, int seed,
                               const char* title,
                               const std::string slotLabels[3],
@@ -321,8 +302,7 @@ static SlotMenuLayout BuildSlotMenu(int cols, int rows, int selection, int seed,
     return out;
 }
 
-// The CONTINUE (load) screen, see BuildSlotMenu(). An empty slot is not clickable; the caller
-// decides that from SlotMenuLayout::slotFilled, the layout only reports it.
+// Empty slots are reported through slotFilled; the caller keeps them unclickable.
 SlotMenuLayout BuildContinueMenu(int cols, int rows, int selection, int seed,
                                   const std::string slotLabels[3],
                                   const bool slotFilled[3],
@@ -337,15 +317,137 @@ SlotMenuLayout BuildSaveMenu(int cols, int rows, int selection, int seed,
     return BuildSlotMenu(cols, rows, selection, seed, "SAVE", slotLabels, slotFilled, variantIndex);
 }
 
+namespace {
+
+std::vector<std::string> DifficultyGoalLines(const DifficultyRules& rules) {
+    std::vector<std::string> lines;
+    if (rules.oneHitKills)
+        lines.push_back("SURVIVE");
+    if (rules.diariesToWin > 0)
+        lines.push_back("READ " + std::to_string(rules.diariesToWin) + " DIARIES");
+    lines.push_back("FIND THE EXIT");
+    return lines;
+}
+
+std::vector<std::string> DifficultyDebuffLines(const DifficultyRules& rules) {
+    if (rules.oneHitKills)
+        return { "ONE HIT KILLS YOU." };
+    return { "NONE." };
+}
+
+void ClearRect(std::vector<unsigned char>& grid, int cols, int rows, const ButtonRect& r) {
+    for (int y = std::max(0, r.y0); y <= std::min(rows - 1, r.y1); ++y)
+        for (int x = std::max(0, r.x0); x <= std::min(cols - 1, r.x1); ++x)
+            grid[(size_t)y * cols + x] = 0;
+}
+
+} // namespace
+
 SlotMenuLayout BuildNewGameMenu(int cols, int rows, int selection, int seed,
                                  const std::string slotLabels[3],
                                  const bool slotFilled[3],
-                                 int variantIndex) {
-    return BuildSlotMenu(cols, rows, selection, seed, "NEW", slotLabels, slotFilled, variantIndex);
+                                 int variantIndex,
+                                 int selectedDifficulty,
+                                 int hoveredDifficulty) {
+    SlotMenuLayout out;
+    const std::vector<std::string> buttonTexts = { slotLabels[0], slotLabels[1], slotLabels[2], "BACK" };
+    std::vector<ButtonRect> buttons;
+    ButtonRect titleRect, titleBox;
+
+    // The first pass only measures the centered column; the panels go beside it.
+    BuildButtonMenu(out.grid, cols, rows, selection, seed, "NEW", buttonTexts, buttons, titleRect, titleBox,
+                    nullptr, /*pauseMenu=*/true, false, variantIndex, false, kCompactScale);
+    if (buttons.size() != 4) return out;
+
+    // Difficulty names use the smallest big-font size; descriptions use the one-cell UI font.
+    const float nameScale = 1.0f / (float)kMaskUpsample;
+    const int nameW = BigTextWidth("NORMAL", nameScale);
+    const int nameH = BigGlyphHeight(nameScale);
+    const int panelPad = 2;
+    const int columnGap = std::max(3, cols / 32);
+
+    // The selection is an underline rather than a frame per name, which keeps the picker compact.
+    const int nameStep = nameH + 3; // name, underline row, gap
+    const int pickerW = nameW + 6;
+    const int pickerH = 2 + 2 + kDifficultyCount * nameStep;
+    const int infoW = pickerW * 5 / 4;
+    const int infoH = pickerH * 5 / 4;
+
+    const int contentX0 = std::min(titleBox.x0, buttons.front().x0);
+    const int contentX1 = std::max(titleBox.x1, buttons.front().x1);
+    const int centerY = (int)std::lround(rows * 0.56);
+    auto placeY = [&](int h) {
+        const int y0 = std::max(1, centerY - h / 2);
+        return std::pair<int, int>(y0, std::min(rows - 2, y0 + h - 1));
+    };
+    const auto [pickerY0, pickerY1] = placeY(pickerH);
+    const auto [infoY0, infoY1] = placeY(infoH);
+
+    const int pickerX0 = contentX1 + columnGap;
+    const ButtonRect picker{ pickerX0, pickerY0, std::min(cols - 2, pickerX0 + pickerW - 1), pickerY1 };
+    const int infoX1 = contentX0 - columnGap;
+    const ButtonRect info{ std::max(1, infoX1 - infoW + 1), infoY0, infoX1, infoY1 };
+
+    const ButtonRect reserved{ info.x0 - 1, std::min(titleBox.y0, infoY0 - 1),
+                               picker.x1 + 1, std::max(buttons.back().y1, infoY1 + 1) };
+    BuildButtonMenu(out.grid, cols, rows, selection, seed, "NEW", buttonTexts, buttons, titleRect, titleBox,
+                    nullptr, true, false, variantIndex, false, kCompactScale, false, &reserved);
+
+    for (int i = 0; i < 3; ++i) {
+        out.slotButtons[i] = buttons[(size_t)i];
+        out.slotFilled[i] = slotFilled[i];
+    }
+    out.backButton = buttons[3];
+
+    // Selected: '=' underline; hovered: '-' underline.
+    ClearRect(out.grid, cols, rows, picker);
+    DrawBox(out.grid, cols, rows, picker.x0, picker.y0, picker.x1, picker.y1, 1, false, seed + 6000);
+    PutText(out.grid, cols, rows, picker.x0 + 2, picker.y0 + 1, "DIFFICULTY");
+    const int nameX0 = picker.x0 + 2;
+    int nameY = picker.y0 + 3;
+    for (int d = 0; d < kDifficultyCount; ++d) {
+        const char* name = kDifficultyRules[d].name;
+        const int textX = nameX0 + (nameW - BigTextWidth(name, nameScale)) / 2;
+        DrawBigText(out.grid, cols, rows, name, textX, nameY, nameScale, seed + 6200 + d);
+        const int underlineY = nameY + nameH;
+        const bool selected = d == selectedDifficulty;
+        if (selected || d == hoveredDifficulty) {
+            for (int x = textX; x < textX + BigTextWidth(name, nameScale); ++x)
+                PutGlyph(out.grid, cols, rows, x, underlineY, selected ? GLYPH_HLINE : GLYPH_DASH);
+        }
+        out.difficultyButtons[d] = ButtonRect{ nameX0, nameY - 1, nameX0 + nameW - 1, underlineY + 1 };
+        nameY += nameStep;
+    }
+
+    const int shown = std::clamp(hoveredDifficulty >= 0 ? hoveredDifficulty : selectedDifficulty,
+                                 0, kDifficultyCount - 1);
+    const DifficultyRules& rules = kDifficultyRules[shown];
+    ClearRect(out.grid, cols, rows, info);
+    DrawBox(out.grid, cols, rows, info.x0, info.y0, info.x1, info.y1, 1, false, seed + 6300);
+    // The UI font is one cell high, so its lines are double-spaced; the block is centered.
+    const std::vector<std::string> goal = DifficultyGoalLines(rules);
+    const std::vector<std::string> debuffs = DifficultyDebuffLines(rules);
+    const int lineStep = 2;
+    const int sectionGap = 3;
+    const int blockH = nameH + sectionGap + lineStep * (1 + (int)goal.size()) + sectionGap +
+                       lineStep * (1 + (int)debuffs.size());
+    const int textX = info.x0 + panelPad + 1;
+    int textY = info.y0 + std::max(panelPad, (info.y1 - info.y0 + 1 - blockH) / 2);
+    DrawBigText(out.grid, cols, rows, rules.name, textX, textY, nameScale, seed + 6400);
+    textY += nameH + sectionGap;
+    PutText(out.grid, cols, rows, textX, textY, "GOAL:");
+    for (const std::string& line : goal)
+        PutText(out.grid, cols, rows, textX + 2, textY += lineStep, line);
+    textY += sectionGap + lineStep - 1;
+    PutText(out.grid, cols, rows, textX, textY, "DEBUFFS:");
+    for (const std::string& line : debuffs)
+        PutText(out.grid, cols, rows, textX + 2, textY += lineStep, line);
+
+    return out;
 }
 
-// Overwrite confirmation: does not use BuildButtonMenu(), whose giant-font title cannot hold a
-// warning phrase. The message is drawn in a small font with YES/NO below it in one shared frame.
+// Overwrite confirmation: a small-font message with YES/NO in one frame; a big-font title cannot
+// hold a sentence.
 ConfirmLayout BuildConfirmMenu(int cols, int rows, int selection, int seed,
                                 const std::vector<std::string>& messageLines,
                                 int variantIndex) {
@@ -371,8 +473,7 @@ ConfirmLayout BuildConfirmMenu(int cols, int rows, int selection, int seed,
     const int msgBoxW = messageBlockW + msgInnerPadding * 2 + msgBorderThickness * 2;
     const int msgBoxH = messageBlockH + msgInnerPadding * 2 + msgBorderThickness * 2;
 
-    // YES/NO buttons: the same arithmetic as BuildButtonMenu() (buttonScale = kCompactScale),
-    // assembled manually so the message and the buttons share one atmosphere frame.
+    // Same arithmetic as BuildButtonMenu().
     const int buttonBorderThickness = 2;
     const int buttonInnerPadding = 1;
     const float buttonTextScale = ShrinkTextScale(baseScale * 0.5f, kCompactScale);
@@ -440,9 +541,8 @@ ConfirmLayout BuildConfirmMenu(int cols, int rows, int selection, int seed,
     return out;
 }
 
-// The name entry screen: a regular (large) "NAME" title, below it the typed letters plus underscore
-// placeholders up to maxLen, then OK and BACK. Confirming with ENTER is handled entirely in
-// Application.cpp; this is only the picture.
+// Name entry: title, the typed name with placeholders, OK and BACK. Input is handled in
+// Application.cpp.
 NameEntryLayout BuildNameEntryMenu(int cols, int rows, int seed,
                                     const std::string& currentName, int maxLen,
                                     bool backHovered, bool confirmHovered,
@@ -463,9 +563,7 @@ NameEntryLayout BuildNameEntryMenu(int cols, int rows, int seed,
     const int titleBoxW = titleTextW + titleInnerPadding * 2 + titleBorderThickness * 2;
     const int titleBoxH = titleTextH + titleInnerPadding * 2 + titleBorderThickness * 2;
 
-    // The typed name, with underscores for the letters not typed yet ("AB___" for maxLen = 5):
-    // larger than the buttons but smaller than the title, so the eye follows TITLE -> input ->
-    // buttons.
+    // Underscores for untyped letters; sized between the title and the buttons.
     std::string displayName = currentName;
     while ((int)displayName.size() < maxLen) displayName += '_';
     const float nameScale = ShrinkTextScale(baseScale * 0.9f, kCompactScale);
@@ -541,10 +639,7 @@ NameEntryLayout BuildNameEntryMenu(int cols, int rows, int seed,
     return out;
 }
 
-// The settings screen (from the main menu and from pause): no title; rows SENSITIVITY, SHARPNESS,
-// MUSIC, MASTER (sliders), COLOR, LENS (checkboxes) start at one shared column; only controls are
-// framed, BACK is centered at the bottom. Slider values are already 0..1: this function knows no
-// physical units.
+// Settings: slider and checkbox rows aligned to one column, BACK centered at the bottom.
 SettingsLayout BuildSettingsMenu(int cols, int rows, int seed,
                                           float sensitivity01,
                                           float sharpness01,
@@ -560,6 +655,11 @@ SettingsLayout BuildSettingsMenu(int cols, int rows, int seed,
                                           bool colorCheckboxHovered,
                                           bool lensEnabled,
                                           bool lensCheckboxHovered,
+                                          bool crtEnabled,
+                                          bool crtCheckboxHovered,
+                                          bool shadersUnlocked,
+                                          bool shadersEnabled,
+                                          bool shadersCheckboxHovered,
                                           int variantIndex) {
     SettingsLayout out;
     out.grid.assign((size_t)std::max(0, cols) * std::max(0, rows), 0);
@@ -591,9 +691,7 @@ SettingsLayout BuildSettingsMenu(int cols, int rows, int seed,
     const int labelW = BigTextWidth(sliderLabel, smallScale);
     const int labelH = BigGlyphHeight(smallScale);
 
-    // All sliders and checkboxes align at one column (SHARPNESS under SENSITIVITY, LENS under
-    // COLOR): the labels are measured up front and every control starts at the column set by the
-    // widest one (usually SENSITIVITY), not after its own label.
+    // Controls start at a shared column set by the widest label.
     const std::string sharpnessLabel = "SHARPNESS";
     const int sharpnessLabelW = BigTextWidth(sharpnessLabel, smallScale);
     const int sharpnessLabelH = BigGlyphHeight(smallScale);
@@ -616,8 +714,6 @@ SettingsLayout BuildSettingsMenu(int cols, int rows, int seed,
 
     const int labelToTrackGap = std::max(3, cols / 40);
 
-    // Shared start column for all controls, computed from the widest of all labels, not from this
-    // row's.
     const int maxLabelW = std::max({ labelW, sharpnessLabelW, musicLabelW, masterLabelW, colorLabelW, lensLabelW });
     const int controlCol0 = leftMargin + maxLabelW + labelToTrackGap;
 
@@ -646,14 +742,18 @@ SettingsLayout BuildSettingsMenu(int cols, int rows, int seed,
     out.trackX1 = trackX1;
     out.trackRow = trackRow;
 
-    // The value is a 0..100 percentage drawn with PutText(), matching the track's
-    // one-glyph-per-cell font (the big font never fit that thin bar).
+    // 0..100, one glyph per cell to match the thin track.
     const std::string sensitivityValueText = std::to_string((int)std::lround(sensitivity01 * 100.0f));
     const int sensitivityTrackCenterX = (trackX0 + trackX1) / 2;
     const int sensitivityValueCol = sensitivityTrackCenterX - (int)sensitivityValueText.size() / 2;
     const int sensitivityValueRow = trackRow;
 
-    const int sharpnessRowGap = std::max(2, rows / 30);
+    // One gap for every row; it shrinks when the optional rows would push BACK off the screen.
+    const int rowCount = shadersUnlocked ? 8 : 7;
+    const int rowH = std::max(labelH, trackPanelH);
+    const int spareRows = rows - topMargin - rowCount * rowH - (rowH + 4);
+    const int rowGap = std::clamp(spareRows / rowCount, 1, std::max(2, rows / 30));
+    const int sharpnessRowGap = rowGap;
     const int sharpnessLabelRow = labelRow + std::max(labelH, trackPanelH) + sharpnessRowGap;
     const int sharpnessLabelCol = leftMargin;
 
@@ -674,14 +774,13 @@ SettingsLayout BuildSettingsMenu(int cols, int rows, int seed,
     out.sharpnessTrackX1 = sharpnessTrackX1;
     out.sharpnessTrackRow = sharpnessTrackRow;
 
-    // The value (cell size in px) is centered over the track and drawn after it, overlapping the
-    // cells beneath; the panel size and dragging are unaffected.
+    // Cell size in pixels, centered over the track.
     const std::string sharpnessValueText = std::to_string(sharpnessValue);
     const int sharpnessTrackCenterX = (sharpnessTrackX0 + sharpnessTrackX1) / 2;
     const int sharpnessValueCol = sharpnessTrackCenterX - (int)sharpnessValueText.size() / 2;
     const int sharpnessValueRow = sharpnessTrackRow;
 
-    const int musicRowGap = std::max(2, rows / 30);
+    const int musicRowGap = rowGap;
     const int musicLabelRow = sharpnessLabelRow + std::max(sharpnessLabelH, trackPanelH) + musicRowGap;
     const int musicLabelCol = leftMargin;
 
@@ -707,7 +806,7 @@ SettingsLayout BuildSettingsMenu(int cols, int rows, int seed,
     const int musicValueCol = musicTrackCenterX - (int)musicValueText.size() / 2;
     const int musicValueRow = musicTrackRow;
 
-    const int masterRowGap = std::max(2, rows / 30);
+    const int masterRowGap = rowGap;
     const int masterLabelRow = musicLabelRow + std::max(musicLabelH, trackPanelH) + masterRowGap;
     const int masterLabelCol = leftMargin;
 
@@ -733,7 +832,7 @@ SettingsLayout BuildSettingsMenu(int cols, int rows, int seed,
     const int masterValueCol = masterTrackCenterX - (int)masterValueText.size() / 2;
     const int masterValueRow = masterTrackRow;
 
-    const int colorRowGap = std::max(2, rows / 30);
+    const int colorRowGap = rowGap;
     const int colorLabelRow = masterLabelRow + std::max(masterLabelH, trackPanelH) + colorRowGap;
     const int colorLabelCol = leftMargin;
 
@@ -748,7 +847,7 @@ SettingsLayout BuildSettingsMenu(int cols, int rows, int seed,
     const ButtonRect checkboxRect{ checkboxCol0, checkboxRow0, checkboxCol1, checkboxRow1 };
     out.colorCheckbox = checkboxRect;
 
-    const int lensRowGap = std::max(2, rows / 30);
+    const int lensRowGap = rowGap;
     const int lensLabelRow = colorLabelRow + std::max(colorLabelH, checkboxSize) + lensRowGap;
     const int lensLabelCol = leftMargin;
 
@@ -760,8 +859,26 @@ SettingsLayout BuildSettingsMenu(int cols, int rows, int seed,
     const ButtonRect lensCheckboxRect{ lensCheckboxCol0, lensCheckboxRow0, lensCheckboxCol1, lensCheckboxRow1 };
     out.lensCheckbox = lensCheckboxRect;
 
-    // BACK: centered at the bottom with its own vertical anchor, independent of the rows above, so
-    // it does not jump when a settings row is added.
+    const int optionRowStep = std::max(lensLabelH, checkboxSize) + lensRowGap;
+
+    const std::string crtLabel = "CRT";
+    const int crtLabelRow = lensLabelRow + optionRowStep;
+    const int crtCheckboxRow0 = crtLabelRow + (lensLabelH - checkboxSize) / 2;
+    const ButtonRect crtCheckboxRect{ controlCol0, crtCheckboxRow0,
+                                      controlCol0 + checkboxSize - 1, crtCheckboxRow0 + checkboxSize - 1 };
+    out.crtCheckbox = crtCheckboxRect;
+
+    const std::string shadersLabel = "SHADERS";
+    const int shadersLabelRow = crtLabelRow + optionRowStep;
+    const int shadersCheckboxRow0 = shadersLabelRow + (lensLabelH - checkboxSize) / 2;
+    const ButtonRect shadersCheckboxRect{ controlCol0, shadersCheckboxRow0,
+                                          controlCol0 + checkboxSize - 1, shadersCheckboxRow0 + checkboxSize - 1 };
+    out.hasShadersCheckbox = shadersUnlocked;
+    if (shadersUnlocked)
+        out.shadersCheckbox = shadersCheckboxRect;
+    const int lastRowBottom = shadersUnlocked ? shadersCheckboxRect.y1 : crtCheckboxRect.y1;
+
+    // BACK has its own anchor, so adding a row does not move it.
     const std::string backText = "BACK";
     const int backTextW = BigTextWidth(backText, smallScale);
     const int backTextH = BigGlyphHeight(smallScale);
@@ -769,9 +886,13 @@ SettingsLayout BuildSettingsMenu(int cols, int rows, int seed,
     const int backH = backTextH + innerPadding * 2 + borderThickness * 2;
 
     const int backCol = std::max(0, (cols - backW) / 2);
-    const int minBackRow = std::max({ trackPanelRow1, sharpnessTrackPanelRow1, musicTrackPanelRow1, masterTrackPanelRow1, checkboxRow1, lensCheckboxRow1 }) + 1 + std::max(4, rows / 10);
+    const int controlsBottom = std::max({ trackPanelRow1, sharpnessTrackPanelRow1, musicTrackPanelRow1,
+                                          masterTrackPanelRow1, checkboxRow1, lastRowBottom });
+    // The gap above BACK shrinks before BACK is pushed off the bottom edge.
+    const int maxBackRow = std::max(controlsBottom + 2, rows - backH - 2);
+    const int minBackRow = std::min(controlsBottom + 1 + std::max(4, rows / 10), maxBackRow);
     const int preferredBackRow = (int)std::lround(rows * 0.70);
-    const int backRow0 = std::clamp(preferredBackRow, minBackRow, std::max(minBackRow, rows - backH - 4));
+    const int backRow0 = std::clamp(preferredBackRow, minBackRow, maxBackRow);
     const int backRow1 = backRow0 + backH - 1;
 
     const ButtonRect backRect{ backCol, backRow0, backCol + backW - 1, backRow1 };
@@ -780,7 +901,7 @@ SettingsLayout BuildSettingsMenu(int cols, int rows, int seed,
     AtmosphereBounds contentBounds;
     contentBounds.x0 = std::min(labelCol, backRect.x0);
     contentBounds.y0 = labelRow;
-    contentBounds.x1 = std::max({ trackPanel.x1, sharpnessTrackPanel.x1, musicTrackPanel.x1, masterTrackPanel.x1, checkboxRect.x1, lensCheckboxRect.x1, backRect.x1 });
+    contentBounds.x1 = std::max({ trackPanel.x1, sharpnessTrackPanel.x1, musicTrackPanel.x1, masterTrackPanel.x1, checkboxRect.x1, lensCheckboxRect.x1, crtCheckboxRect.x1, backRect.x1 });
     contentBounds.y1 = backRect.y1;
     DrawDarkFantasyAtmosphere(out.grid, cols, rows, seed, pauseMenu, contentBounds, variantIndex);
 
@@ -871,6 +992,20 @@ SettingsLayout BuildSettingsMenu(int cols, int rows, int seed,
     PutGlyph(out.grid, cols, rows, lensCheckboxCenterX, lensCheckboxCenterY,
              lensEnabled ? GLYPH_X : GLYPH_SPACE);
 
+    DrawBigText(out.grid, cols, rows, crtLabel, leftMargin, crtLabelRow, smallScale, seed + 8200);
+    DrawBox(out.grid, cols, rows, crtCheckboxRect.x0, crtCheckboxRect.y0, crtCheckboxRect.x1,
+            crtCheckboxRect.y1, borderThickness, crtCheckboxHovered, seed + 9200);
+    PutGlyph(out.grid, cols, rows, crtCheckboxRect.x0 + borderThickness + innerPadding,
+             crtCheckboxRect.y0 + borderThickness + innerPadding, crtEnabled ? GLYPH_X : GLYPH_SPACE);
+
+    if (shadersUnlocked) {
+        DrawBigText(out.grid, cols, rows, shadersLabel, leftMargin, shadersLabelRow, smallScale, seed + 8100);
+        DrawBox(out.grid, cols, rows, shadersCheckboxRect.x0, shadersCheckboxRect.y0, shadersCheckboxRect.x1,
+                shadersCheckboxRect.y1, borderThickness, shadersCheckboxHovered, seed + 9100);
+        PutGlyph(out.grid, cols, rows, shadersCheckboxRect.x0 + borderThickness + innerPadding,
+                 shadersCheckboxRect.y0 + borderThickness + innerPadding, shadersEnabled ? GLYPH_X : GLYPH_SPACE);
+    }
+
     DrawBox(out.grid, cols, rows, backRect.x0, backRect.y0, backRect.x1, backRect.y1,
             borderThickness, backHovered, seed + 4000);
     const int backTextCol = backCol + (backW - backTextW) / 2;
@@ -881,9 +1016,7 @@ SettingsLayout BuildSettingsMenu(int cols, int rows, int seed,
 }
 
 
-// DrawHudIcons: torch/stone/diary count icons above the stamina bar. Three small square frames in a
-// row, each with an item glyph inside and a number right of its bottom corner; the whole group is
-// centered horizontally.
+// Torch/stone/diary counters above the stamina bar, centered as a group.
 void DrawHudIcons(std::vector<unsigned char>& grid, int cols, int rows,
                    int torchCount, int stoneCount, int diaryCount,
                    int bottomRow, int seed) {
@@ -913,9 +1046,8 @@ void DrawHudIcons(std::vector<unsigned char>& grid, int cols, int rows,
         DrawBox(grid, cols, rows, boxCol0, boxRow0, boxCol1, boxRow1, 1, /*filled=*/false, seed + i * 100);
         PutGlyph(grid, cols, rows, boxCol0 + boxSize / 2, boxRow0 + boxSize / 2, icons[i].glyph);
 
-        // The number sits beside the frame's bottom corner. The whole reserved area (numberMaxW
-        // cells) is cleared first: grid is a reusable buffer, so a number that got shorter ("12" ->
-        // "9") would otherwise leave an old digit behind.
+        // Clear the whole number area: the grid is reused and a shorter number would leave a stale
+        // digit.
         for (int cx = 0; cx < numberMaxW; ++cx) {
             PutGlyph(grid, cols, rows, boxCol1 + 1 + cx, boxRow1, GLYPH_SPACE);
         }

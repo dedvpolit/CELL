@@ -14,10 +14,11 @@ void AsciiEffect::createFBO(int w, int h) {
 
     glGenTextures(1, &m_sceneTex);
     glBindTexture(GL_TEXTURE_2D, m_sceneTex);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, w, h, 0, GL_RGB, GL_UNSIGNED_BYTE, nullptr);
-    // MIPMAP_LINEAR: the post pass reads this texture with textureLod() at the mip matching the
-    // cell size instead of averaging 3x3 per pixel, so a real mip chain is built once per frame in
-    // end().
+    // Alpha 0 marks wall torches, which AcerolaAscii keeps out of edge detection. The mip chain
+    // (rebuilt in end() for the ASCII view) gives AcerolaAscii the average color of each glyph
+    // cell. It is allocated here so the texture is complete in views that never rebuild it.
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glGenerateMipmap(GL_TEXTURE_2D);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -46,105 +47,10 @@ void AsciiEffect::destroyFBO() {
     m_sceneTex = m_depthTex = m_fbo = 0;
 }
 
-// 8x8 bitmap font of varying "ink density": ASCII, digits, Latin letters and a few dense glyph-like
-// patterns for the brightest areas. The array order does not matter: the glyphs are sorted by
-// density automatically.
+// 8x8 bitmap glyphs.
 struct GlyphDef { unsigned char rows[8]; };
 
-static const GlyphDef s_glyphs[] = {
-    {{0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00}}, // ' '
-    {{0x00,0x00,0x00,0x00,0x00,0x00,0x18,0x18}}, // '.'
-    {{0x00,0x00,0x00,0x00,0x00,0x00,0x18,0x0C}}, // ','
-    {{0x18,0x18,0x10,0x00,0x00,0x00,0x00,0x00}}, // '`'
-    {{0x00,0x18,0x18,0x00,0x18,0x18,0x00,0x00}}, // ':'
-    {{0x00,0x18,0x18,0x00,0x18,0x18,0x0C,0x00}}, // ';'
-    {{0x00,0x00,0x00,0x7E,0x00,0x00,0x00,0x00}}, // '-'
-    {{0x00,0x66,0x66,0x00,0x00,0x00,0x00,0x00}}, // '"'
-    {{0x18,0x24,0x42,0x00,0x00,0x00,0x00,0x00}}, // '^'
-    {{0x00,0x00,0x7E,0x00,0x7E,0x00,0x00,0x00}}, // '='
-    {{0x00,0x18,0x18,0x7E,0x18,0x18,0x00,0x00}}, // '+'
-    {{0x00,0x06,0x18,0x60,0x60,0x18,0x06,0x00}}, // '<'
-    {{0x00,0x60,0x18,0x06,0x06,0x18,0x60,0x00}}, // '>'
-    {{0x02,0x04,0x08,0x10,0x20,0x40,0x80,0x00}}, // '/'
-    {{0x80,0x40,0x20,0x10,0x08,0x04,0x02,0x00}}, // '\'
-    {{0x00,0x24,0x18,0x7E,0x18,0x24,0x00,0x00}}, // '*'
-    {{0x08,0x18,0x28,0x08,0x08,0x08,0x3E,0x00}}, // '1'
-    {{0x18,0x18,0x18,0x18,0x18,0x18,0x18,0x00}}, // '|'
-    {{0x00,0x42,0x42,0x24,0x24,0x18,0x00,0x00}}, // 'v'
-    {{0x00,0x3C,0x66,0x60,0x66,0x3C,0x00,0x00}}, // 'c'
-    {{0x00,0x3C,0x66,0x66,0x66,0x3C,0x00,0x00}}, // 'o'
-    {{0x00,0x3E,0x60,0x3C,0x06,0x7C,0x00,0x00}}, // 's'
-    {{0x00,0x7E,0x0C,0x18,0x30,0x7E,0x00,0x00}}, // 'z'
-    {{0x00,0x66,0x3C,0x18,0x3C,0x66,0x00,0x00}}, // 'x'
-    {{0x00,0x6C,0x76,0x66,0x66,0x66,0x00,0x00}}, // 'n'
-    {{0x00,0x3C,0x06,0x3E,0x66,0x3E,0x00,0x00}}, // 'a'
-    {{0x00,0x3C,0x66,0x7E,0x60,0x3C,0x00,0x00}}, // 'e'
-    {{0x00,0x6C,0x76,0x60,0x60,0x60,0x00,0x00}}, // 'r'
-    {{0x00,0x24,0x7E,0x24,0x24,0x7E,0x24,0x00}}, // '#'
-    {{0x00,0x62,0x64,0x08,0x10,0x26,0x46,0x00}}, // '%'
-    {{0x00,0x3C,0x66,0x3C,0x38,0x67,0x3E,0x00}}, // '&'
-    {{0x00,0x3C,0x66,0x3C,0x66,0x66,0x3C,0x00}}, // '8'
-    {{0x00,0x66,0x3C,0x18,0x3C,0x66,0xC3,0x00}}, // 'X'
-    {{0x00,0xC3,0xC3,0xDB,0xFF,0x66,0x66,0x00}}, // 'W'
-    {{0x00,0xC3,0xE7,0xFF,0xDB,0xC3,0xC3,0x00}}, // 'M'
-    {{0x00,0xC6,0xE6,0xF6,0xDE,0xCE,0xC6,0x00}}, // 'N'
-    {{0x00,0x66,0x66,0x7E,0x66,0x66,0x66,0x00}}, // 'H'
-    {{0x00,0x66,0x6C,0x78,0x78,0x6C,0x66,0x00}}, // 'K'
-    {{0x3C,0x66,0x6E,0x6A,0x6E,0x60,0x62,0x3C}}, // '@'
-    {{0xFF,0x99,0xFF,0x99,0xFF,0x99,0xFF,0x99}}, // dense "glyph-like" pattern
-    {{0xFF,0xE7,0xFF,0xE7,0xFF,0xE7,0xFF,0xE7}}, // even denser
-    {{0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF}}, // solid block
-    {{0x00,0x18,0x3C,0x3C,0x18,0x00,0x00,0x00}}, // diamond
-    {{0x00,0x66,0x00,0x18,0x00,0x66,0x00,0x00}}, // sparse dots
-    {{0x3C,0x42,0x99,0xA5,0xA5,0x99,0x42,0x3C}}, // "glyph-like" pattern 1
-    {{0x66,0xFF,0xDB,0xFF,0xFF,0xDB,0xFF,0x66}}, // "glyph-like" pattern 2
-    {{0x00,0x6E,0x11,0x11,0x11,0x11,0x6E,0x00}}, // 'D'-like
-    {{0x7E,0x81,0xA5,0x81,0xA5,0x99,0x81,0x7E}}, // complex pattern (face/mask)
-    {{0xF0,0x0F,0xF0,0x0F,0xF0,0x0F,0xF0,0x0F}}, // diagonal stripes
-    {{0x0F,0xF0,0x0F,0xF0,0x0F,0xF0,0x0F,0xF0}}, // diagonal stripes (inverted)
-
-        // Very sparse (darkest areas)
-    {{0x00,0x00,0x00,0x00,0x00,0x00,0x08,0x00}}, // single dot
-    {{0x00,0x00,0x00,0x10,0x00,0x00,0x00,0x00}}, // dot higher up
-    {{0x00,0x00,0x00,0x00,0x00,0x02,0x00,0x00}}, // dot to the side
-    {{0x00,0x00,0x40,0x00,0x00,0x00,0x00,0x00}}, // dot in the corner
-
-    // Strokes resembling Cyrillic/CJK characters
-    {{0x00,0x7E,0x18,0x18,0x18,0x18,0x7E,0x00}}, // 'Sh'-like
-    {{0x00,0x66,0x66,0x66,0x66,0x66,0x3C,0x00}}, // 'D'-like (Cyrillic)
-    {{0x00,0x18,0x3C,0x66,0x66,0x3C,0x18,0x00}}, // diamond glyph
-    {{0x18,0x18,0x7E,0x18,0x18,0x00,0x7E,0x00}}, // '木'-like (tree)
-    {{0x24,0x24,0xFF,0x24,0xFF,0x24,0x24,0x00}}, // '井'-like (well/grid)
-    {{0x00,0x3C,0x24,0x24,0x24,0x24,0x3C,0x00}}, // 'P'-frame (Cyrillic)
-    {{0x66,0x66,0x24,0x18,0x24,0x66,0x66,0x00}}, // 'Zh'-like
-    {{0x7E,0x40,0x40,0x7C,0x40,0x40,0x7E,0x00}}, // 'E'-like, bold
-    {{0x3C,0x66,0x60,0x60,0x60,0x66,0x3C,0x18}}, // 'Q'/'Ω'-like
-
-    // Very dense (brightest areas, close to the camera)
-    {{0xFF,0x81,0xBD,0xA5,0xA5,0xBD,0x81,0xFF}}, // complex dense pattern
-    {{0xEF,0xDB,0xBD,0x7E,0x7E,0xBD,0xDB,0xEF}}, // nearly solid with a diamond
-    {{0xFF,0xFF,0xE7,0xC3,0xC3,0xE7,0xFF,0xFF}}, // nearly a block with a slit
-    {{0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFE}}, // maximally dense
-
-    // Cyrillic shapes that do not duplicate Latin letters
-    {{0x00,0x66,0x66,0x66,0x3E,0x06,0x06,0x00}}, // 'Ts' (simplified)
-    {{0x66,0x66,0x24,0x18,0x24,0x66,0x66,0x00}}, // 'Zh'
-    {{0x3C,0x66,0x0C,0x18,0x0C,0x66,0x3C,0x00}}, // 'Z' (Cyrillic)
-    {{0x66,0x66,0x6E,0x76,0x66,0x66,0x66,0x00}}, // 'I' (Cyrillic)
-    {{0x00,0x66,0x66,0x66,0x66,0x66,0x3E,0x06}}, // 'Shch' simplified
-    {{0x7E,0x66,0x66,0x66,0x66,0x66,0x66,0x00}}, // 'P' (Cyrillic)
-    {{0x18,0x3C,0x66,0x7E,0x66,0x66,0x66,0x00}}, // 'F'-approximation
-    {{0x66,0x66,0x66,0x3C,0x18,0x3C,0x66,0x00}}, // 'Yu'-approximation
-    {{0x3C,0x66,0x60,0x3C,0x06,0x66,0x3C,0x18}}, // 'Ya'-approximation
-
-
-
-
-};
-static const int s_glyphCount = sizeof(s_glyphs) / sizeof(s_glyphs[0]);
-
-// Fixed glyph set shared by the UI text, HUD and compass minimap; unlike s_glyphs[] it is not
-// sorted by ink density: each meaning has a fixed index the shader uses (glyphIdx).
+// Fixed glyph set for UI text, HUD and the compass; shaders refer to some indices directly.
 static const GlyphDef s_uiGlyphs[] = {
     {{0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00}}, // 0:  empty
     {{0x24,0x24,0x7E,0x24,0x7E,0x24,0x24,0x00}}, // 1:  wall       '#'
@@ -167,8 +73,7 @@ static const GlyphDef s_uiGlyphs[] = {
     {{0x00,0x18,0x3C,0x3C,0x18,0x18,0x08,0x00}}, // 16: big drip (blood streak)
     {{0x00,0x00,0x00,0x18,0x18,0x00,0x00,0x00}}, // 17: small drip (blood streak)
 
-    // Menu letters (title "CELL", buttons, ...): a plain block 8x8 font in the same style as the
-    // rest of the atlas. The indices are stable: the UI text layout depends on them.
+    // Menu letters; indices are stable.
     {{0x18,0x3C,0x66,0x66,0x7E,0x66,0x66,0x00}}, // 18: 'A'
     {{0x00,0x3C,0x66,0x60,0x66,0x3C,0x00,0x00}}, // 19: 'C'
     {{0x7E,0x60,0x60,0x7C,0x60,0x60,0x7E,0x00}}, // 20: 'E'
@@ -179,9 +84,7 @@ static const GlyphDef s_uiGlyphs[] = {
     {{0x7E,0x18,0x18,0x18,0x18,0x18,0x18,0x00}}, // 25: 'T'
     {{0xC3,0x66,0x3C,0x18,0x3C,0x66,0xC3,0x00}}, // 26: 'X'
 
-    // "Dense" variants for the ASCII-art title (see MainMenu.h): not letters, just equally dark
-    // patterns reused from s_glyphs[] and mixed, so the big title letters consist of varied
-    // characters instead of looking like a solid block.
+    // Equally dense patterns for the ASCII-art title, so big letters are not solid blocks.
     {{0xFF,0x99,0xFF,0x99,0xFF,0x99,0xFF,0x99}}, // 27
     {{0xFF,0xE7,0xFF,0xE7,0xFF,0xE7,0xFF,0xE7}}, // 28
     {{0x3C,0x66,0x6E,0x6A,0x6E,0x60,0x62,0x3C}}, // 29 ('@'-like)
@@ -190,8 +93,7 @@ static const GlyphDef s_uiGlyphs[] = {
     {{0x0F,0xF0,0x0F,0xF0,0x0F,0xF0,0x0F,0xF0}}, // 32 (diagonal stripes, inverted)
     {{0xEF,0xDB,0xBD,0x7E,0x7E,0xBD,0xDB,0xEF}}, // 33
 
-    // Remaining Latin letters (for running text, see diaries): the same plain block 8x8 style as
-    // above, with no dense decorative variants.
+    // Remaining letters for running text.
     {{0x7C,0x66,0x66,0x7C,0x66,0x66,0x7C,0x00}}, // 34: 'B'
     {{0x78,0x6C,0x66,0x66,0x66,0x6C,0x78,0x00}}, // 35: 'D'
     {{0x7E,0x60,0x60,0x7C,0x60,0x60,0x60,0x00}}, // 36: 'F'
@@ -229,12 +131,10 @@ static const GlyphDef s_uiGlyphs[] = {
     {{0x3C,0x66,0x0C,0x18,0x18,0x00,0x18,0x00}}, // 66: '?'
     {{0x18,0x18,0x18,0x18,0x18,0x00,0x18,0x00}}, // 67: '!'
 
-    // HUD item icons (MenuLayouts::DrawHudIcons()) have dedicated indices instead of reusing
-    // GLYPH_TORCH (3), which the compass and menu background also use. 68: torch (three flame
-    // prongs on one handle).
-    {{0x54,0x54,0x54,0x7C,0x10,0x10,0x10,0x38}}, // 68: torch 'Ψ'
+    // HUD item icons have their own indices. 68: torch.
+    {{0x54,0x54,0x54,0x7C,0x10,0x10,0x10,0x38}}, // 68: torch icon (trident)
 
-    // 69: diary, an open book (top/bottom pages with a visible spine in the middle)
+    // 69: diary.
     {{0x00,0x7E,0x5A,0x5A,0x5A,0x5A,0x7E,0x00}}, // 69: diary (open book)
 };
 static const int s_uiGlyphCount = sizeof(s_uiGlyphs) / sizeof(s_uiGlyphs[0]);
@@ -244,77 +144,26 @@ static const int s_uiGlyphCount = sizeof(s_uiGlyphs) / sizeof(s_uiGlyphs[0]);
 //   18-26 and 34-50: letters A-Z (GLYPH_* in ui/UiGlyphs.h); 27-33: dense fillers for big text
 //   51-60 digits, 61-67 punctuation; 68 torch icon, 69 diary icon
 
+// Baked at the native 8x8 and sampled by UV with NEAREST at any cell size. A second resampling step
+// (bake at one cell size, draw at another) would drop one-pixel strokes such as '-'.
 void AsciiEffect::generateUiFontAtlas() {
     m_uiGlyphCount = s_uiGlyphCount;
 
-    const int glyphSize = m_cellSize;
+    const int glyphSize = 8;
     const int atlasW = glyphSize * m_uiGlyphCount;
     const int atlasH = glyphSize;
     std::vector<unsigned char> pixels(atlasW * atlasH, 0);
 
     for (int level = 0; level < m_uiGlyphCount; level++) {
         const GlyphDef& g = s_uiGlyphs[level];
-        for (int y = 0; y < glyphSize; y++) {
-            int srcRow = (y * 8) / glyphSize;
-            unsigned char rowBits = g.rows[srcRow];
-            for (int x = 0; x < glyphSize; x++) {
-                int srcCol = (x * 8) / glyphSize;
-                bool on = (rowBits >> (7 - srcCol)) & 1;
-                pixels[y * atlasW + (level * glyphSize + x)] = on ? 255 : 0;
-            }
-        }
+        for (int y = 0; y < glyphSize; y++)
+            for (int x = 0; x < glyphSize; x++)
+                pixels[y * atlasW + level * glyphSize + x] = ((g.rows[y] >> (7 - x)) & 1) ? 255 : 0;
     }
 
-    glGenTextures(1, &m_uiFontTex);
+    // Re-specified in place: the compass keeps this texture name from startup.
+    if (!m_uiFontTex) glGenTextures(1, &m_uiFontTex);
     glBindTexture(GL_TEXTURE_2D, m_uiFontTex);
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RED, atlasW, atlasH, 0, GL_RED, GL_UNSIGNED_BYTE, pixels.data());
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-}
-
-void AsciiEffect::generateFontAtlas() {
-    // Compute the ink density (number of lit pixels) of each glyph and sort from emptiest to
-    // densest: that forms a proper brightness ramp, like a real ASCII-art converter.
-    std::vector<int> order(s_glyphCount);
-    for (int i = 0; i < s_glyphCount; i++) order[i] = i;
-
-    auto density = [](const GlyphDef& g) {
-        int count = 0;
-        for (int r = 0; r < 8; r++)
-            for (int b = 0; b < 8; b++)
-                if ((g.rows[r] >> b) & 1) count++;
-        return count;
-    };
-
-    std::sort(order.begin(), order.end(), [&](int a, int b) {
-        return density(s_glyphs[a]) < density(s_glyphs[b]);
-    });
-
-    m_rampLength = s_glyphCount;
-
-    const int glyphSize = m_cellSize;
-    const int atlasW = glyphSize * m_rampLength;
-    const int atlasH = glyphSize;
-    std::vector<unsigned char> pixels(atlasW * atlasH, 0);
-
-    for (int level = 0; level < m_rampLength; level++) {
-        const GlyphDef& g = s_glyphs[order[level]];
-        for (int y = 0; y < glyphSize; y++) {
-            int srcRow = (y * 8) / glyphSize;
-            unsigned char rowBits = g.rows[srcRow];
-            for (int x = 0; x < glyphSize; x++) {
-                int srcCol = (x * 8) / glyphSize;
-                bool on = (rowBits >> (7 - srcCol)) & 1;
-                pixels[y * atlasW + (level * glyphSize + x)] = on ? 255 : 0;
-            }
-        }
-    }
-
-    glGenTextures(1, &m_fontTex);
-    glBindTexture(GL_TEXTURE_2D, m_fontTex);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RED, atlasW, atlasH, 0, GL_RED, GL_UNSIGNED_BYTE, pixels.data());
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
@@ -348,9 +197,7 @@ void AsciiEffect::createQuad() {
 
 bool AsciiEffect::init(int sceneWidth, int sceneHeight, int cellSize) {
     m_cellSize = cellSize;
-    m_normalCellSize = cellSize;
     createFBO(sceneWidth, sceneHeight);
-    generateFontAtlas();
     generateUiFontAtlas();
     createQuad();
 
@@ -360,22 +207,23 @@ bool AsciiEffect::init(int sceneWidth, int sceneHeight, int cellSize) {
     GLuint fs = ShaderProgram::CompileShader(GL_FRAGMENT_SHADER, fragSrc.c_str(), "AsciiEffect");
     m_program = ShaderProgram::LinkProgram(vs, fs, "AsciiEffect");
     cacheUniformLocations();
+    m_acerola.init();
+    m_acerola.setCellSize(m_cellSize);
+    m_uniAcerolaCellTex = glGetUniformLocation(m_program, "sceneCellTex");
+    m_uniAcerolaGlyphTex = glGetUniformLocation(m_program, "sceneGlyphTex");
+    m_uniRenderView = glGetUniformLocation(m_program, "renderView");
+    m_uniDebugSceneTex = glGetUniformLocation(m_program, "debugSceneTex");
+    m_uniDebugEdgesTex = glGetUniformLocation(m_program, "debugEdgesTex");
     return m_program != 0;
 }
 
 void AsciiEffect::cacheUniformLocations() {
     if (!m_program) return;
-    m_uniSceneTex           = glGetUniformLocation(m_program, "sceneTex");
-    m_uniFontTex             = glGetUniformLocation(m_program, "fontTex");
     m_uniScreenResolution    = glGetUniformLocation(m_program, "screenResolution");
     m_uniCellSize            = glGetUniformLocation(m_program, "cellSize");
-    m_uniRampLength          = glGetUniformLocation(m_program, "rampLength");
     m_uniUiFontTex      = glGetUniformLocation(m_program, "uiFontTex");
     m_uniUiGlyphCount   = glGetUniformLocation(m_program, "uiGlyphCount");
     m_uniStaminaFrac         = glGetUniformLocation(m_program, "staminaFrac");
-    m_uniGlitchActive        = glGetUniformLocation(m_program, "uGlitchActive");
-    m_uniGlitchUV            = glGetUniformLocation(m_program, "uGlitchUV");
-    m_uniGlitchRadiusCells   = glGetUniformLocation(m_program, "uGlitchRadiusCells");
     m_uniStaminaAlpha        = glGetUniformLocation(m_program, "staminaAlpha");
     m_uniHealthFrac          = glGetUniformLocation(m_program, "healthFrac");
     m_uniUiTex               = glGetUniformLocation(m_program, "uiTex");
@@ -388,14 +236,9 @@ void AsciiEffect::cacheUniformLocations() {
     m_uniTime                = glGetUniformLocation(m_program, "uTime");
 }
 
-void AsciiEffect::resize(int sceneWidth, int sceneHeight) {
-    destroyFBO();
-    createFBO(sceneWidth, sceneHeight);
-}
-
 void AsciiEffect::shutdown() {
+    m_acerola.shutdown();
     destroyFBO();
-    if (m_fontTex) glDeleteTextures(1, &m_fontTex);
     if (m_uiFontTex) glDeleteTextures(1, &m_uiFontTex);
     if (m_uiOverlayTex) glDeleteTextures(1, &m_uiOverlayTex);
     if (m_program) glDeleteProgram(m_program);
@@ -413,8 +256,7 @@ void AsciiEffect::setWallGlitch(bool active, float u, float v, float radiusCells
 
 void AsciiEffect::setStamina(float fraction01, bool enabled) {
     m_staminaFrac = fraction01;
-    // Only the target is stored: the actual visibility (m_staminaAlpha) catches up to it in end()
-    // based on real elapsed time instead of switching instantly.
+    // m_staminaAlpha eases toward the target in end().
     m_staminaEnabledTarget = enabled;
 }
 
@@ -422,49 +264,18 @@ void AsciiEffect::setHealth(float fraction01) {
     m_healthFrac = fraction01;
 }
 
-void AsciiEffect::setCinematicMode(bool enabled, int cinematicCellSize) {
-    const int newCellSize = enabled ? cinematicCellSize : m_normalCellSize;
-
-    if (enabled == m_cinematicMode && newCellSize == m_cellSize) return; // already in the right mode
-    m_cinematicMode = enabled;
-
-    if (newCellSize == m_cellSize) return;
-
-    m_cellSize = newCellSize;
-
-    // Both font atlases bake glyphs for a specific pixel cell size (see generateFontAtlas()/
-    // generateUiFontAtlas()), so they must be rebuilt when m_cellSize changes.
-    if (m_fontTex) { glDeleteTextures(1, &m_fontTex); m_fontTex = 0; }
-    if (m_uiFontTex) { glDeleteTextures(1, &m_uiFontTex); m_uiFontTex = 0; }
-
-    generateFontAtlas();
-    generateUiFontAtlas();
-}
-
 void AsciiEffect::setUserCellSize(int cellSize) {
     cellSize = std::clamp(cellSize, kMinCellSize, kMaxCellSize);
-    m_normalCellSize = cellSize;
-
-    // Cinematic mode is active: do not touch m_cellSize now, only remember the new normal value
-    // (m_normalCellSize). It applies when cinematic mode turns off.
-    if (m_cinematicMode) return;
-
     if (cellSize == m_cellSize) return;
 
     m_cellSize = cellSize;
-
-    if (m_fontTex) { glDeleteTextures(1, &m_fontTex); m_fontTex = 0; }
-    if (m_uiFontTex) { glDeleteTextures(1, &m_uiFontTex); m_uiFontTex = 0; }
-
-    generateFontAtlas();
-    generateUiFontAtlas();
+    m_acerola.setCellSize(m_cellSize);
 }
 
 void AsciiEffect::setUIOverlay(bool enabled, const std::vector<unsigned char>& grid, int cols, int rows) {
     m_uiOverlayEnabled = enabled;
 
     if (!enabled) {
-        // The data is not touched: it is simpler and more robust to always re-upload when enabled.
         return;
     }
 
@@ -489,9 +300,7 @@ void AsciiEffect::setUIOverlay(bool enabled, const std::vector<unsigned char>& g
 
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
 
-    // The CELL title animates, so the grid changes every frame while the menu is open. If the
-    // texture size is unchanged, reuse the GPU memory (glTexSubImage2D) instead of reallocating it
-    // (glTexImage2D) every frame; reallocate only on a real size change.
+    // Same size: update in place instead of reallocating every frame while the title animates.
     if (cols == m_uiOverlayTexW && rows == m_uiOverlayTexH) {
         glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, cols, rows, GL_RED, GL_UNSIGNED_BYTE, grid.data());
     } else {
@@ -514,38 +323,65 @@ void AsciiEffect::begin() {
 }
 
 void AsciiEffect::end(int windowWidth, int windowHeight) {
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    // Minimized window: nothing to draw.
+    if (windowWidth <= 0 || windowHeight <= 0) {
+        glBindFramebuffer(GL_FRAMEBUFFER, m_windowFramebuffer);
+        return;
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, m_windowFramebuffer);
     glViewport(0, 0, windowWidth, windowHeight);
     glDisable(GL_DEPTH_TEST);
     glClear(GL_COLOR_BUFFER_BIT);
 
+    // Views without glyphs skip the ASCII pipeline, including the mip chain only it reads.
+    const bool needsAscii = m_renderView == RenderView::Ascii || m_renderView == RenderView::Edges;
+    if (needsAscii) {
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, m_sceneTex);
+        glGenerateMipmap(GL_TEXTURE_2D);
+    }
+
+    AcerolaAscii::FrameParams params;
+    params.nearPlane = m_nearPlane;
+    params.farPlane = m_farPlane;
+    params.colorEnabled = m_colorEnabled;
+    params.lensStrength = m_lensEffectEnabled ? 0.05f : 0.0f;
+    params.glitchActive = m_glitchActive;
+    params.glitchU = m_glitchU;
+    params.glitchV = m_glitchV;
+    params.glitchRadiusCells = m_glitchRadiusCells;
+    const GLuint sceneAscii = needsAscii
+        ? m_acerola.run(m_sceneTex, m_depthTex, m_fboW, m_fboH, windowWidth, windowHeight, params)
+        : 0;
+    glBindFramebuffer(GL_FRAMEBUFFER, m_windowFramebuffer);
+    glViewport(0, 0, windowWidth, windowHeight);
+
     glUseProgram(m_program);
-
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, m_sceneTex);
-    // Build the mip chain of the finished 3D pass once per frame so the post shader can sample a
-    // downsampled color via textureLod() (see ascii_post.frag).
-    glGenerateMipmap(GL_TEXTURE_2D);
-    glUniform1i(m_uniSceneTex, 0);
-
     glActiveTexture(GL_TEXTURE1);
-    glBindTexture(GL_TEXTURE_2D, m_fontTex);
-    glUniform1i(m_uniFontTex, 1);
+    glBindTexture(GL_TEXTURE_2D, sceneAscii);
+    glUniform1i(m_uniAcerolaCellTex, 1);
+    glActiveTexture(GL_TEXTURE2);
+    glBindTexture(GL_TEXTURE_2D, m_acerola.glyphAtlas());
+    glUniform1i(m_uniAcerolaGlyphTex, 2);
+
+    glUniform1i(m_uniRenderView, (int)m_renderView);
+    glActiveTexture(GL_TEXTURE5);
+    glBindTexture(GL_TEXTURE_2D, m_sceneTex);
+    glUniform1i(m_uniDebugSceneTex, 5);
+    glActiveTexture(GL_TEXTURE6);
+    glBindTexture(GL_TEXTURE_2D, m_acerola.edgesTexture());
+    glUniform1i(m_uniDebugEdgesTex, 6);
 
     glUniform2f(m_uniScreenResolution, (float)windowWidth, (float)windowHeight);
     glUniform1f(m_uniCellSize, (float)m_cellSize);
-    glUniform1f(m_uniRampLength, (float)m_rampLength);
 
-    // Shared UI font (UI text, stamina bar, blood drips): they all need the atlas and the glyph
-    // count, so bind them unconditionally.
+    // UI font for text, stamina bar and blood drips.
     glActiveTexture(GL_TEXTURE3);
     glBindTexture(GL_TEXTURE_2D, m_uiFontTex);
     glUniform1i(m_uniUiFontTex, 3);
     glUniform1f(m_uniUiGlyphCount, (float)m_uiGlyphCount);
 
-    // Stamina bar with a smooth fade: m_staminaAlpha catches up to the target
-    // (m_staminaEnabledTarget) based on real elapsed time instead of switching instantly, so
-    // entering/leaving noclip does not jerk the bar.
+    // Stamina bar fades on real elapsed time.
     {
         auto now = std::chrono::steady_clock::now();
         float dt = 0.0f;
@@ -564,9 +400,6 @@ void AsciiEffect::end(int windowWidth, int windowHeight) {
     }
 
     glUniform1f(m_uniStaminaFrac, m_staminaFrac);
-    glUniform1f(m_uniGlitchActive, m_glitchActive ? 1.0f : 0.0f);
-    glUniform2f(m_uniGlitchUV, m_glitchU, m_glitchV);
-    glUniform1f(m_uniGlitchRadiusCells, m_glitchRadiusCells);
     glUniform1f(m_uniStaminaAlpha, m_staminaAlpha);
     glUniform1f(m_uniHealthFrac, m_healthFrac);
 

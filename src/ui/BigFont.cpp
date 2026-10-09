@@ -329,6 +329,54 @@ const BigGlyph& BigZ() {
     return g;
 }
 
+const BigGlyph& BigPeriod() {
+    static const BigGlyph g = {{
+        ".....",
+        ".....",
+        ".....",
+        ".....",
+        ".....",
+        ".##..",
+        ".##.."
+    }};
+    return g;
+}
+const BigGlyph& BigComma() {
+    static const BigGlyph g = {{
+        ".....",
+        ".....",
+        ".....",
+        ".....",
+        ".##..",
+        "..#..",
+        ".#..."
+    }};
+    return g;
+}
+const BigGlyph& BigQuestion() {
+    static const BigGlyph g = {{
+        ".###.",
+        "#...#",
+        "....#",
+        "...#.",
+        "..#..",
+        ".....",
+        "..#.."
+    }};
+    return g;
+}
+const BigGlyph& BigApostrophe() {
+    static const BigGlyph g = {{
+        "..#..",
+        "..#..",
+        ".#...",
+        ".....",
+        ".....",
+        ".....",
+        "....."
+    }};
+    return g;
+}
 const BigGlyph& BigUnderscore() {
     static const BigGlyph g = {{
         ".....",
@@ -474,6 +522,10 @@ const BigGlyph& GetBigGlyph(char c) {
         case 'Q': return BigQ();
         case 'Z': return BigZ();
         case '_': return BigUnderscore();
+        case '.': return BigPeriod();
+        case ',': return BigComma();
+        case '?': return BigQuestion();
+        case '\'': return BigApostrophe();
         case ' ': return BigSpace();
         case '0': case '1': case '2': case '3': case '4':
         case '5': case '6': case '7': case '8': case '9':
@@ -482,18 +534,13 @@ const BigGlyph& GetBigGlyph(char c) {
     }
 }
 
-// How many screen cells one pixel of the original 5x7 pattern covers per axis: round(scale *
-// kMaskUpsample), never below 1. scale is a float, not an int, so the title and the button text can
-// have independently different physical sizes (e.g. 1.5 for "CELL" and 0.5 for buttons).
+// Screen cells per mask pixel: round(scale * kMaskUpsample), at least 1.
 
 int ComputeFinalRes(float scale) {
     return std::max(1, (int)std::lround((double)scale * kMaskUpsample));
 }
 
-// Draws one large logo glyph with an upscaled mask: each original pixel of the 5x7 pattern expands
-// into finalRes x finalRes screen cells, each getting its own dense glyph chosen deterministically
-// from the seed (no flicker between frames). Neighboring cells are almost always different, while
-// the letter's silhouette stays unchanged.
+// Each 5x7 mask pixel expands into finalRes x finalRes cells, each with a seeded dense glyph.
 void DrawBigGlyph(std::vector<unsigned char>& grid, int cols, int rows,
                           const BigGlyph& glyph, int originCol, int originRow, float scale, int seed) {
     const int finalRes = ComputeFinalRes(scale);

@@ -13,9 +13,9 @@
 #include <unordered_map>
 #include <vector>
 
-// See src/audio/Mp3Decoder.cpp for why the implementation lives in its own translation unit: this
-// include only declares the functions (mp3dec_load_w() etc.).
+// Declarations only; the implementation is compiled in Mp3Decoder.cpp
 #include "minimp3_ex.h"
+#include "Mp3Stream.h"
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -25,22 +25,13 @@
 #include <mmsystem.h>
 #endif
 
-// Process-wide pool of independent voices on WinMM (waveOut*), used instead of PlaySoundW, which is
-// a single channel per process and silently dropped sounds requested while another played.
-// kVoiceCount HWAVEOUTs are opened once in init(); play() takes a free voice or steals the least
-// important one.
-//
-// Volume is applied in software into a per-voice buffer (Voice::scaledBuffer): waveOutSetVolume()
-// is not used because many drivers apply it to the whole device. The format is fixed at mono /
-// 16-bit / 48000 Hz (other WAVs are converted on load); decoded SFX are cached for the process
-// lifetime and shared read-only between voices.
-//
-// On non-Windows platforms it is a no-op (isAvailable() == false).
+// Process-wide pool of voices on WinMM (waveOut).
+// PlaySoundW has one channel per process and drops overlapping sounds
+// kVoiceCount devices are opened once; play() takes a free voice or steals the least important one
 class AudioMixer {
 public:
-    // Identifies one play() call so it can be stopped early via stop() without silencing an
-    // unrelated sound that later reused the same voice slot. startOrder is a generation check: if
-    // the slot was recycled it will not match and stop() does nothing.
+    // Identifies one play() call for stop()
+    // startOrder guards against the slot having been reused by another sound
     struct VoiceHandle {
         int index = -1;
         std::uint64_t startOrder = 0;
@@ -52,9 +43,7 @@ public:
         return mixer;
     }
 
-    // Idempotent: called from every EnemyAudio::init() (one per enemy) and from
-    // FootstepAudio::init() (player). It opens the voices only once; repeat calls while available
-    // just return true.
+    // Idempotent: every EnemyAudio and FootstepAudio calls it
     bool init()
     {
 #ifdef _WIN32
@@ -101,9 +90,8 @@ public:
             return false;
         }
 
-        // A dedicated handle for the streamed music channel (see MusicChannel), separate from the
-        // SFX pool so a long ambient track can never be evicted by voice stealing. Failing to open
-        // it is not fatal: SFX still work and music just does not play.
+        // Music has its own device so voice stealing can never evict it. Failing to open it only
+        // disables music.
         m_music = MusicChannel{};
         const MMRESULT musicOpenResult = m_waveOutOpen(&m_music.handle, WAVE_MAPPER, &fmt, 0, 0, CALLBACK_NULL);
         m_music.opened = (musicOpenResult == MMSYSERR_NOERROR);
@@ -137,22 +125,24 @@ public:
             }
             m_waveOutClose(m_music.handle);
         }
+        m_music.stream.close();
         m_music = MusicChannel{};
 
         if (m_winmm)
             FreeLibrary(m_winmm);
         m_winmm = nullptr;
         m_available = false;
-        // The PCM cache is not cleared: the data is small, and the next init() (a new level) skips
-        // re-reading and parsing from disk.
+        // The PCM cache survives: the next init() skips decoding.
 #endif
     }
 
-    // volume (0..1) is computed by the caller; the mixer knows nothing about positions. When the
-    // pool is full the lowest-priority voice is evicted (ties: oldest), and a new sound below
-    // everything playing is dropped. Priorities: 0 ambient/frequent, 1 atmospheric, 2 important
-    // one-offs. The returned VoiceHandle is needed only to stop() this exact sound; scaled by
-    // MASTER only (music never uses this pool).
+    // volume (0..1) is computed by the caller
+    // When the pool is full the lowest-priority voice is evicted (ties: oldest);
+    // a sound below everything playing is dropped
+    // Priorities:
+    // 0 frequent
+    // 1 atmospheric
+    // 2 important one-offs
     VoiceHandle play(const std::wstring& absolutePath, float volume, int priority)
     {
 #ifdef _WIN32
@@ -163,9 +153,7 @@ public:
 
         if (volume < 0.0f) volume = 0.0f;
         if (volume > 1.0f) volume = 1.0f;
-        // Below the audibility threshold: do not spend a voice on a sound nobody would hear
-        // (distance falloff has its own far cutoff in EnemyAI.cpp; this is a separate, lower
-        // technical floor for tiny nonzero values).
+        // Inaudible; do not spend a voice on it.
         if (volume <= 0.002f)
             return VoiceHandle{};
 
@@ -184,9 +172,7 @@ public:
         }
 
         if (chosen < 0) {
-            // All voices busy: find the least important one (by priority, ties broken by the oldest
-            // startOrder) instead of taking the next one round-robin, which dropped important
-            // sounds as often as footsteps.
+            // All voices busy: evict the least important (oldest on ties).
             int worstIdx = -1;
             int worstPriority = INT_MAX;
             std::uint64_t worstOrder = UINT64_MAX;
@@ -203,11 +189,10 @@ public:
             }
 
             if (worstIdx < 0)
-                return VoiceHandle{}; // no voice ever opened at all — shouldn't happen
+                return VoiceHandle{}; // no voice ever opened at all: shouldn't happen
 
             if (priority < worstPriority)
-                // the new sound is less important than everything playing: drop it instead of
-                // cutting off something important
+                // Less important than everything playing: drop it.
                 return VoiceHandle{};
 
             chosen = worstIdx;
@@ -222,9 +207,8 @@ public:
         if (!v.opened)
             return VoiceHandle{};
 
-        // Volume is applied into this voice's own buffer (pcm is the shared read-only original); it
-        // is safe to overwrite because WinMM is not reading it (the voice was free or was just
-        // reset).
+        // Volume is baked into this voice's own buffer; WinMM is not reading it (the voice is free
+        // or was just reset).
         v.scaledBuffer.resize(pcm->size());
         for (size_t i = 0; i < pcm->size(); ++i) {
             float sample = (float)(*pcm)[i] * volume;
@@ -257,9 +241,7 @@ public:
 #endif
     }
 
-    // Stops one playback early, identified by the handle play() returned. A stale handle (already
-    // finished, or the slot recycled for another sound) is a no-op instead of silencing whatever
-    // plays there now.
+    // A stale handle is a no-op.
     void stop(VoiceHandle handle)
     {
 #ifdef _WIN32
@@ -278,50 +260,52 @@ public:
 #endif
     }
 
-    // Scales every sound the mixer plays, the SFX pool and the music channel alike. Applied lazily
-    // (per play() call for SFX, per chunk for music), never retroactively to audio already handed
-    // to WinMM.
+    // Affects the SFX pool and music
+    // Applied on the next play() / music chunk, never to audio already queued
     void setMasterVolume(float volume01)
     {
         m_masterVolume = std::clamp(volume01, 0.0f, 1.0f);
     }
     float masterVolume() const { return m_masterVolume; }
 
-    // Scales the music channel only, on top of the master volume; plain SFX are unaffected.
+    // Music only, on top of the master volume
     void setMusicVolume(float volume01)
     {
         m_musicVolume = std::clamp(volume01, 0.0f, 1.0f);
     }
     float musicVolume() const { return m_musicVolume; }
 
-    // Streamed music channel: play() scales a whole clip once, so a later volume change cannot
-    // reach it. This channel streams double-buffered chunks (kMusicChunkSamples) re-scaled from the
-    // current volume, which lets the diary duck fade smoothly. One track, no looping; GameplayMusic
-    // decides what plays next. A dedicated HWAVEOUT keeps it immune to voice stealing.
+    // Streamed music:
+    // two alternating ~100 ms chunks, each scaled at the current volume, so the
+    // diary duck fades smoothly. MP3 is decoded chunk by chunk (a decoded track would be tens of MB)
+    // One track, no looping; GameplayMusic decides what plays
 
-    // Starts a new track, replacing the current one; false if the channel is unavailable or
-    // decoding fails. The whole file is decoded synchronously on the calling thread (about 0.2 s
-    // for the current track at -O2), so it stalls the frame. It decodes into the reused m_music.pcm
-    // buffer, which stopMusicInternal() deliberately leaves intact.
+    // Replaces the current track; false if the channel is unavailable or the file cannot be opened
     bool playMusic(const std::wstring& absolutePath)
     {
 #ifdef _WIN32
         if (!m_available || !m_music.opened || absolutePath.empty())
             return false;
 
-        // Stop first: the decode below writes into m_music.pcm, which may still be the buffer being
-        // played. On decode failure outSamples is never touched (both decoders write only on
-        // success), so stale data there is harmless.
+        // Stop first: the new source replaces the one that may be playing.
         stopMusicInternal();
 
-        if (!LoadAndConvertAudioFile(absolutePath, m_music.pcm) || m_music.pcm.empty())
-            return false;
+        if (HasExtension(absolutePath, L".mp3"))
+        {
+            if (!m_music.stream.open(absolutePath, kSampleRate))
+                return false;
+        }
+        else
+        {
+            if (!LoadAndConvertAudioFile(absolutePath, m_music.pcm) || m_music.pcm.empty())
+                return false;
+        }
 
         m_music.cursorSample = 0;
+        m_music.sourceEnded = false;
         m_music.active = true;
 
-        // Prime both chunks immediately so playback starts at once instead of waiting for the first
-        // update() to notice an empty buffer.
+        // Queue both chunks now so playback starts immediately.
         fillAndQueueMusicChunk(0);
         fillAndQueueMusicChunk(1);
         return true;
@@ -331,9 +315,7 @@ public:
 #endif
     }
 
-    // Stops the streamed channel immediately (not a fade: for that, ramp setMusicDuckTarget() down
-    // and let the track finish on its own, then do not start another). Safe to call when nothing is
-    // playing.
+    // Immediate stop
     void stopMusic()
     {
 #ifdef _WIN32
@@ -341,9 +323,8 @@ public:
 #endif
     }
 
-    // True while the streamed channel still has audio to play (false once the track has run past
-    // its last sample and both chunks have drained). GameplayMusic polls this to know when to
-    // schedule the next random track.
+    // False once the track has played out;
+    // GameplayMusic polls it to schedule the next one
     bool isMusicPlaying() const
     {
 #ifdef _WIN32
@@ -353,16 +334,13 @@ public:
 #endif
     }
 
-    // Sets where the duck ramp (see update()) is headed; it is not an instant jump. update() moves
-    // the actual multiplier toward this at kMusicDuckRampPerSecond, giving a gradual fade rather
-    // than a cut.
+    // Target of the duck ramp; update() moves toward it at kMusicDuckRampPerSecond
     void setMusicDuckTarget(float duck01)
     {
         m_musicDuckTarget = std::clamp(duck01, 0.0f, 1.0f);
     }
 
-    // Per-frame maintenance: advances the duck ramp and refills finished chunks. Call it every
-    // frame unconditionally, even while gameplay is paused (e.g. the diary overlay).
+    // Advances the duck ramp and refills played chunks
     void update(float deltaTime)
     {
 #ifdef _WIN32
@@ -385,18 +363,15 @@ public:
             if (m_music.headers[i].dwFlags & WHDR_DONE) {
                 m_waveOutUnprepareHeader(m_music.handle, &m_music.headers[i], sizeof(WAVEHDR));
                 m_music.chunkQueued[i] = false;
-                if (m_music.cursorSample < m_music.pcm.size())
+                if (!m_music.sourceEnded)
                     fillAndQueueMusicChunk(i);
             }
             if (m_music.chunkQueued[i])
                 anyStillActive = true;
         }
 
-        if (!anyStillActive && m_music.cursorSample >= m_music.pcm.size()) {
-            // Both chunks drained and no more source data: the track ended. m_music.pcm is
-            // intentionally kept (reused buffer) so the next play does not reallocate it.
+        if (!anyStillActive && m_music.sourceEnded)
             m_music.active = false;
-        }
 #else
         (void)deltaTime;
 #endif
@@ -410,7 +385,7 @@ private:
     AudioMixer(const AudioMixer&) = delete;
     AudioMixer& operator=(const AudioMixer&) = delete;
 
-    // headroom for overlapping long-echo footsteps of all enemies plus moans/screams and the player
+    // All enemies' long-echo footsteps plus moans, screams and the player
     static constexpr int kVoiceCount = 24;
     static constexpr unsigned long kSampleRate = 48000;
 
@@ -419,8 +394,7 @@ private:
 
     float m_musicDuckTarget = 1.0f;
     float m_musicDuckCurrent = 1.0f;
-    // A 0.2 step takes 0.2 / 0.08 = 2.5 s to settle: audible as a fade, not instant, without
-    // feeling stuck.
+    // A 0.2 step settles in 2.5 s
     static constexpr float kMusicDuckRampPerSecond = 0.08f;
 
 #ifdef _WIN32
@@ -431,13 +405,11 @@ private:
         bool busy = false;
         int priority = 0;
         std::uint64_t startOrder = 0;
-        // Own buffer, scaled to this playback's volume (see the class comment); not shared with the
-        // m_pcmCache entries.
+        // Volume-scaled copy of the cached PCM.
         std::vector<int16_t> scaledBuffer;
     };
 
-    // Marks finished voices free. Voice::scaledBuffer is deliberately not shrunk: it settles at the
-    // largest file played and is reused, avoiding allocation churn on frequent footsteps.
+    // scaledBuffer keeps its capacity to avoid reallocating on every footstep
     void reclaimFinishedVoices()
     {
         for (auto& v : m_voices) {
@@ -454,25 +426,22 @@ private:
         WAVEHDR headers[2]{};
         std::vector<int16_t> chunkBuffers[2];
         bool chunkQueued[2] = { false, false };
-        // Reused across plays (see playMusic()) instead of freed: one heap allocation for the
-        // process lifetime.
+        // MP3 tracks are decoded on the fly; other formats are decoded whole into pcm.
+        Mp3Stream stream;
         std::vector<int16_t> pcm;
         size_t cursorSample = 0;
-        bool active = false; // a track is loaded/playing (may be inaudible if duck has faded it to 0)
+        bool sourceEnded = true; // no more samples to queue
+        bool active = false;     // a track is playing (may be inaudible if ducked to 0)
     };
 
-    // ~100 ms per chunk: short enough for a duck/volume change to read as a smooth fade, long
-    // enough that refilling once per frame normally keeps WinMM fed. A frame stall longer than the
-    // two queued chunks (~200 ms) would underrun.
     static constexpr size_t kMusicChunkSamples = kSampleRate / 10;
 
-    // Copies the next chunk of samples from m_music.pcm into chunkBuffers[idx] at the current
-    // combined volume (master x music x duck) and submits it to WinMM. A short final chunk is
-    // padded with silence instead of being special-cased.
+    // Fills chunk idx at master x music x duck volume and queues it;
+    // a short last chunk is padded with silence
     void fillAndQueueMusicChunk(int idx)
     {
         MusicChannel& m = m_music;
-        if (!m.opened || m.pcm.empty())
+        if (!m.opened || m.sourceEnded)
             return;
 
         const float volume = std::clamp(m_masterVolume * m_musicVolume * m_musicDuckCurrent, 0.0f, 1.0f);
@@ -480,15 +449,26 @@ private:
         std::vector<int16_t>& buf = m.chunkBuffers[idx];
         buf.assign(kMusicChunkSamples, 0);
 
-        const size_t remaining = (m.cursorSample < m.pcm.size()) ? (m.pcm.size() - m.cursorSample) : 0;
-        const size_t toCopy = std::min(remaining, kMusicChunkSamples);
-        for (size_t i = 0; i < toCopy; ++i) {
-            float sample = (float)m.pcm[m.cursorSample + i] * volume;
-            if (sample > 32767.0f) sample = 32767.0f;
-            if (sample < -32768.0f) sample = -32768.0f;
-            buf[i] = (int16_t)sample;
+        size_t written = 0;
+        if (m.stream.isOpen())
+        {
+            written = m.stream.read(buf.data(), kMusicChunkSamples, volume);
         }
-        m.cursorSample += toCopy;
+        else
+        {
+            const size_t remaining = (m.cursorSample < m.pcm.size()) ? (m.pcm.size() - m.cursorSample) : 0;
+            written = std::min(remaining, kMusicChunkSamples);
+            for (size_t i = 0; i < written; ++i)
+                buf[i] = (int16_t)std::clamp((float)m.pcm[m.cursorSample + i] * volume, -32768.0f, 32767.0f);
+            m.cursorSample += written;
+        }
+        if (written < kMusicChunkSamples)
+        {
+            m.sourceEnded = true;
+            m.stream.close();
+            if (written == 0)
+                return;
+        }
 
         m.headers[idx] = WAVEHDR{};
         m.headers[idx].lpData = reinterpret_cast<LPSTR>(buf.data());
@@ -503,8 +483,7 @@ private:
         m.chunkQueued[idx] = true;
     }
 
-    // Shared teardown for playMusic() and stopMusic(): resets the channel to idle. It leaves
-    // m_music.pcm's contents untouched; that buffer is reused between plays, not freed.
+    // Resets the channel to idle; the PCM buffer is kept
     void stopMusicInternal()
     {
         if (!m_music.opened)
@@ -516,13 +495,13 @@ private:
                 m_music.chunkQueued[i] = false;
             }
         }
+        m_music.stream.close();
         m_music.cursorSample = 0;
+        m_music.sourceEnded = true;
         m_music.active = false;
     }
 
-    // Shared tail of both loaders below: mono float samples in [-1, 1] at srcSampleRate -> int16
-    // samples at the mixer's fixed kSampleRate, by linear interpolation (good enough for game
-    // audio). Both formats go through the same resampling path.
+    // Mono float [-1, 1] at srcSampleRate -> int16 at kSampleRate, linear resampling.
     static void DownmixedToOutputSamples(const std::vector<float>& mono, unsigned int srcSampleRate,
                                           std::vector<int16_t>& outSamples)
     {
@@ -551,8 +530,7 @@ private:
         }
     }
 
-    // Reads a canonical PCM WAV (8/16 bit, mono/stereo, any rate) and converts it to the voice
-    // format: channel averaging plus linear resampling.
+    // Canonical PCM WAV (8/16-bit, mono/stereo, any rate)
     static bool LoadAndConvertWav(const std::wstring& path, std::vector<int16_t>& outSamples)
     {
         std::ifstream file(path.c_str(), std::ios::binary);
@@ -601,7 +579,7 @@ private:
         if (!haveFmt || dataChunk.empty() || channels == 0 || sampleRate == 0)
             return false;
         if (bitsPerSample != 8 && bitsPerSample != 16)
-            return false; // rare 24/32-bit assets are already converted ahead of time in the prep pipeline
+            return false; // 24/32-bit WAV is not supported
 
         const size_t bytesPerSample = bitsPerSample / 8;
         const size_t frameCount = dataChunk.size() / (bytesPerSample * channels);
@@ -628,13 +606,11 @@ private:
         return true;
     }
 
-    // MP3 decoding via minimp3 (implementation unit: Mp3Decoder.cpp). Same failure semantics as
-    // LoadAndConvertWav() (false = do not play) and the same downmix/resample tail.
+    // MP3 via minimp3; same contract as LoadAndConvertWav().
     static bool LoadAndConvertMp3(const std::wstring& path, std::vector<int16_t>& outSamples)
     {
         mp3dec_t mp3d;
-        // zero-initialized: info.buffer must be nullptr on any early failure so the free() below is
-        // safe (free(nullptr) is a no-op)
+        // Zeroed so free(info.buffer) is safe on early failure.
         mp3dec_file_info_t info = {};
         if (mp3dec_load_w(&mp3d, path.c_str(), &info, nullptr, nullptr) != 0 ||
             !info.buffer || info.samples == 0 || info.channels <= 0)
@@ -659,28 +635,31 @@ private:
         return true;
     }
 
-    // Dispatches to the decoder by file extension. Everything downstream (caching, volume scaling,
-    // mixing) is format-agnostic: both loaders produce the same std::vector<int16_t> at the mixer's
-    // fixed sample rate.
+    static bool HasExtension(const std::wstring& path, const wchar_t* ext)
+    {
+        const size_t n = std::wcslen(ext);
+        if (path.size() < n)
+            return false;
+        for (size_t i = 0; i < n; ++i)
+            if (std::towlower(path[path.size() - n + i]) != std::towlower(ext[i]))
+                return false;
+        return true;
+    }
+
+    // Picks the decoder by extension; both produce int16 at kSampleRate
     static bool LoadAndConvertAudioFile(const std::wstring& path, std::vector<int16_t>& outSamples)
     {
-        if (path.size() >= 4) {
-            std::wstring ext = path.substr(path.size() - 4);
-            for (wchar_t& c : ext) c = (wchar_t)std::towlower(c);
-            if (ext == L".mp3")
-                return LoadAndConvertMp3(path, outSamples);
-        }
+        if (HasExtension(path, L".mp3"))
+            return LoadAndConvertMp3(path, outSamples);
         return LoadAndConvertWav(path, outSamples);
     }
 
-    // Caches decoded SFX forever, keyed by path: cheap for the small, frequently replayed files
-    // this pool handles. Music does not use this cache (see playMusic()): a multi-minute track is
-    // tens of MB decoded and would stay in memory after a single play.
+    // Decoded SFX are cached for the process lifetime. Music never goes through here.
     std::shared_ptr<std::vector<int16_t>> getOrLoadPcm(const std::wstring& path)
     {
         const auto it = m_pcmCache.find(path);
         if (it != m_pcmCache.end())
-            // may be nullptr: loading this file already failed, do not retry on every play()
+            // nullptr: loading failed before; do not retry.
             return it->second;
 
         auto samples = std::make_shared<std::vector<int16_t>>();

@@ -51,9 +51,10 @@
 		<Compiler>
 			<Add option="-Wall" />
 			<Add option="-std=c++17" />
-			<Add directory="C:/Program Files/CodeBlocks/MinGW/x86_64-w64-mingw32/include" />
+			<Add option="-DGLEW_STATIC" />
 			<Add directory="src" />
 			<Add directory="third_party" />
+			<Add directory="C:/Program Files/CodeBlocks/MinGW/x86_64-w64-mingw32/include" />
 		</Compiler>
 		<Linker>
 			<Add library="glfw3" />
@@ -67,6 +68,10 @@
 		</Unit>
 		<Unit filename="src/render/AsciiEffect.cpp" />
 		<Unit filename="src/render/AsciiEffect.h" />
+		<Unit filename="src/render/CrtEffect.cpp" />
+		<Unit filename="src/render/CrtEffect.h" />
+		<Unit filename="src/render/AcerolaAscii.cpp" />
+		<Unit filename="src/render/AcerolaAscii.h" />
 		<Unit filename="src/render/AssetPath.cpp" />
 		<Unit filename="src/render/AssetPath.h" />
 		<Unit filename="src/render/ShaderLoader.cpp" />
@@ -74,6 +79,11 @@
 		<Unit filename="src/render/ShaderProgram.cpp" />
 		<Unit filename="src/render/ShaderProgram.h" />
 		<Unit filename="src/dev/DevTools.h" />
+		<Unit filename="src/scene/Difficulty.h" />
+		<Unit filename="src/scene/ExitDoor.h" />
+		<Unit filename="third_party/glew/glew.c">
+			<Option compilerVar="CC" />
+		</Unit>
 		<Unit filename="src/scene/DungeonScene.cpp" />
 		<Unit filename="src/scene/DungeonScene.h" />
 		<Unit filename="src/scene/WallTexture.h" />
@@ -106,6 +116,8 @@
 		<Unit filename="src/scene/DiagonalCorridors.cpp" />
 		<Unit filename="src/scene/Lighting.h" />
 		<Unit filename="src/scene/Lighting.cpp" />
+		<Unit filename="src/scene/TorchShadowMap.cpp" />
+		<Unit filename="src/scene/TorchShadowMap.h" />
 		<Unit filename="src/scene/LineOfSight.h" />
 		<Unit filename="src/scene/LineOfSight.cpp" />
 		<Unit filename="src/scene/PlayerTorchViewmodel.h" />
@@ -129,6 +141,8 @@
 		<Unit filename="src/ui/UiGlyphs.h" />
 		<Unit filename="src/ui/TextGrid.h" />
 		<Unit filename="src/ui/TextGrid.cpp" />
+		<Unit filename="src/ui/StoryText.cpp" />
+		<Unit filename="src/ui/StoryText.h" />
 		<Unit filename="src/ui/BigFont.h" />
 		<Unit filename="src/ui/BigFont.cpp" />
 		<Unit filename="src/ui/Atmosphere.h" />
@@ -140,6 +154,7 @@
 		<Unit filename="src/audio/FootstepAudio.h" />
 		<Unit filename="src/audio/EnemyAudio.h" />
 		<Unit filename="src/audio/Mp3Decoder.cpp" />
+		<Unit filename="src/audio/Mp3Stream.h" />
 		<Unit filename="src/audio/AssetLocate.h" />
 		<Unit filename="src/audio/AudioMixer.h" />
 		<Unit filename="src/main.cpp" />

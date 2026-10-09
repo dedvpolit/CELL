@@ -6,12 +6,8 @@
 #include "AssetLocate.h"
 #include "AudioMixer.h"
 
-// Sounds for one enemy (scream, moan, footsteps, wall slam, attack) played through AudioMixer. Each
-// play*() takes a 0..1 volume computed by the caller (distance-based); kVolumeScale quiets only
-// enemy sounds. Priorities (AudioMixer::play()): footsteps 0, moan 1, scream/hit/attack 2. Files:
-// assets/audio/enemy/{detected,moan,footstep_walk,footstep_run}_N.wav, wall_slam.wav, attack.wav.
-// shutdown() does not stop the shared mixer; FootstepAudio::shutdown() does. Chase growling is
-// deliberately not implemented.
+// One enemy's sounds through AudioMixer
+// play*() takes a caller-computed 0..1 volume
 class EnemyAudio {
 public:
     bool init()
@@ -150,3 +146,5 @@ private:
     static constexpr int kMoanVariantCount = 4;
 #endif
 };
+
+// meow-meow-meow-meow

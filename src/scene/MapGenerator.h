@@ -1,47 +1,42 @@
 #pragma once
+#include <array>
 #include <glm/glm.hpp>
 #include <vector>
 #include <functional>
 #include "Diaries.h"
 
-// Procedural maze generation (DFS over a grid where 2 cells = 1 step) and torch placement on the
-// finished map. A one-shot generator: it keeps no state and only fills what it is given or returns;
-// DungeonScene owns the data.
+// Maze generation (DFS, 2 cells per step) and torch placement
+// Stateless; DungeonScene owns the data
 namespace MapGenerator {
 
-// Maze generation result. DungeonScene::generateMap() unpacks it into its own fields
-// (m_map/m_mapW/m_mapH/m_endSafeX0.../m_winButtonPos/m_smallSafeZoneCenters/
-// m_smallSafeZoneRadius).
+// Unpacked by DungeonScene::generateMap()
 struct GenerateResult {
     int mapW = 0, mapH = 0;
     std::vector<int> map; // 1 = wall, 2 = floor (see DungeonScene::isWall/isFloor)
 
-    // The seed this map was built from, stored so the caller can write it to a save: the same seed
-    // passed to Generate() + PlaceTorches() reproduces the exact maze and torch layout, so CONTINUE
-    // stores one number instead of the geometry.
+    // The same seed reproduces the maze and torches, so saves store only the seed
     unsigned int seed = 0;
 
     int endSafeX0 = 0, endSafeZ0 = 0, endSafeX1 = 0, endSafeZ1 = 0;
-    glm::vec3 winButtonPos{0.0f};
+    glm::vec3 exitDoorPos{0.0f};
 
     std::vector<glm::ivec2> smallSafeZoneCenters;
     int smallSafeZoneRadius = 0;
 
-    // Diaries placed 1:1 into smallSafeZoneCenters (see Diaries.h::SelectForSeed) from the same
-    // seed, so CONTINUE gets the same set of diaries in the same pockets.
+    // One diary per pocket; the text comes from the read order and storyVariant
     std::vector<Diaries::PlacedDiary> diaries;
+    std::array<int, Diaries::kStepCount> storyVariants{};
 };
 
-// Deterministic: the same seed always gives the same maze (same DFS traversal, same pockets);
-// CONTINUE relies on it.
+// Deterministic:
+// the same seed always gives the same maze (same DFS traversal, same pockets);
+// CONTINUE relies on it
 GenerateResult Generate(unsigned int seed);
 
 GenerateResult Generate();
 
-// Torch placement: a fixed set in the starting safe zone, several in the finish zone, 3 per pocket
-// (smallSafeZoneCenters) and the rest along the main maze walls. The result is parallel arrays
-// (wallBase/normal/flamePos/color/intensity) where the same index i is the same torch.
-// isWall/isFloor are predicates because the map data stays in DungeonScene.
+// Torches: fixed sets in both safe zones, 3 per pocket, the rest along maze walls
+// Parallel arrays
 struct TorchPlacement {
     std::vector<glm::vec3> wallBase;
     std::vector<glm::vec3> normal;
@@ -49,14 +44,13 @@ struct TorchPlacement {
     std::vector<glm::vec3> color;
     std::vector<float> intensity;
 
-    // See BuildTorchCellLookup() below; computed at the end of PlaceTorches(), when wallBase and
-    // normal are final.
+    // See BuildTorchCellLookup() below;
+    // computed at the end of PlaceTorches(), when wallBase and normal are final
     std::vector<unsigned char> torchCellLookup; // size mapW*mapH, 0/1
 };
 
-// seed as in Generate(): the same seed gives the same torch layout, so CONTINUE needs no torch
-// seed. isChamfered marks cells with a chamfered corner: torches are placed at a face center, which
-// can land in the cut wedge and leave the torch floating, so those cells are excluded.
+// Deterministic from the seed
+// Chamfered cells are skipped: a mount point there could fall into the cut
 TorchPlacement PlaceTorches(int mapW, int mapH,
                              int endSafeX0, int endSafeZ0, int endSafeX1, int endSafeZ1,
                              const std::vector<glm::ivec2>& smallSafeZoneCenters,
@@ -76,8 +70,7 @@ TorchPlacement PlaceTorches(int mapW, int mapH,
                              const std::function<bool(int, int)>& isChamfered,
                              int maxTorches);
 
-// Used by PlaceTorches() and by DungeonScene::rebuildTorchCellLookupFromTaken(), which recomputes
-// the lookup when torches are taken.
+// Used by PlaceTorches() and by DungeonScene::rebuildTorchCellLookupFromTaken(), which recomputes the lookup when torches are taken
 std::vector<unsigned char> BuildTorchCellLookup(
     int mapW, int mapH,
     const std::vector<glm::vec3>& torchWallBase,

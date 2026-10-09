@@ -1,0 +1,13 @@
+Torment texture pack by strideh
+https://strideh.itch.io/torment
+
+Licensing:
+You MAY:
+  Use these textures in both free or commercial projects
+  Distribute these textures in open source projects (with attribution)
+  Modify these textures to suit your own needs
+You may NOT:
+  Sell these, modified or unmodified, as your own standalone assets
+  Use these textures for generative AI training or associated purposes
+
+Used in CELL: assets/textures/walls/str_stonebrk1_8bit.png (modified).

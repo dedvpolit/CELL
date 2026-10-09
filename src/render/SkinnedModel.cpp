@@ -4,9 +4,7 @@
 #include "SkinnedModel.h"
 #include "AssetPath.h"
 
-// glm::slerp is only declared in the experimental gtx/quaternion.hpp, not the stable gtc header.
-// Without this define MinGW errors instead of warning: GLM requires an explicit opt-in for
-// experimental headers.
+// glm::slerp lives in the experimental gtx header, which needs this opt-in (meooooow)
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
@@ -19,6 +17,7 @@
 
 #include "stb_image.h"
 
+// Actually i didnt write SkinnedMidel so dont know exactly how it works
 namespace {
 
 struct RawVertex {
@@ -126,9 +125,8 @@ bool SkinnedModel::load(const std::string& path, bool loadDiffuseTexture)
         {
             case cgltf_attribute_type_position: posAcc = attr.data; break;
             case cgltf_attribute_type_normal:   normAcc = attr.data; break;
-            // Taking the last COLOR attribute encountered (THE WRAPPED has two, not necessarily
-            // COLOR_0) looked better than strictly COLOR_0; deliberately left this way for this
-            // model.
+            // Takes the last COLOR attribute, not strictly COLOR_0:
+            //THE WRAPPED has two and the  last one looks right
             case cgltf_attribute_type_color:
                 colorAcc = attr.data;
                 break;
@@ -234,9 +232,8 @@ bool SkinnedModel::load(const std::string& path, bool loadDiffuseTexture)
         Joint& joint = m_joints[i];
         joint.name = node->name ? node->name : ("joint_" + std::to_string(i));
 
-        // Look for the nearest ancestor that is also part of this skin: armatures often have
-        // intermediate nodes (the Armature object itself, extra groups) that are not joints
-        // themselves.
+        // Nearest ancestor that is a joint of this skin;
+        // armatures often have non-joint nodes in between.
         joint.parentIndex = -1;
         for (const cgltf_node* p = node->parent; p != nullptr; p = p->parent)
         {
@@ -275,7 +272,7 @@ bool SkinnedModel::load(const std::string& path, bool loadDiffuseTexture)
             const cgltf_animation_channel& channel = anim.channels[c];
             auto it = nodeToJoint.find(channel.target_node);
             if (it == nodeToJoint.end())
-                continue; // channel animates a node that isn't a joint of this skin
+                continue; // channel animates a node that isnot a joint of this skin (meow meow)
 
             int jointIndex = it->second;
             const cgltf_animation_sampler* sampler = channel.sampler;
@@ -316,8 +313,7 @@ bool SkinnedModel::load(const std::string& path, bool loadDiffuseTexture)
         }
     }
 
-    // loadDiffuseTexture = false skips the decode and VRAM upload entirely when the caller already
-    // knows the texture will not be drawn (currently the case for the enemy, see DungeonScene.cpp).
+    // Skip decoding and uploading a texture that will not be drawn
     if (loadDiffuseTexture &&
         prim.material &&
         prim.material->has_pbr_metallic_roughness &&
@@ -437,9 +433,7 @@ glm::mat4 SkinnedModel::localJointTransform(const AnimationClip& clip, int joint
 void SkinnedModel::computeGlobalTransforms(const AnimationClip& clip, float time, std::vector<glm::mat4>& outGlobal) const
 {
     outGlobal.resize(m_joints.size());
-    // Assumes "parent before child" order in m_joints: this is how the glTF exporter builds
-    // joints[] (top-down hierarchy traversal), so a single linear pass without recursion is
-    // correct.
+    // glTF exporters list joints parents first, so one linear pass suffices
     for (size_t i = 0; i < m_joints.size(); ++i)
     {
         glm::mat4 local = localJointTransform(clip, (int)i, time);
@@ -497,9 +491,7 @@ void SkinnedModel::sampleAnimationBlended(
     float tB = clipB.duration > 0.0f ? std::fmod(timeB, clipB.duration) : 0.0f;
     if (tB < 0.0f) tB += clipB.duration;
 
-    // Blend each joint's T/R/S separately across both poses (not the matrices: interpolating those
-    // directly is wrong, the rotation would swim), then assemble into matrices: the standard way to
-    // blend skeletal poses. It reuses m_globalTransformScratch, like sampleAnimation() above.
+    // Blend T/R/S per joint, not matrices (interpolated rotations would swim), then compose.
     m_globalTransformScratch.resize(m_joints.size());
     std::vector<glm::mat4>& globalBlended = m_globalTransformScratch;
 

@@ -3,9 +3,7 @@
 #include <string>
 #include "TitleBreakup.h"
 
-// Assembles complete menu screens (main menu, pause, settings, slot pickers, confirmation, name
-// entry) from TextGrid, BigFont, Atmosphere and TitleBreakup into a glyph grid plus button
-// rectangles for Application.
+// Complete menu screens as a glyph grid plus button rectangles for Application
 
 namespace MainMenu {
 
@@ -17,15 +15,12 @@ struct Layout {
     ButtonRect continueButton; // opens the load slot picker (see SlotMenuLayout below)
     ButtonRect settingsButton;
     ButtonRect exitButton;
-    // Exact bounds of the "CELL" text: the origin for ApplyTitleClick()/DrawBrokenTitle(). Do not
-    // change it, or the particle scatter desyncs from the drawn letters.
+    // Exact bounds of the title text: the origin of the shatter particles
     ButtonRect titleRect;
     ButtonRect titleBoxRect;
 };
 
-// Same as Layout, but for the pause menu, with separate field names so "quit the game"
-// (Layout::exitButton, main menu) cannot be confused with "return to the main menu"
-// (PauseLayout::menuButton, pause menu).
+// Separate from Layout so "menu" (pause) and "exit" (main menu) cannot be confused
 struct PauseLayout {
     std::vector<unsigned char> grid;
     ButtonRect resumeButton;
@@ -34,36 +29,32 @@ struct PauseLayout {
     ButtonRect menuButton;
 };
 
-// Slot picker used for CONTINUE, SAVE and NEW GAME: the same "title + 3 slots + BACK" layout; the
-// caller decides the click behavior (LOAD ignores empty slots; SAVE and NEW GAME accept them and
-// ask to confirm overwriting a filled one).
+// Title + 3 slots + BACK, for CONTINUE, SAVE and NEW GAME; the caller decides what clicks do
 struct SlotMenuLayout {
     std::vector<unsigned char> grid;
     ButtonRect slotButtons[3];
     ButtonRect backButton;
 
     bool slotFilled[3] = { false, false, false };
+    // New game only: the difficulty picker, indexed by Difficulty
+    ButtonRect difficultyButtons[3];
 };
 
-// A YES/NO confirmation screen (currently only "overwrite this slot?"): a multi-line message
-// instead of a giant title, since a whole phrase does not fit the BigFont title style (a title is
-// one word like "SAVE").
+// YES/NO confirmation with a multi-line message
 struct ConfirmLayout {
     std::vector<unsigned char> grid;
     ButtonRect yesButton;
     ButtonRect noButton;
 };
 
-// Name entry screen: only displays the letters typed so far (up to SaveSystem::kNameMaxLen); the
-// buffer and typing live in Application.cpp. backButton cancels; ENTER or confirmButton confirms.
+// Name entry: display only; typing lives in Application.cpp
 struct NameEntryLayout {
     std::vector<unsigned char> grid;
     ButtonRect backButton;
     ButtonRect confirmButton;
 };
 
-// The settings screen layout, opened by the SETTINGS button from the main menu and from pause
-// (Application tracks where to return, m_settingsReturnState).
+// Opened from the main menu and from pause
 struct SettingsLayout {
     std::vector<unsigned char> grid;
     ButtonRect backButton;
@@ -90,12 +81,16 @@ struct SettingsLayout {
     ButtonRect colorCheckbox;
 
     ButtonRect lensCheckbox;
+
+    ButtonRect crtCheckbox;
+
+    // Only present once unlocked (the title was knocked down); otherwise empty
+    bool hasShadersCheckbox = false;
+    ButtonRect shadersCheckbox;
 };
 
-// Shared "title + N stacked buttons" layout for the main menu and pause. selection is the hovered
-// button (-1 = none); seed is fixed per session so ragged frames do not rebuild on hover;
-// skipTitleDraw bakes everything except the title so Build() can cache it; leftAligned presses the
-// title and buttons to the left (main menu), otherwise they are centered.
+// Title + N stacked buttons. selection = hovered button (-1 none);
+// seed is fixed per session -> ragged frames do not change on hover
 void BuildButtonMenu(std::vector<unsigned char>& grid, int cols, int rows,
                       int selection, int seed,
                       const std::string& title,
@@ -108,14 +103,13 @@ void BuildButtonMenu(std::vector<unsigned char>& grid, int cols, int rows,
                       bool titleHovered = false,
                       int atmosphereVariant = 0,
                       bool skipTitleDraw = false,
-                      // Size multiplier for the text of the buttons and, if present, of the title;
-                      // frames keep the regular size. 1.0 for the main menu/pause, kCompactScale
-                      // for the slot, confirm and name screens.
+                      // Text scale of buttons and title; frames keep their size
                       float buttonScale = 1.0f,
-                      bool leftAligned = false);
+                      bool leftAligned = false,
+                      // Kept free of atmosphere decoration in addition to the title and buttons
+                      const ButtonRect* reservedArea = nullptr);
 
-// The main menu: "CELL" plus NEW GAME / CONTINUE / SETTINGS / EXIT. Caches the expensive part of
-// the layout (atmosphere, frames, button text) between frames while the inputs do not change.
+// Main menu
 void Build(Layout& out, int cols, int rows, int selection, int seed,
            const TitleBreakupState* titleState = nullptr,
            bool titleHovered = false,
@@ -124,44 +118,46 @@ void Build(Layout& out, int cols, int rows, int selection, int seed,
 PauseLayout BuildPauseMenu(int cols, int rows, int selection, int seed,
                             int variantIndex = 0);
 
-// CONTINUE screen: slotLabels[i] is the ready label, slotFilled[i] whether the slot is occupied.
-// selection 0..2 are slots, 3 is BACK. The caller must not select an empty slot; the layout does
-// not check.
+// slotLabels/slotFilled per slot;
+// selection 0..2 = slots
+// 3 = BACK
 SlotMenuLayout BuildContinueMenu(int cols, int rows, int selection, int seed,
                                   const std::string slotLabels[3],
                                   const bool slotFilled[3],
                                   int variantIndex = 0);
 
-// The SAVE screen (the same layout as BuildContinueMenu(), another title), opened by pause's SAVE.
-// Unlike LOAD, all 3 slots are clickable, including empty ones (an empty slot opens name entry at
-// once). Application decides from slotFilled[i] whether to show the overwrite confirmation.
+// Same layout titled SAVE
 SlotMenuLayout BuildSaveMenu(int cols, int rows, int selection, int seed,
                               const std::string slotLabels[3],
                               const bool slotFilled[3],
                               int variantIndex = 0);
 
+// Slot picker plus a difficulty picker on the right and the shown difficulty's goal and debuffs on the left
+// The hovered difficulty (-1 none) is described instead of the selected one
 SlotMenuLayout BuildNewGameMenu(int cols, int rows, int selection, int seed,
                                  const std::string slotLabels[3],
                                  const bool slotFilled[3],
-                                 int variantIndex = 0);
+                                 int variantIndex,
+                                 int selectedDifficulty,
+                                 int hoveredDifficulty);
 
-// The overwrite-confirmation screen: messageLines are drawn in a small font, one per line, above
-// the YES/NO buttons. selection: 0 = YES, 1 = NO, -1 = nothing highlighted.
+// selection:
+// 0 = YES
+// 1 = NO
+// -1 = none
 ConfirmLayout BuildConfirmMenu(int cols, int rows, int selection, int seed,
                                 const std::vector<std::string>& messageLines,
                                 int variantIndex = 0);
 
-// Name entry: currentName is what was typed (underscores fill the rest); maxLen is passed by the
-// caller so this layer does not depend on the save module. confirmHovered only controls the frame
-// highlight.
+// currentName padded with underscores up to maxLen
 NameEntryLayout BuildNameEntryMenu(int cols, int rows, int seed,
                                     const std::string& currentName, int maxLen,
                                     bool backHovered, bool confirmHovered,
                                     int variantIndex = 0);
 
-// Settings screen. sharpness01 is the slider position (converted from the cell size in px);
-// sharpnessValue is the px value printed on the panel. music01/master01 are plain 0..1 volumes
-// shown as 0..100.
+// sharpness01 is the slider position;
+// sharpnessValue the cell size shown on it
+// Volumes are 0..1, shown as 0..100
 SettingsLayout BuildSettingsMenu(int cols, int rows, int seed,
                                   float sensitivity01,
                                   float sharpness01,
@@ -177,10 +173,14 @@ SettingsLayout BuildSettingsMenu(int cols, int rows, int seed,
                                   bool colorCheckboxHovered,
                                   bool lensEnabled,
                                   bool lensCheckboxHovered,
+                                  bool crtEnabled,
+                                  bool crtCheckboxHovered,
+                                  bool shadersUnlocked,
+                                  bool shadersEnabled,
+                                  bool shadersCheckboxHovered,
                                   int variantIndex = 0);
 
-// Torch/stone/diary count icons above the stamina bar: three framed icons centered horizontally,
-// growing upward from bottomRow.
+// Item counters above the stamina bar, growing upward from bottomRow
 void DrawHudIcons(std::vector<unsigned char>& grid, int cols, int rows,
                    int torchCount, int stoneCount, int diaryCount,
                    int bottomRow, int seed);

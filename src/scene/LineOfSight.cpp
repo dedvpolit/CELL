@@ -6,9 +6,8 @@ namespace LineOfSight {
 
 namespace {
 
-// CPU mirror of shadowedByWall() in assets/shaders/scene.frag, without the per-fragment jitter
-// (it only softens the shadow edge on the GPU). Points closer than 0.15 are never blocked (a
-// point standing exactly on its own light is always considered lit, as in the shader).
+// Grid walk from rayStart to rayEnd
+// Points closer than 0.15 are never blocked, matching the torch shadows in scene.frag
 bool TraceBlocked(
     const glm::vec2& rayStart,
     const glm::vec2& rayEnd,
@@ -91,7 +90,7 @@ bool TraceBlocked(
                 glm::vec2 localXZ = hitPoint - glm::vec2(cell);
                 if (WallShapes::IsLocalPointSolid(localXZ.x, localXZ.y, cut, chamferSize))
                     return true;
-                // else: the ray passes through the cut-out wedge, keep tracing.
+                // else: the ray passes through the cut-out wedge, keep tracing
             }
         }
 

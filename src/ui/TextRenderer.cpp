@@ -11,9 +11,7 @@
 
 bool TextRenderer::create()
 {
-    // 1. Read the font file entirely into memory. VT323 is a monospace "CRT terminal" font from
-    // Google Fonts. stb_truetype cannot read from disk itself, it needs a raw byte buffer of the
-    // whole file.
+    // 1. Read the font file (VT323); stb_truetype needs the whole file in memory.
     const std::string fullPath = AssetPath::Resolve("assets/fonts/VT323-Regular.ttf");
     if (fullPath.empty())
     {
@@ -39,10 +37,7 @@ bool TextRenderer::create()
         return false;
     }
 
-    // 2. Bake the atlas (a simple single-pass row-by-row packer, stbtt_BakeFontBitmap(): enough for
-    // one size and one font; a full stbtt_PackFontRange with multi-size packing would be overkill).
-    // The pixel size is noticeably larger than the grid UI font (11 px per character): a
-    // controllable text size was the whole point of using TTF.
+    // 2. Bake the atlas with stbtt_BakeFontBitmap: one size, one font.
     m_bakedPixelHeight = 40.0f;
     m_atlasW = 512;
     m_atlasH = 512;
@@ -58,20 +53,14 @@ bool TextRenderer::create()
     );
     if (bakeResult <= 0)
     {
-        // A negative/zero result means not all glyphs fit in the atlas. The atlas is still
-        // partially valid (the glyphs that fit baked fine), so this is not a fatal init error, only
-        // a console warning.
+        // Not every glyph fit; the ones that did are usable.
         std::fprintf(stderr, "[TextRenderer] warning: font atlas may be incomplete (bakeResult=%d)\n", bakeResult);
     }
 
-    // 3. Upload the atlas as a GL texture (1 channel: a glyph alpha mask read as .r in text.frag;
-    // GL_R8, not the deprecated GL_ALPHA from stb_truetype.h's usage example, since this is core
-    // profile 3.3).
+    // 3. Upload as a single-channel GL_R8 mask.
     glGenTextures(1, &m_atlasTexture);
     glBindTexture(GL_TEXTURE_2D, m_atlasTexture);
-    // Same fix as in WallTexture.cpp: a 1-byte-per-pixel row width is not guaranteed to be a
-    // multiple of 4 (the default GL_UNPACK_ALIGNMENT); 512 already is here, but it stays for
-    // consistency and in case m_atlasW ever is not a power of two.
+    // One byte per pixel: rows need not be 4-byte aligned.
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, m_atlasW, m_atlasH, 0, GL_RED, GL_UNSIGNED_BYTE, atlasBitmap.data());
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
@@ -198,13 +187,11 @@ void TextRenderer::appendGlyphRun(const std::string& run, float originX, float b
     for (char c : run)
     {
         const int idx = (unsigned char)c - kFirstChar;
-        if (idx < 0 || idx >= kNumChars) continue; // unknown character — skip it, cursor doesn't move
+        if (idx < 0 || idx >= kNumChars) continue; // unknown character: skip it, cursor doesn't move
 
         float dummyY = 0.0f;
         stbtt_aligned_quad q;
-        // stbtt_GetBakedQuad advances localCursorX by this character's xadvance itself: the cursor
-        // is shared across the whole line, so adjacent normal/corrupted chunks join with no overlap
-        // and no gaps.
+        // The cursor is shared across chunks, so normal and corrupted runs join seamlessly.
         stbtt_GetBakedQuad(bc, m_atlasW, m_atlasH, idx, &localCursorX, &dummyY, &q, 1);
 
         if (c == ' ') continue; // cursor advanced, nothing to draw
@@ -226,9 +213,7 @@ void TextRenderer::appendCorruptRun(const std::string& run, float originX, float
     if (!m_bakedChars || run.empty()) return;
     const stbtt_bakedchar* bc = (const stbtt_bakedchar*)m_bakedChars;
 
-    // No real letters are drawn at all: only the room they would take (the same xadvance as in
-    // appendGlyphRun above), and one quad of that width is drawn, a procedural "ink stain" instead
-    // of text.
+    // Advance by the letters' widths and draw one stain quad over the span.
     const float startLocal = localCursorX;
     for (char c : run)
     {
@@ -241,9 +226,7 @@ void TextRenderer::appendCorruptRun(const std::string& run, float originX, float
 
     const float x0 = originX + startLocal * scale;
     const float x1 = originX + endLocal * scale;
-    // Approximate ascent/descent relative to the baseline: real font metrics are not needed, the
-    // stain does not have to match letter height pixel for pixel, only read as "in place of a
-    // word".
+    // Approximate ascent and descent; the stain only needs to read as a word.
     const float y0 = baselineY - 0.80f * m_bakedPixelHeight * scale;
     const float y1 = baselineY + 0.22f * m_bakedPixelHeight * scale;
 
@@ -310,8 +293,7 @@ void TextRenderer::endFrame()
     const GLsizeiptr neededBytes = (GLsizeiptr)(m_batch.size() * sizeof(Vertex));
     if (neededBytes > m_vboCapacityBytes)
     {
-        // Grow the buffer with headroom (x1.5), not exactly to fit the current frame: it avoids
-        // reallocating the VBO every time the next opened diary is slightly longer than the last.
+        // Grow with 1.5x headroom to avoid reallocating for every longer page.
         m_vboCapacityBytes = (GLsizeiptr)((double)neededBytes * 1.5);
         glBufferData(GL_ARRAY_BUFFER, m_vboCapacityBytes, nullptr, GL_DYNAMIC_DRAW);
     }
@@ -326,6 +308,7 @@ void TextRenderer::endFrame()
     // Text is a flat screen overlay on top of the already finished frame (like Compass): no depth
     // is needed, and it must not depend on any depth state.
     const GLboolean depthWasEnabled = glIsEnabled(GL_DEPTH_TEST);
+    const GLboolean blendWasEnabled = glIsEnabled(GL_BLEND);
     glDisable(GL_DEPTH_TEST);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -333,6 +316,7 @@ void TextRenderer::endFrame()
     glDrawArrays(GL_TRIANGLES, 0, (GLsizei)m_batch.size());
 
     if (depthWasEnabled) glEnable(GL_DEPTH_TEST);
+    if (!blendWasEnabled) glDisable(GL_BLEND);
 
     glBindVertexArray(0);
     m_batch.clear();

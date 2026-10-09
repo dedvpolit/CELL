@@ -11,8 +11,8 @@ std::vector<unsigned char> DetectChains(
     std::vector<unsigned char> result((size_t)mapW * (size_t)mapH, 0);
     if (mapW <= 0 || mapH <= 0) return result;
 
-    // Eligible-corner type per cell: one pass, reused both to build the chain graph and to check
-    // the neighbor type later.
+    // Eligible-corner type per cell:
+    // one pass, reused both to build the chain graph and to check the neighbor type later.
     std::vector<WallShapes::CornerCut> cutType((size_t)mapW * (size_t)mapH);
     for (int z = 0; z < mapH; ++z) {
         for (int x = 0; x < mapW; ++x) {
@@ -20,10 +20,8 @@ std::vector<unsigned char> DetectChains(
         }
     }
 
-    // BFS over the diagonal neighbors (+-2,+-2) of the same type: distance 2 matches MapGenerator's
-    // geometry ("1 step = 2 cells"). All 4 diagonal offsets are checked, not just the "expected"
-    // axis for a given type: more robust, it does not rely on manually derived geometry, only on
-    // "same-type neighbor at diagonal distance 2".
+    // BFS over same-type neighbors at (+-2, +-2)
+    // the generator's step size, in all four diagonal directions
     static constexpr int kOffsets[4][2] = { {2,2}, {-2,-2}, {2,-2}, {-2,2} };
 
     std::vector<unsigned char> visited((size_t)mapW * (size_t)mapH, 0);

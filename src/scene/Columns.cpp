@@ -1,11 +1,14 @@
 #include "Columns.h"
 
+// THE MOST HATEFULL PLACE
+// BECAUSE OF THESE COLUMNS, ENEMYAI CAN STUCK
+// but it makes the maze look better
+
 namespace Columns {
 
 namespace {
-// Same splitmix64 trick as WallShapes.cpp: decides whether this eligible candidate becomes a column
-// when columnProbabilityAt is given. The salt differs from WallShapes so the "chamfer corner" and
-// "place column" decisions are not tightly correlated for the same cell/seed.
+// Seeded hash with a salt distinct from WallShapes
+// column and chamfer decisions are independent
 float HashUnitFloat(unsigned int seed, int x, int z) {
     uint64_t h = (uint64_t)seed * 0x9E3779B97F4A7C15ull;
     h ^= (uint64_t)(uint32_t)x * 0xC2B2AE3D27D4EB4Full;
@@ -35,10 +38,8 @@ std::vector<glm::vec2> BuildColumns(
         return map[(size_t)z * mapW + x] == 1;
     };
 
-    // Collect candidates before mutating: a cell just turned into floor would otherwise open a
-    // neighbor and wrongly infect it in the same pass. Isolated (all 4 sides open) and T-shaped (3
-    // open, one face against a longer wall) candidates share one cylinder mesh; the part inside the
-    // neighboring wall is never visible.
+    // Collect candidates before mutating, or a new floor cell would qualify its neighbors in the
+    // same pass. Isolated (4 open sides) and T-shaped (3 open) cells qualify
     struct Candidate { int x, z; bool isTShape; };
     std::vector<Candidate> candidates;
     for (int z = 0; z < mapH; ++z) {
@@ -60,14 +61,12 @@ std::vector<glm::vec2> BuildColumns(
     centers.reserve(candidates.size());
     for (const auto& c : candidates) {
         const float baseProbability = columnProbabilityAt ? columnProbabilityAt(c.x, c.z) : 1.0f;
-        // T-shaped candidates are much more common than isolated ones (a cell with 3 open sides is
-        // almost any dead-end wall stub, not a rare fully surrounded "tooth"), so the region's
-        // probability is dampened by a fixed multiplier; otherwise the same columnProbability would
-        // cover the map in far more columns than Zoning's range assumes.
+        // T-shaped candidates are far more common than isolated ones; dampen them so column density
+        // follows the zone profile
         const float probability = c.isTShape ? baseProbability * kTShapeAcceptanceMultiplier : baseProbability;
         if (HashUnitFloat(seed, c.x, c.z) >= probability) continue; // this region "rejected" the candidate
 
-        map[(size_t)c.z * mapW + c.x] = 2; // now floor — the column stands on it
+        map[(size_t)c.z * mapW + c.x] = 2; // now floor: the column stands on it
         centers.emplace_back((float)c.x + 0.5f, (float)c.z + 0.5f);
     }
 

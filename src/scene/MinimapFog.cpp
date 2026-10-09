@@ -8,56 +8,30 @@ void MinimapFog::uploadMapTexture(int mapW, int mapH, const std::vector<int>& ma
 {
     if (m_mapTexture == 0)
     {
-        glGenTextures(
-            1,
-            &m_mapTexture
-        );
+        glGenTextures(1, &m_mapTexture);
     }
 
-    // 4 bytes per texel: R = wall (255) / floor (0), G = corner-cut type (0..4, raw integer), B =
-    // corridor widened here (0/255), A = part of a diagonal chain (0/255); see MinimapFog.h. Any of
-    // the vectors can be empty; the corresponding channel is then 0.
+    // RGBA8 per cell: R wall, G corner-cut type (0..4), B widened corridor, A diagonal chain
+    // Empty vectors leave their channel at 0
     const bool hasCuts = cornerCuts.size() == (size_t)mapW * (size_t)mapH;
     const bool hasWidened = corridorWidened.size() == (size_t)mapW * (size_t)mapH;
     const bool hasChains = diagonalChainMask.size() == (size_t)mapW * (size_t)mapH;
 
-    std::vector<unsigned char> pixels(
-        (size_t)mapW * mapH * 4,
-        0
-    );
+    std::vector<unsigned char> pixels((size_t)mapW * mapH * 4, 0);
 
-    for (int z = 0;
-         z < mapH;
-         ++z)
+    for (int z = 0; z < mapH; ++z)
     {
-        for (int x = 0;
-             x < mapW;
-             ++x)
+        for (int x = 0; x < mapW; ++x)
         {
             const size_t cellIdx = (size_t)z * mapW + x;
-            pixels[cellIdx * 4 + 0] =
-                (map[z * mapW + x] == 1)
-                ? 255
-                : 0;
-            pixels[cellIdx * 4 + 1] =
-                hasCuts
-                ? (unsigned char)cornerCuts[cellIdx]
-                : 0;
-            pixels[cellIdx * 4 + 2] =
-                (hasWidened && corridorWidened[cellIdx])
-                ? 255
-                : 0;
-            pixels[cellIdx * 4 + 3] =
-                (hasChains && diagonalChainMask[cellIdx])
-                ? 255
-                : 0;
+            pixels[cellIdx * 4 + 0] = (map[z * mapW + x] == 1) ? 255 : 0;
+            pixels[cellIdx * 4 + 1] = hasCuts ? (unsigned char)cornerCuts[cellIdx] : 0;
+            pixels[cellIdx * 4 + 2] = (hasWidened && corridorWidened[cellIdx]) ? 255 : 0;
+            pixels[cellIdx * 4 + 3] = (hasChains && diagonalChainMask[cellIdx]) ? 255 : 0;
         }
     }
 
-    glBindTexture(
-        GL_TEXTURE_2D,
-        m_mapTexture
-    );
+    glBindTexture(GL_TEXTURE_2D, m_mapTexture);
 
     glTexImage2D(
         GL_TEXTURE_2D,
@@ -71,34 +45,15 @@ void MinimapFog::uploadMapTexture(int mapW, int mapH, const std::vector<int>& ma
         pixels.data()
     );
 
-    glTexParameteri(
-        GL_TEXTURE_2D,
-        GL_TEXTURE_MIN_FILTER,
-        GL_NEAREST
-    );
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
 
-    glTexParameteri(
-        GL_TEXTURE_2D,
-        GL_TEXTURE_MAG_FILTER,
-        GL_NEAREST
-    );
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 
-    glTexParameteri(
-        GL_TEXTURE_2D,
-        GL_TEXTURE_WRAP_S,
-        GL_CLAMP_TO_EDGE
-    );
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
 
-    glTexParameteri(
-        GL_TEXTURE_2D,
-        GL_TEXTURE_WRAP_T,
-        GL_CLAMP_TO_EDGE
-    );
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
-    glBindTexture(
-        GL_TEXTURE_2D,
-        0
-    );
+    glBindTexture(GL_TEXTURE_2D, 0);
 }
 
 void MinimapFog::revealVisibleCells(int mapW, int mapH,
@@ -118,9 +73,7 @@ void MinimapFog::revealVisibleCells(int mapW, int mapH,
             m_explored[(size_t)pcz * mapW + pcx] = 1;
     }
 
-    // A small radius around the player is revealed regardless of yaw: otherwise walls beside or
-    // behind the camera (outside the FOV cone) would stay unexplored although the player stands
-    // next to them. It is smaller than VIEW_RADIUS, so only adjacent walls are revealed.
+    // A small radius around the player is always revealed, including walls outside the view cone
     static constexpr float NEARBY_RADIUS = 2.5f;
     {
         int pcx = (int)std::floor(camPos.x);
@@ -145,8 +98,7 @@ void MinimapFog::revealVisibleCells(int mapW, int mapH,
     }
 
     const float halfFovRad = glm::radians(FOV_DEG * 0.5f);
-    // Same operation order as getFront() and the minimap front calculation in AsciiEffect:
-    // direction = (cos(yaw), sin(yaw)) in the XZ plane.
+    // Same convention as DungeonScene::getFront(): direction = (cos(yaw), sin(yaw)) in XZ
     const float yawRad = glm::radians(yaw);
 
     for (int r = 0; r <= RAY_COUNT; ++r)
@@ -190,10 +142,7 @@ void MinimapFog::updateMinimap(int mapW, int mapH, const std::vector<int>& map,
 
     if (m_minimapTexture == 0)
     {
-        glGenTextures(
-            1,
-            &m_minimapTexture
-        );
+        glGenTextures(1, &m_minimapTexture);
     }
 
     const int N = kMinimapSize;
@@ -202,14 +151,11 @@ void MinimapFog::updateMinimap(int mapW, int mapH, const std::vector<int>& map,
     int pcx = (int)std::floor(camPos.x);
     int pcz = (int)std::floor(camPos.z);
 
-    // Persistent member buffer instead of a fresh heap allocation on every call (every frame):
-    // resize() is a no-op after the first call because the size never changes (kMinimapSize is a
-    // compile-time constant).
+    // Reused buffer of a fixed size
     m_minimapPixels.resize((size_t)N * N);
     std::vector<unsigned char>& pixels = m_minimapPixels;
 
-    // O(1) lookup built once (MapGenerator::BuildTorchCellLookup()) instead of rescanning the whole
-    // torch list for each of the N*N minimap cells every frame.
+    // Per-cell torch lookup instead of scanning the torch list per minimap cell
     auto isTorchCell = [&](int mx, int mz)
     {
         if (mx < 0 || mx >= mapW || mz < 0 || mz >= mapH)
@@ -217,8 +163,8 @@ void MinimapFog::updateMinimap(int mapW, int mapH, const std::vector<int>& map,
         return torchCellLookup[(size_t)mz * mapW + mx] != 0;
     };
 
-    // Landmark torches: an empty vector is valid (landmarks not built yet) and means false
-    // everywhere, instead of being indexed out of bounds.
+    // Landmark torches:
+    // an empty vector is valid (landmarks not built yet) and means false everywhere, instead of being indexed out of bounds
     auto isGuideTorchCell = [&](int mx, int mz)
     {
         if (guideTorchCellLookup.empty())
@@ -246,13 +192,9 @@ void MinimapFog::updateMinimap(int mapW, int mapH, const std::vector<int>& map,
 
             unsigned char v = 0;
 
-            bool inBounds =
-                mx >= 0 && mx < mapW &&
-                mz >= 0 && mz < mapH;
+            bool inBounds = mx >= 0 && mx < mapW && mz >= 0 && mz < mapH;
 
-            bool revealed =
-                inBounds &&
-                m_explored[(size_t)mz * mapW + mx] != 0;
+            bool revealed = inBounds && m_explored[(size_t)mz * mapW + mx] != 0;
 
             if (revealed)
             {
@@ -263,10 +205,8 @@ void MinimapFog::updateMinimap(int mapW, int mapH, const std::vector<int>& map,
                 else if (cell == 2)
                     v = 85;
 
-                // Final priority is decided below: landmark torch (220, the same '*' as a regular
-                // torch but tinted) > read-diary highlight (200) > regular torch (255) > regular
-                // wall (170). A regular torch must not beat the highlight: a tight pocket has only
-                // 2-3 perimeter wall cells but 3 torches, so the highlight would almost never show.
+                // Priority: guide torch (220) > read-diary wall (200) > torch (255) > wall (170)
+                // A torch must not hide the diary highlight in a tight pocket
                 if (v == 170 && isGuideTorchCell(mx, mz))
                     v = 220;
                 else if (v == 170 && isDiaryReadWallCell(mx, mz))
@@ -279,73 +219,29 @@ void MinimapFog::updateMinimap(int mapW, int mapH, const std::vector<int>& map,
         }
     }
 
-    glBindTexture(
-        GL_TEXTURE_2D,
-        m_minimapTexture
-    );
+    glBindTexture(GL_TEXTURE_2D, m_minimapTexture);
 
-    // glTexImage2D reallocates GPU storage, so only the first call allocates it; later calls
-    // overwrite it in place (glTexSubImage2D). Sampler parameters are texture state, not pixel
-    // data, so they are set once right after the texture is created, not on every upload.
+    // Allocate once, then update in place; sampler state is set once
     if (!m_minimapTextureAllocated)
     {
-        glTexImage2D(
-            GL_TEXTURE_2D,
-            0,
-            GL_R8,
-            N,
-            N,
-            0,
-            GL_RED,
-            GL_UNSIGNED_BYTE,
-            pixels.data()
-        );
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, N, N, 0, GL_RED, GL_UNSIGNED_BYTE, pixels.data());
 
-        glTexParameteri(
-            GL_TEXTURE_2D,
-            GL_TEXTURE_MIN_FILTER,
-            GL_NEAREST
-        );
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
 
-        glTexParameteri(
-            GL_TEXTURE_2D,
-            GL_TEXTURE_MAG_FILTER,
-            GL_NEAREST
-        );
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 
-        glTexParameteri(
-            GL_TEXTURE_2D,
-            GL_TEXTURE_WRAP_S,
-            GL_CLAMP_TO_EDGE
-        );
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
 
-        glTexParameteri(
-            GL_TEXTURE_2D,
-            GL_TEXTURE_WRAP_T,
-            GL_CLAMP_TO_EDGE
-        );
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
         m_minimapTextureAllocated = true;
     }
     else
     {
-        glTexSubImage2D(
-            GL_TEXTURE_2D,
-            0,
-            0,
-            0,
-            N,
-            N,
-            GL_RED,
-            GL_UNSIGNED_BYTE,
-            pixels.data()
-        );
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, N, N, GL_RED, GL_UNSIGNED_BYTE, pixels.data());
     }
 
-    glBindTexture(
-        GL_TEXTURE_2D,
-        0
-    );
+    glBindTexture(GL_TEXTURE_2D, 0);
 }
 
 void MinimapFog::destroy()
@@ -358,9 +254,6 @@ void MinimapFog::destroy()
         glDeleteTextures(1, &m_minimapTexture);
         m_minimapTexture = 0;
     }
-    // The next updateMinimap() call creates a brand new texture object (m_minimapTexture is now 0)
-    // with no storage yet, so the allocate-vs-subimage flag must be reset too. Otherwise the first
-    // upload after destroy()/re-init would call glTexSubImage2D on a texture that never got
-    // storage.
+    // A new texture object needs allocation again
     m_minimapTextureAllocated = false;
 }

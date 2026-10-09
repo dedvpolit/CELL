@@ -3,22 +3,17 @@
 
 void PlayerTorchViewmodel::init()
 {
-    // Geometry is built once in camera space (OpenGL view convention: +X right, +Y up, -Z forward);
-    // scene.vert reconstructs world positions via inverse(view), so these are constants.
+    // Built once in camera space (+X right, +Y up, -Z forward);
+    // scene.vert transforms it with inverse(view)
 
-    // Held in the left hand (-X), noticeably below eye level (-Y) and slightly ahead of the camera
-    // (-Z). The handle is lengthened by extending the grip point, not by moving where the flame
-    // sits (the tip stays where it reads well in the frame).
+    // Left hand, below eye level, slightly ahead. The handle is lengthened at the grip so the flame stays where it reads well
     const glm::vec3 grip(-0.30f, -0.60f, -0.38f);
     const glm::vec3 tip(-0.30f, -0.10f, -0.46f);
 
     const glm::vec3 handleColor(0.34f, 0.25f, 0.16f); // same color as wall torches
     const glm::vec3 flameColor(1.0f, 0.60f, 0.15f);
 
-    // Reserved torch index 1536: above the real torch count (MAX_TORCHES = 1024) and below the 2048
-    // boundary where vMatId would spill into the next material range. Handle, flame and particles
-    // each encode it in their own scale (HANDLE/FLAME/PARTICLE_ID_SCALE); the handle needs an index
-    // too, or it would look like wall torch #0.
+    // Reserved torch index 1536: above MAX_TORCHES (1024) and below 2048, where matId would spill into the next material
     const int kViewmodelFlameIndex = 1536;
     const float HANDLE_ID_SCALE = 4096.0f; // must match HANDLE_ID_SCALE in SceneGeometry.cpp::AddTorchMesh()
     const float handleMatId = 1.0f + (float)kViewmodelFlameIndex / HANDLE_ID_SCALE;
@@ -39,22 +34,12 @@ void PlayerTorchViewmodel::init()
     const float flameMatId = 2.0f + (float)kViewmodelFlameIndex / FLAME_ID_SCALE;
 
     const glm::vec3 handleDir = glm::normalize(tip - grip);
-    // The flame center sits almost flush with the handle's tip: fuel shrinkage scales the geometry
-    // around this fixed center, so a farther center would leave a shrunk flame floating above the
-    // handle.
+    // Fuel shrinks the flame around its center, so the center sits at the handle tip
     m_localFlamePos = tip + handleDir * 0.012f;
 
-    AddSphere(
-        verts, indices,
-        m_localFlamePos,
-        0.070f,
-        8, 5,
-        flameColor,
-        flameMatId
-    );
+    AddSphere(verts, indices, m_localFlamePos, 0.070f, 8, 5, flameColor, flameMatId);
 
-    // Ash particles: the same 3 slots per torch as wall torches; torchId is the reserved 1536
-    // (particleKey = torchId * 10 + slot, matId = 3.0 + particleKey / 16384; 15369 < 16384).
+    // Three spark slots like wall torches; key 1536 * 10 + slot stays below 16384
     m_particleFirstVertex = (GLint)verts.size();
     {
         const int torchIndex = kViewmodelFlameIndex;
@@ -71,8 +56,7 @@ void PlayerTorchViewmodel::init()
     }
     m_particleCount = (GLsizei)verts.size() - m_particleFirstVertex;
 
-    // +10.0 offset on matId (handle, flame, particles): tells scene.vert (uIsViewmodelDraw) that
-    // pos/normal are camera-local; the shader subtracts it back before the normal material logic.
+    // matId + 10 marks camera-space geometry for scene.vert
     for (Vertex& v : verts)
         v.matId += 10.0f;
 
@@ -120,16 +104,14 @@ void PlayerTorchViewmodel::draw() const
     if (m_indexCount <= 0)
         return;
 
-    // "The torch should always draw over walls", like a weapon viewmodel in shooters: depth testing
-    // is disabled only for this draw call.
+    // "The torch should always draw over walls", like a weapon viewmodel in shooters:
+    // depth testing is disabled only for this draw call
     glDisable(GL_DEPTH_TEST);
 
     glBindVertexArray(m_vao);
     glDrawElements(GL_TRIANGLES, m_indexCount, GL_UNSIGNED_INT, 0);
 
-    // Ash particles: the same blend/point-size mode as wall torches (GL_SRC_ALPHA/GL_ONE, additive
-    // ember glow rather than regular alpha transparency), but scoped to this call, not global to
-    // the whole scene.
+    // Additive sparks, scoped to this draw
     if (m_particleCount > 0)
     {
         glEnable(GL_PROGRAM_POINT_SIZE);

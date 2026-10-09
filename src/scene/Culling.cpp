@@ -4,7 +4,7 @@ namespace Culling {
 
 void ExtractFrustumPlanes(const glm::mat4& vp, glm::vec4 outPlanes[6])
 {
-    // Rows of vp (glm is column-major, so we build rows from columns).
+    // Rows of vp (glm is column-major, so we build rows from columns)
     glm::vec4 row0(vp[0][0], vp[1][0], vp[2][0], vp[3][0]);
     glm::vec4 row1(vp[0][1], vp[1][1], vp[2][1], vp[3][1]);
     glm::vec4 row2(vp[0][2], vp[1][2], vp[2][2], vp[3][2]);

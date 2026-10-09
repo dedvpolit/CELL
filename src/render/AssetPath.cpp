@@ -3,7 +3,9 @@
 #include <vector>
 
 #ifdef _WIN32
+#ifndef NOMINMAX
 #define NOMINMAX
+#endif
 #include <windows.h>
 #endif
 
@@ -31,9 +33,7 @@ std::string Resolve(const std::string& relativePath)
     if (!ec)
         startPoints.push_back(cwd);
 
-    // The exe usually sits a few levels below the project root (bin/Debug/app.exe next to a
-    // top-level assets/) and the depth varies by build configuration, so it walks upward instead of
-    // assuming a fixed number of levels.
+    // The executable sits a varying number of levels below the project root -> walk upward
     constexpr int kMaxLevelsUp = 6;
 
     for (const fs::path& start : startPoints) {

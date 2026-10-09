@@ -1,14 +1,10 @@
 #pragma once
 #include <vector>
 
-// Procedural generation of dark-fantasy menu background details: pylons, torches, runes, cracks,
-// blood streaks, chains, ribs, obelisks, ritual crosses, curtains, ember swarms, scars, empty eye
-// sockets, ash, etc., assembled into a "variant" by DrawDarkFantasyAtmosphere().
-
+// Procedural meow-meow decoration around menu content
 namespace MainMenu {
 
-// The content rectangle (title plus buttons), already computed when DrawDarkFantasyAtmosphere is
-// called; used so background motifs do not overlap the menu text.
+// Content rectangle (title and buttons) that decoration must avoid
 struct AtmosphereBounds { int x0, y0, x1, y1; };
 
 void DrawWornEdgeV(std::vector<unsigned char>& grid, int cols, int rows,

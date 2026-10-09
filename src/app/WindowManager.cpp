@@ -17,7 +17,8 @@ bool WindowManager::create(int width, int height, const char* title)
         ReportFatalError("Could not initialize GLFW: no display or window system is available.");
         return false;
     }
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+    // 4.3 for the compute shader in AcerolaAscii
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
@@ -28,10 +29,8 @@ bool WindowManager::create(int width, int height, const char* title)
         return false;
     }
 
-    // The window icon (taskbar/alt-tab) is separate from the .exe icon (baked in via app.rc). GLFW
-    // cannot use .ico, so a .png is loaded via stb_image; STB_IMAGE_IMPLEMENTATION is already
-    // defined in another .cpp, and defining it again here would be a link error. Not fatal if the
-    // file is missing: the default system icon is used.
+    // Window icon for the taskbar; GLFW needs pixels, the .png is loaded with stb_image
+    // (implemented in another translation unit)
     {
         int iconW = 0, iconH = 0, iconChannels = 0;
         unsigned char* iconPixels = stbi_load("assets/icon.png", &iconW, &iconH, &iconChannels, 4);
@@ -48,9 +47,7 @@ bool WindowManager::create(int width, int height, const char* title)
 
     glfwMakeContextCurrent(m_window);
 
-    // Without vsync the render loop is unbounded (hundreds or thousands of fps on capable
-    // hardware), wasting GPU/CPU and heat for no benefit since the display refreshes only at the
-    // monitor rate.
+    // Without vsync the loop runs unbounded and wastes power
     glfwSwapInterval(1);
 
     glewExperimental = GL_TRUE;
@@ -85,10 +82,7 @@ void WindowManager::toggleFullscreen()
         const GLFWvidmode* mode = monitor ? glfwGetVideoMode(monitor) : nullptr;
         if (!mode) return;
 
-        glfwSetWindowMonitor(
-            m_window, monitor, 0, 0,
-            mode->width, mode->height, mode->refreshRate
-        );
+        glfwSetWindowMonitor(m_window, monitor, 0, 0, mode->width, mode->height, mode->refreshRate);
 
         m_isFullscreen = true;
     } else {

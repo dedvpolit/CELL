@@ -4,10 +4,7 @@ namespace WallShapes {
 
 namespace {
 
-// A simple deterministic hash(seed, x, z) -> [0,1). It does not need cryptographic quality, only
-// (a) stability across runs with the same seed and (b) no obvious grid correlation on x/z
-// (otherwise chamfered corners would line up in stripes along the axes). splitmix64-style bit
-// mixing has plenty of margin for this.
+// Seeded per-cell hash to [0,1): stable per seed, without visible grid correlation
 float HashUnitFloat(unsigned int seed, int x, int z) {
     uint64_t h = (uint64_t)seed * 0x9E3779B97F4A7C15ull;
     h ^= (uint64_t)(uint32_t)x * 0xBF58476D1CE4E5B9ull;
@@ -15,8 +12,7 @@ float HashUnitFloat(unsigned int seed, int x, int z) {
     h ^= (h >> 33);
     h *= 0xFF51AFD7ED558CCDull;
     h ^= (h >> 33);
-    // The top 24 bits give enough entropy for one decision per cell and fit into a float without
-    // losing precision.
+    // The top 24 bits give enough entropy for one decision per cell and fit into a float without losing precision
     return (float)((h >> 40) & 0xFFFFFF) / (float)0x1000000;
 }
 
@@ -25,9 +21,7 @@ float Lerp(float a, float b, float t) { return a + (b - a) * t; }
 } // namespace
 
 float ComputeVariedChamferSize(unsigned int seed, int x, int z) {
-    // A separate salt (xor 0x51) from HashUnitFloat above (which uses different x/z multipliers),
-    // so "chamfer this cell?" (BuildCornerCuts, via HashUnitFloat) and "how much?" (this function)
-    // are not tightly correlated for the same cell/seed.
+    // Different salt than HashUnitFloat, so whether and how much a cell is chamfered are independent
     uint64_t h = (uint64_t)seed * 0x9E3779B97F4A7C15ull;
     h ^= (uint64_t)(uint32_t)x * 0xA24BAED4963EE407ull;
     h ^= (uint64_t)(uint32_t)z * 0x9FB21C651E98DF25ull;
@@ -65,8 +59,7 @@ CornerCut GetEligibleCornerCut(int mapW, int mapH, const std::vector<int>& map, 
         (swCorner ? 1 : 0) + (seCorner ? 1 : 0) +
         (neCorner ? 1 : 0) + (nwCorner ? 1 : 0);
 
-    // Exactly one convex corner: the only case that is chamfered (see the header comment about
-    // teeth/columns for cornerCount >= 2).
+    // Exactly one convex corner: the only case that is chamfered (see the header comment about teeth/columns for cornerCount >= 2)
     if (cornerCount != 1) return CornerCut::None;
 
     return swCorner ? CornerCut::SW :
@@ -104,8 +97,9 @@ std::vector<CornerCut> BuildCornerCuts(
 bool GetChamferPoints(CornerCut cut, float c, ChamferPoints& out) {
     switch (cut) {
         case CornerCut::SW:
-            // Corner (0,0). Walking the cell counter-clockwise South -> East -> North -> West, the
-            // "previous" edge before this corner is West and the "next" is South.
+            // Counter-clockwise S -> E -> N -> W:
+            // the edge before corner (0,0) is West
+            // the next is South
             out.onEdgeCcwFrom = glm::vec2(0.0f, c);
             out.onEdgeCcwTo   = glm::vec2(c, 0.0f);
             return true;
@@ -128,14 +122,11 @@ bool GetChamferPoints(CornerCut cut, float c, ChamferPoints& out) {
 }
 
 bool IsLocalPointSolid(float lx, float lz, CornerCut cut, float c) {
-    // Half-plane "inside the wedge" for each corner: the wedge is formed by a diagonal through the
-    // two chamfer points (see GetChamferPoints). A point counts as cut (not solid) if it lies
-    // strictly closer to the chamfered corner than the diagonal, i.e. on the same side as the
-    // corner itself.
+    // The cut wedge is the half-plane between the corner and the diagonal through the chamfer points
     switch (cut) {
         case CornerCut::SW:
-            // Diagonal through (0,c)-(c,0): x + z = c. Corner (0,0) gives x + z = 0 < c, so the
-            // wedge is where x + z < c.
+            // Diagonal through (0,c)-(c,0): x + z = c
+            // Corner (0,0) gives x + z = 0 < c, so the wedge is where x + z < c
             return !(lx + lz < c);
         case CornerCut::SE:
             return !((1.0f - lx) + lz < c);

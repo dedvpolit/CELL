@@ -40,8 +40,9 @@ Music channel
   - setMusicDuckTarget() only sets where the ramp is headed; update() (called once per
     frame, unconditionally, from Application::tick()) moves the multiplier there at
     kMusicDuckRampPerSecond = 0.08/s, so a 20% step fades over about 2.5 s.
-  - One track at a time, no looping. playMusic() decodes the whole file up front into a
-    single reused buffer (MusicChannel::pcm), so the process heap grows for it only once.
+  - One track at a time, no looping. MP3 tracks are decoded on demand, one chunk at a
+    time (Mp3Stream.h), so opening a track is instant and its memory stays at a few KB.
+    Other formats are decoded whole into MusicChannel::pcm.
 
 Volume settings
   - MASTER and MUSIC sliders on the Settings screen. The values live in Application
@@ -53,7 +54,7 @@ Volume settings
 -------------------------
 
 Player footsteps (footsteps/): footstep_walk_1.wav, footstep_walk_2.wav,
-footstep_run_1.wav, footstep_run_2.wav. Source not recorded.
+footstep_run_1.wav, footstep_run_2.wav. Made by the author (dedvpolit).
 
 Enemy sounds (enemy/), for the enemy "THE WRAPPED":
   footstep_walk_1/2.wav   Walk_Nervous footfall (mixkit-monster-footstep-1975, edited)
@@ -61,16 +62,16 @@ Enemy sounds (enemy/), for the enemy "THE WRAPPED":
   moan_1 .. moan_4.wav    occasional moan while searching (qubodup GhostMoans, CC0,
                           OpenGameArt)
   detected_1/2.wav        scream on detection (mixkit-monster-wraith-passing-by, edited)
-  wall_slam.wav           Dash hits a wall (universfield-door-slam-229310, user asset,
+  wall_slam.wav           Dash hits a wall (universfield-door-slam-229310, Pixabay,
                           1.25 s)
-  attack.wav              Attack_Lunge hit (yodguard scorpion-claw-attack, user asset,
+  attack.wav              Attack_Lunge hit (yodguard scorpion-claw-attack, Pixabay,
                           1.35 s: trimmed to the real content, matches the 1.25 s clip)
 
   The footstep clips keep their natural reverb tail, trimmed only past the point where
   it is inaudible (~1.3 s in). detected_2, footstep_run_2 and footstep_walk_2 are
   pitch/speed-shifted variants of the same single source recording as their _1 pair.
 
-Music (music/): cartoon_music-horror-soundscape-ambience-533209.mp3 (user asset),
+Music (music/): cartoon_music-horror-soundscape-ambience-533209.mp3 (Pixabay),
 re-encoded from the source master with libmp3lame VBR (-q:a 3), which keeps the audible
 bandwidth at about half the size of the 256 kbps master. It is stereo with almost no
 mid/side correlation, so it must not be downmixed to mono at the source.
@@ -134,9 +135,6 @@ Gameplay ambience (GameplayMusic.h, ticked every frame by DungeonScene::tickAmbi
 5. Known limitations
 --------------------
 
-  - playMusic() decodes the whole track synchronously on the calling thread. For the
-    current ~2 minute track that is a noticeable stall each time it starts (about 0.2 s
-    at -O2, about 0.6 s at -O0, measured on a development machine).
   - Two 100 ms music chunks are queued, so a frame that takes longer than about 200 ms
     underruns the music.
   - The search for audio files exists in three copies (AssetLocate.h, EnemyAudio.h,

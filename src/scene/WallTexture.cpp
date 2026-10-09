@@ -21,12 +21,10 @@ bool WallTexture::load(const std::string& filename)
         return false;
     }
 
-    // Flip on Y at load time, so UVs computed in the shader from world coordinates are not upside
-    // down relative to how texture packs are usually oriented.
+    // Flip on Y at load time, so UVs computed in the shader from world coordinates are not upside down relative to how texture packs are usually oriented
     stbi_set_flip_vertically_on_load(1);
 
-    // Loaded as 3 channels (RGB), not 4: the fragment shader only reads texture(wallTex, texUV).rgb
-    // (see scene.frag), so an alpha channel would be unused VRAM/bandwidth.
+    // RGB only; the shader reads .rgb
     int w = 0, h = 0, channelsInFile = 0;
     unsigned char* pixels = stbi_load(fullPath.c_str(), &w, &h, &channelsInFile, 3);
 
@@ -45,15 +43,11 @@ bool WallTexture::load(const std::string& filename)
         glGenTextures(1, &m_texture);
 
     glBindTexture(GL_TEXTURE_2D, m_texture);
-    // GL_UNPACK_ALIGNMENT is 4 by default, but RGB rows are not multiples of 4 bytes (e.g. 1254 px
-    // * 3 = 3762), so the driver would read past the end of our tightly packed buffer (a heap
-    // over-read that crashed on load). AsciiEffect.cpp does the same before GL_RED uploads.
+    // RGB rows are not 4-byte aligned (e.g. 1254 * 3 bytes)
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, w, h, 0, GL_RGB, GL_UNSIGNED_BYTE, pixels);
 
-    // Mips avoid texel shimmering on distant walls (which would also flip glyph choices in the
-    // ASCII post-process). The filter stays NEAREST_MIPMAP_NEAREST on purpose to keep the blocky
-    // look; MAG_FILTER is unaffected.
+    // Mips stop distant walls from shimmering (and flipping glyphs); NEAREST keeps the blocky look
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST_MIPMAP_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);

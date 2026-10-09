@@ -1,36 +1,29 @@
 #pragma once
-// Shared indices into the fixed UI font, plus small low-level glyph-selection utilities used by
-// every menu module (TextGrid, BigFont, Atmosphere, TitleBreakup, MenuLayouts). Header-only: pure
-// data and trivial hash functions that do not need their own translation unit.
+// Shared glyph indices and small glyph helpers for the menu modules
 
 namespace MainMenu {
 
 constexpr unsigned char GLYPH_SPACE      = 0;
-constexpr unsigned char GLYPH_HASH       = 1;  // '#' — fill / bold frame for the selected button
-// GLYPH_FLOOR/GLYPH_TORCH/GLYPH_CIRCLE match the dungeon minimap's indices (one shared font):
-// reused here for atmospheric details (smoldering torches, floor ash) without adding a new glyph to
-// the atlas.
-constexpr unsigned char GLYPH_FLOOR      = 2;  // '.' — floor/dust/ash
-constexpr unsigned char GLYPH_TORCH      = 3;  // '*' — torch
-constexpr unsigned char GLYPH_CIRCLE     = 12; // 'O' — smoldering ember/finial
+constexpr unsigned char GLYPH_HASH       = 1;  // '#': fill / bold frame for the selected button
+// Same indices as the dungeon minimap (one shared font)
+constexpr unsigned char GLYPH_FLOOR      = 2;  // '.': floor/dust/ash
+constexpr unsigned char GLYPH_TORCH      = 3;  // '*': torch
+constexpr unsigned char GLYPH_CIRCLE     = 12; // 'O': smoldering ember/finial
 constexpr unsigned char GLYPH_HLINE      = 13; // '='
 constexpr unsigned char GLYPH_VLINE      = 14; // '|'
 constexpr unsigned char GLYPH_CORNER     = 15; // '+'
-constexpr unsigned char GLYPH_DRIP_BIG   = 16; // large "drip" — ragged frame edge
+constexpr unsigned char GLYPH_DRIP_BIG   = 16; // large "drip": ragged frame edge
 constexpr unsigned char GLYPH_DRIP_SMALL = 17; // small "drip"
-// "Stone" icon (HUD): reuses an existing "dense" filler pattern (index 29, a round mottled shape,
-// close enough to a rough stone) instead of adding a dedicated glyph.
+// The stone icon reuses dense pattern 29
 constexpr unsigned char GLYPH_STONE_ICON = 29;
 
-constexpr unsigned char GLYPH_TORCH_ICON = 68; // 'Ψ'
+constexpr unsigned char GLYPH_TORCH_ICON = 68; // torch icon (trident)
 constexpr unsigned char GLYPH_DIARY_ICON = 69; // an open book
 constexpr unsigned char GLYPH_A = 18, GLYPH_C = 19, GLYPH_E = 20, GLYPH_I = 21,
                          GLYPH_L = 22, GLYPH_R = 23, GLYPH_S = 24, GLYPH_T = 25,
                          GLYPH_X = 26;
 
-// The rest of the Latin alphabet (indices 34-50), added for running diary text without touching the
-// original 18-26 (tied to the existing menu title layout). Together 18-26 + 34-50 cover the full
-// A-Z.
+// Letters 34-50 complete the alphabet with 18-26
 constexpr unsigned char GLYPH_B = 34, GLYPH_D = 35, GLYPH_F = 36, GLYPH_G = 37,
                          GLYPH_H = 38, GLYPH_J = 39, GLYPH_K = 40, GLYPH_M = 41,
                          GLYPH_N = 42, GLYPH_O = 43, GLYPH_P = 44, GLYPH_Q = 45,
@@ -48,9 +41,7 @@ constexpr unsigned char GLYPH_COLON   = 65; // ':'
 constexpr unsigned char GLYPH_QMARK   = 66; // '?'
 constexpr unsigned char GLYPH_BANG    = 67; // '!'
 
-// "Dense" filler patterns (indices 27-33), used interchangeably with GLYPH_HASH inside the big
-// ASCII-art title letters, so the letters are made of varied characters instead of looking like one
-// solid '#'.
+// Dense patterns 27-33 mixed into big title letters
 constexpr unsigned char kDenseFillGlyphs[] = {
     GLYPH_HASH, 27, 28, 29, 30, 31, 32, 33
 };
@@ -62,9 +53,7 @@ inline unsigned int Hash(int x, int seed) {
     return h ^ (h >> 16);
 }
 
-// Deterministic (from the seed, not the frame) pick of one of the "dense" filler patterns for cell
-// (col, row). Used in DrawBigGlyph() and in DrawBox()'s hover highlight, so crowded fill reads as
-// textured rather than a solid '#'.
+// Seeded dense glyph for (col, row)
 inline unsigned char PickDenseGlyph(int col, int row, int seed) {
     unsigned int h = Hash(col * 92821 + row, seed);
     return kDenseFillGlyphs[h % (unsigned int)kDenseFillGlyphCount];

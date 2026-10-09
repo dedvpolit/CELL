@@ -8,7 +8,7 @@
 #include <windows.h>
 #endif
 
-// The GUI build has no console, so an unrecoverable startup error also gets a message box.
+// Startup error gets a message box
 inline void ReportFatalError(const std::string& message)
 {
     std::fprintf(stderr, "CELL: %s\n", message.c_str());

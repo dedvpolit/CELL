@@ -10,39 +10,38 @@
 #include "WallShapes.h"
 #include "Columns.h"
 
-// The player: camera, movement/collision, health/stamina, footsteps and the input toggles
-// processInput() flips. It owns its state; it does not own the map (DungeonScene), the win button
-// position or the render distance.
+// The player: camera, movement and collision, health, stamina, footsteps and input requests
+// The map belongs to DungeonScene
 class PlayerController {
 public:
-    // Collision radius, public because EnemyAI uses it too. Deliberately small (no visible model);
-    // together with EnemyAI::kCollisionRadius it must stay below half the corridor width (0.5) or
-    // squeezing past an enemy in a dead end is impossible.
+    // Shared with EnemyAI
+    // Both radii together must stay under half a corridor width, or the player cannot squeeze past an enemy
     static constexpr float kCollisionRadius = 0.10f;
 
     void init() { m_footstepAudio.init(); }
     void shutdown() { m_footstepAudio.shutdown(); }
 
-    // Plays one footstep out of band, not tied to real movement: DungeonScene's glitch effects use
-    // it to fake the player's footsteps (see updateGlitchEffects()).
+    // Footsteps not tied to movement, for the glitch effects
     void playFakeRunFootstep() { m_footstepAudio.playRun(); }
     void playFakeWalkFootstep() { m_footstepAudio.playWalk(); }
 
-    // Minimum diaries that must be read before the win button works: below it, E near the pedestal
-    // does nothing except request a "blocked" message.
-    static constexpr int kMinDiariesToWin = 4;
+    // Set from the difficulty on every new game and load
+    void setWinRules(int diariesToWin, bool oneHitKills)
+    {
+        m_diariesToWin = diariesToWin;
+        m_oneHitKills = oneHitKills;
+    }
+    int diariesToWin() const { return m_diariesToWin; }
 
-    // Per-frame input and movement. getCornerCut/getChamferSize must match the renderer
-    // (diagonal-chain cells are chamfered much more). columnCentersXZ, winButtonPos and
-    // enemyPositions (by value for this frame, radius EnemyAI::kCollisionRadius) are circular
-    // obstacles on top of the grid check. torchTaken entries are ignored when searching for the
-    // nearest torch. winReadyToPressE: the spinning donut can be pressed.
+    // Per-frame input and movement
+    // getCornerCut/getChamferSize must match the geometry
+    // Columns the exit door and this frame's enemy positions are obstacles on top of the grid
     void processInput(GLFWwindow* window, float deltaTime,
                        const std::function<bool(int, int)>& isFloor,
                        const std::function<WallShapes::CornerCut(int, int)>& getCornerCut,
                        const std::function<float(int, int)>& getChamferSize,
                        const std::vector<glm::vec2>& columnCentersXZ,
-                       const glm::vec3& winButtonPos,
+                       const glm::vec3& exitDoorPos,
                        const std::vector<glm::vec3>& enemyPositions,
                        const std::vector<glm::vec3>& diaryPositions,
                        int diariesReadCount,
@@ -50,13 +49,11 @@ public:
                        const std::vector<unsigned char>& torchTaken,
                        bool winReadyToPressE);
 
-    // Index of the diary (same order as diaryPositions) whose radius the player stands in, -1 if
-    // none; recomputed on every processInput(). DungeonScene uses it for the "[E] READ DIARY" hint.
+    // Diary within reach, -1 if none; recomputed every processInput()
     int nearbyDiaryIndex() const { return m_nearbyDiaryIndex; }
 
-    // Edge-triggered "want to open a diary": true for one frame after E when nearbyDiaryIndex() !=
-    // -1. Consume semantics, like the other requests below: the reader resets the flag, so one
-    // press is not handled twice.
+    // One frame after E near a diary
+    // The consume* requests below reset themselves when read, so one press is handled once
     bool consumeDiaryOpenRequest() {
         bool r = m_diaryOpenRequested;
         m_diaryOpenRequested = false;
@@ -75,9 +72,8 @@ public:
         return r;
     }
 
-    // One-shot request for "monument dissolves -> spinning donut": true once, after the first E
-    // press at the pedestal with enough diaries. DungeonScene starts the animation; the game is won
-    // only later, with a separate E press at the spinning donut.
+    // First E at the exit door with enough diaries: starts the win sequence
+    // Winning takes a second E at the spinning donut
     bool consumeWinSequenceRequest() {
         bool r = m_winSequenceRequested;
         m_winSequenceRequested = false;
@@ -92,9 +88,7 @@ public:
 
     void processMouse(double xpos, double ypos);
 
-    // Resets only the mouse-look baseline; yaw, pitch and position are unchanged. Needed when
-    // re-capturing GLFW_CURSOR_DISABLED after a pause, so the first cursor event is not read as a
-    // huge dx/dy.
+    // Resets only the mouse-look baseline, re-capturing the cursor after a pause does not produce a huge jump
     void resetMouseLook() { m_firstMouse = true; }
 
     void tickPauseCameraIdle(float deltaTime);
@@ -109,28 +103,24 @@ public:
     float yaw() const { return m_yaw; }
     float pitch() const { return m_pitch; }
 
-    // One-off pitch set: DungeonScene::generateMenuBackgroundMaze() uses a slight downward tilt so
-    // both the floor and the wall torches of the starting safe zone fit in frame. Set once at
-    // generation, never per frame.
+    // One-off, for the menu background camera
     void setPitchDegrees(float pitch) { m_pitch = pitch; }
     float poseBlend() const { return m_poseBlend; }
 
     float torchBlend() const { return m_torchBlend; }
 
-    // Torch fuel and spares: m_torchFuel (0..1) drains only while the torch is raised. At zero the
-    // torch lowers itself and is not replaced automatically: the next LMB lights one from the
-    // inventory; with none left only consumeTorchEmptyWarningRequest() fires.
+    // Fuel drains only while the torch is raised
+    // At zero it is lowered; the next LMB lights a spare, or warns if there is none
     static constexpr float kTorchFuelDrainPerSecond = 1.0f / 75.0f; // ~75s of burn time per torch
 
     float torchFuel() const { return m_torchFuel; }
     int torchInventoryCount() const { return m_torchInventoryCount; }
 
-    // Light level for EnemyAI (0..1): follows the raise animation (m_torchBlend) and dims with fuel
-    // (last 30%), so a dying torch hides the player a bit better. Unlike invisibleToEnemy() (dev
-    // tools, forces canSee = false) it only narrows the detection radius.
+    // 0..1 for EnemyAI: follows the raise animation and dims over the last 30% of fuel
+    // Narrows the detection radius only
     float lightLevel() const
     {
-        const float kFuelShrinkStartsBelow = 0.3f; // must match scene.frag/scene.vert
+        const float kFuelShrinkStartsBelow = 0.3f;  // must match scene.frag/scene.vert
         const float kMinVisibleFlameFuel = 0.22f;   // must match scene.frag/scene.vert
         const float fuelBrightness =
             (m_torchFuel >= kFuelShrinkStartsBelow)
@@ -142,18 +132,15 @@ public:
 
     void addTorchToInventory() { ++m_torchInventoryCount; }
 
-    // Throwable stones (a distraction mechanic): the player starts with kInitialStoneCount, topped
-    // up by stones picked up in safe zones (1-2 per pocket). Same pickup as torches but with no key
-    // press (auto-picked on approach) and deliberately no HUD hint.
+    // Throwable stones: the starting count plus auto-pickups from pockets (no key, no hint)
     static constexpr int kInitialStoneCount = 2;
     int stoneCount() const { return m_stoneCount; }
     void addStoneToInventory() { ++m_stoneCount; }
 
     void restoreStoneCount(int count) { m_stoneCount = std::max(0, count); }
 
-    // Edge-triggered "throw a stone" (G key): true for one frame after the press, only if the
-    // inventory has a stone (otherwise the press is silently swallowed, no message). The physical
-    // throw is DungeonScene's job; PlayerController only tracks the inventory and catches the key.
+    // G with at least one stone; otherwise the press is ignored
+    // DungeonScene does the throw
     bool consumeThrowStoneRequest()
     {
         bool r = m_throwStoneRequested;
@@ -161,9 +148,8 @@ public:
         return r;
     }
 
-    // Restore from a save: absolute values, unlike addTorchToInventory(). Called once on slot load,
-    // when the fuel and spare count at save time are known. The taken-torch restore path
-    // deliberately does not call addTorchToInventory(), or the inventory would be counted twice.
+    // Save restore: absolute values
+    // The taken-torch restore does not credit the inventory, nothing is counted twice
     void restoreTorchState(float fuel, int inventoryCount)
     {
         m_torchFuel = glm::clamp(fuel, 0.0f, 1.0f);
@@ -172,9 +158,7 @@ public:
 
     int nearbyTorchIndex() const { return m_nearbyTorchIndex; }
 
-    // Edge-triggered "take the torch off the wall": true for one frame after E when
-    // nearbyTorchIndex() != -1 and no higher-priority E action (win button, diary) took the press.
-    // Consume semantics.
+    // E near an untaken torch when no higher-priority E action (exit door, diary) took the press
     bool consumeTorchPickupRequest()
     {
         bool r = m_torchPickupRequested;
@@ -193,9 +177,8 @@ public:
     bool isRunning() const { return m_isRunning; }
     bool debugMapVisible() const { return m_debugMapVisible; }
 
-    // Called on the frame an enemy catches the player: running is disabled for
-    // kCaughtPhase1Duration (Attack_Lunge's length), then the player moves at kCaughtDebuffSpeed
-    // for kCaughtPhase2Duration. m_caughtTimer counts down in processInput().
+    // Caught: no running for kCaughtPhase1Duration (the Attack_Lunge length)
+    // kCaughtDebuffSpeed for kCaughtPhase2Duration
     void applyCaughtDebuff()
     {
         m_caughtTimer = kCaughtPhase1Duration + kCaughtPhase2Duration;
@@ -204,27 +187,22 @@ public:
     bool invisibleToEnemy() const { return m_invisibleToEnemy; }
     bool hasWon() const { return m_gameWon; }
 
-    // Called from DungeonScene::render() when an enemy catches the player (together with
-    // applyCaughtDebuff()). One Attack_Lunge hit is a fixed amount of damage; zero health sets
-    // m_gameOver and starts the death sequence.
+    // Fixed damage per hit; zero health starts the death sequence
     void applyDamage(float amount)
     {
         if (m_gameOver || m_noclipEnabled) // noclip is a debug tool and must not kill the player
             return;
 
-        m_health -= amount;
+        m_health = m_oneHitKills ? 0.0f : m_health - amount;
         if (m_health <= 0.0f)
         {
             m_health = 0.0f;
             m_gameOver = true;
-            // Instead of closing the window instantly, a death sequence starts: the camera falls,
-            // the screen fades to black, and only then does the transition to the menu happen
-            // (through the same fade as a normal menu exit).
+            // Death: the camera falls, the screen fades, then the game returns to the menu
             m_deathSequenceActive = true;
             m_deathTime = 0.0f;
-            // m_torchRaised = false only expresses intent: the regular m_torchBlend interpolation
-            // lives in processInput() after the early return for m_deathSequenceActive, so the
-            // actual lowering is done in updateDeathSequence().
+            // Only the intent:
+            // the regular blend is skipped during the death sequence, updateDeathSequence() lowers the torch
             m_torchRaised = false;
             std::fprintf(stderr, "PlayerController: health reached 0 - starting death sequence.\n");
         }
@@ -232,9 +210,7 @@ public:
 
     bool isDying() const { return m_deathSequenceActive; }
 
-    // True exactly once: the frame the death sequence (fall + tilt) finishes and the fade to the
-    // menu should start (same RETURN_TO_MENU/FADE_TO_BLACK as a normal menu exit). A single-shot
-    // pulse, like EnemyAI's consumeJustCaughtPlayer().
+    // Pulses once when the fall ends and the fade to the menu should start
     bool consumeDeathFadeTrigger()
     {
         const bool result = m_deathFadeTriggered;
@@ -242,9 +218,8 @@ public:
         return result;
     }
 
-    // processInput() runs only during real gameplay, but the post-death menu fade interrupts that,
-    // so Application calls this ungated tick every frame while isDying(); it keeps counting the
-    // same m_deathTime so stamina drains in step with the fade.
+    // processInput() stops during the menu fade;
+    // Application ticks this instead so stamina keeps draining in step
     void tickDeathFade(float deltaTime)
     {
         if (m_deathSequenceActive)
@@ -261,9 +236,8 @@ public:
         m_mouseSensitivity = glm::clamp(sensitivity, kMinMouseSensitivity, kMaxMouseSensitivity);
     }
 
-    // Full reset to a fresh-start state: position is the given spawn (the new map's starting safe
-    // zone center), look/health/stamina as at first launch. Leaves the mouse sensitivity (a session
-    // setting, not progress) and the dev-mode flags untouched.
+    // Fresh-start state at spawnPos
+    // Mouse sensitivity and dev flags survive
     void resetForNewGame(const glm::vec3& spawnPos) {
         m_camPos = spawnPos;
         m_yaw = -90.0f;
@@ -280,31 +254,25 @@ public:
         m_poseTime = 0.0f;
         m_torchRaised = false;
         m_torchBlend = 0.0f;
-        // Also reset the torch fuel and inventory: PlayerController is reused across sessions, so
-        // old values would otherwise survive New Game and death as a free torch stash.
+        // The controller outlives sessions, so the torch stash must be reset too
         m_torchFuel = 1.0f;
         m_torchInventoryCount = 0;
         m_stoneCount = kInitialStoneCount;
         m_caughtTimer = 0.0f;
-        // Also reset the death state: if m_deathSequenceActive stayed true the camera would stay
-        // fallen and processInput() would re-trigger the death fade, sending the new game straight
-        // back to the menu.
+        // Otherwise the new game would immediately fade back to the menu
         m_deathSequenceActive = false;
         m_deathTime = 0.0f;
         m_deathFadeTriggered = false;
     }
 
-    // "End of game": moves the camera far outside the map (see AppState::CREDITS in Application),
-    // where there is nothing to render, so the background is plain black via glClearColor. Purely
-    // cosmetic: health, stamina and other state stay untouched.
+    // Credits: move the camera outside the map so nothing is rendered. Cosmetic only
     void teleportCameraOutOfBounds()
     {
         m_camPos = glm::vec3(-500.0f, 0.0f, -500.0f);
         m_pitch = 0.0f;
     }
 
-    // Restores saved player state: camera position and rotation, health/stamina fractions (0..1;
-    // the maxima are constant).
+    // Position, rotation and health/stamina fractions from a save
     void restoreState(const glm::vec3& pos, float yaw, float pitch,
                        float healthFraction, float staminaFraction) {
         m_camPos = pos;
@@ -337,29 +305,29 @@ private:
                  const std::function<WallShapes::CornerCut(int, int)>& getCornerCut,
                  const std::function<float(int, int)>& getChamferSize,
                  const std::vector<glm::vec2>& columnCentersXZ,
-                 const glm::vec3& winButtonPos,
+                 const glm::vec3& exitDoorPos,
                  const std::vector<glm::vec3>& enemyPositions) const;
 
-    // Full XZ movement resolution: try the full step; if blocked by a chamfer diagonal or a circle
-    // (no axis-aligned normal), slide along that normal; else fall back to X then Z. Enemies are
-    // circular obstacles with kCollisionRadius, independent of their AI state: state-dependent
-    // softening froze the player when an enemy switched to Walk/Run while touching.
+    // XZ movement: try the full step;
+    // if a chamfer or circle blocks it slide along its normal;
+    // otherwise try X then Z
+    // Enemies always collide as circles regardless of AI state
     void resolveMovement(glm::vec3& pos, glm::vec3 delta,
                          const std::function<bool(int, int)>& isFloor,
                          const std::function<WallShapes::CornerCut(int, int)>& getCornerCut,
                          const std::function<float(int, int)>& getChamferSize,
                          const std::vector<glm::vec2>& columnCentersXZ,
-                         const glm::vec3& winButtonPos,
+                         const glm::vec3& exitDoorPos,
                          const std::vector<glm::vec3>& enemyPositions) const;
 
-    // True with the surface normal when (x,z) is blocked by a chamfer diagonal or a circle; false
-    // for a regular axis-aligned wall, where separate X/Z already slides exactly.
+    // True with the normal if a chamfer diagonal or a circle blocks (x, z);
+    // false for axis-aligned walls, where the X/Z fallback already slides
     bool findSlideNormal(float x, float z,
                           const std::function<bool(int, int)>& isFloor,
                           const std::function<WallShapes::CornerCut(int, int)>& getCornerCut,
                           const std::function<float(int, int)>& getChamferSize,
                           const std::vector<glm::vec2>& columnCentersXZ,
-                          const glm::vec3& winButtonPos,
+                          const glm::vec3& exitDoorPos,
                           const std::vector<glm::vec3>& enemyPositions,
                           glm::vec3& outNormal) const;
 
@@ -375,14 +343,11 @@ private:
     float m_bobPhase = 0.0f;
     float m_bobBlend = 0.0f;
 
-    // Smoothed deltaTime for cosmetic camera timers only (idle sway, bob phase); movement uses the
-    // raw deltaTime. advanceSmoothedAnimDt() uses a dt-dependent exponential decay, not a fixed
-    // blend factor, which would shake differently at 30 and 60 fps.
+    // Smoothed dt for cosmetic camera motion only; frame-rate independent exponential decay
     float m_animSmoothedDt = 1.0f / 60.0f;
     void advanceSmoothedAnimDt(float rawDeltaTime);
 
-    // Advances m_deathTime and computes the camera Y offset, roll and stamina drain from it. Called
-    // from processInput() instead of the regular input handling while m_deathSequenceActive.
+    // Replaces regular input while dying
     void updateDeathSequence(float deltaTime);
 
     float deathCameraYOffset() const;
@@ -410,14 +375,11 @@ private:
     bool m_isMoving = false;
     bool m_isRunning = false;
 
-    // Speed debuff after being caught by an enemy. m_caughtTimer counts down from
-    // kCaughtPhase1Duration + kCaughtPhase2Duration to zero; processInput() restricts the speed by
-    // phase. Phase 1 matches Attack_Lunge's length (1.25 s).
+    // Caught debuff; phase 1 matches Attack_Lunge (1.25 s)
     static constexpr float kCaughtPhase1Duration = 1.25f;
     static constexpr float kCaughtPhase2Duration = 2.0f;
-    // Independent of the enemy's speeds on purpose: it must give the player a real (not guaranteed)
-    // chance to escape after a bite, when the enemy switches to Run. Tying it to the enemy's walk
-    // speed made it drop whenever that was retuned and left an unwinnable race. Tuned empirically.
+    // Independent of the enemy's speeds on purpose:
+    // it must give a real chance to escape a running enemy after a bite
     static constexpr float kCaughtDebuffSpeed = 1.2f;
     float m_caughtTimer = 0.0f;
 
@@ -445,20 +407,16 @@ private:
     bool m_winBlockedRequested = false;
     bool m_winSequenceRequested = false;
     bool m_creditsRequested = false;
-    // While true, E at the pedestal/donut requests nothing more: the sequence is already running in
-    // DungeonScene and waits for the final E press to become valid. Separate from m_gameWon: that
-    // means the game is won, this only means the first E already happened.
+    // The first E at the exit door happened; distinct from m_gameWon
     bool m_winSequenceStarted = false;
     bool m_gameOver = false; // health hit zero: set by applyDamage(), starts the death sequence (see isDying())
 
-    // Death sequence, all derived from one timer (m_deathTime): kDeathBounceDuration upward jolt,
-    // kDeathFallDuration accelerating fall, kDeathRollDuration roll to 90 degrees, then
-    // kDeathStaminaDrainDuration drains stamina to 0 and triggers the menu fade
-    // (consumeDeathFadeTrigger()).
+    // Death timeline on m_deathTime:
+    // bounce, accelerating fall, roll to 90 degrees, then stamina drains and the menu fade starts
     static constexpr float kDeathBounceDuration = 0.25f;
     static constexpr float kDeathBounceHeight = 0.10f;
     static constexpr float kDeathFallDuration = 1.6f;
-    // must stay below the eye height (0.5), or the camera sinks under the floor
+    // Below the eye height (0.5), or the camera sinks into the floor
     static constexpr float kDeathFallDistance = 0.35f;
     static constexpr float kDeathRollDuration = 0.85f;
     static constexpr float kDeathRollDegrees = 90.0f;
@@ -466,7 +424,6 @@ private:
 
     bool m_deathSequenceActive = false;
     float m_deathTime = 0.0f;
-    // set once when the fade to the menu should start (see consumeDeathFadeTrigger())
     bool m_deathFadeTriggered = false;
 
     const float m_maxStamina = 100.0f;
@@ -478,6 +435,8 @@ private:
 
     const float m_maxHealth = 100.0f;
     float m_health = m_maxHealth;
+    int m_diariesToWin = 4;
+    bool m_oneHitKills = false;
 
     bool m_hKeyWasDown = false;
     bool m_jKeyWasDown = false;

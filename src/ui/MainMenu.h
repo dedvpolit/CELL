@@ -1,6 +1,5 @@
 #pragma once
-// Facade over the menu modules (UiGlyphs, TextGrid, BigFont, Atmosphere, TitleBreakup,
-// MenuLayouts): keeps the MainMenu namespace and names that Application uses.
+// Facade over the menu modules for Application
 #include "UiGlyphs.h"
 #include "TextGrid.h"
 #include "BigFont.h"

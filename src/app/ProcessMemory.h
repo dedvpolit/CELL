@@ -11,9 +11,8 @@
 #include <psapi.h>
 #endif
 
-// Process RAM for the [perf] log. PrivateUsage is read to match Task Manager's Private Working Set;
-// WorkingSetSize also counts pages shared with other processes (DLLs, GPU driver) and reads much
-// higher.
+// Process RAM for the [perf] log: PrivateUsage, matching Task Manager's private working set.
+// WorkingSetSize also counts shared pages (DLLs, driver) and reads much higher.
 inline size_t GetProcessWorkingSetBytes()
 {
 #ifdef _WIN32

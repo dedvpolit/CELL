@@ -31,9 +31,7 @@ std::vector<glm::ivec2> FindPath(
         return path;
     }
 
-    // cameFrom[i] = -1 (unvisited), otherwise the linear index of the parent cell. The start cell
-    // is its own parent, which distinguishes "unvisited" from "this is the start" when
-    // reconstructing the path.
+    // -1 = unvisited; the start is its own parent
     std::vector<int> cameFrom((size_t)mapW * mapH, -1);
     cameFrom[idx(start)] = idx(start);
 
@@ -83,11 +81,7 @@ std::vector<glm::ivec2> FindPath(
     return path;
 }
 
-bool HasGridLineOfSight(
-    int mapW, int mapH,
-    const std::vector<int>& map,
-    glm::ivec2 a,
-    glm::ivec2 b)
+bool HasGridLineOfSight(int mapW, int mapH, const std::vector<int>& map, glm::ivec2 a, glm::ivec2 b)
 {
     auto isWalkable = [&](int x, int z) {
         if (x < 0 || z < 0 || x >= mapW || z >= mapH) return false;
@@ -104,8 +98,7 @@ bool HasGridLineOfSight(
     const int sz = (a.y < b.y) ? 1 : ((a.y > b.y) ? -1 : 0);
     int err = dx - dz;
 
-    // Bresenham with a corner check on diagonal steps: if both side cells are walls the diagonal
-    // would pass a point-thin gap and is blocked; if one is open, cutting the corner is allowed.
+    // Bresenham; a diagonal step between two walls is blocked, cutting a corner past one wall is allowed
     while (x != b.x || z != b.y)
     {
         const int e2 = 2 * err;
@@ -153,16 +146,13 @@ std::vector<glm::ivec2> SmoothPath(
     {
         if (i == n - 1)
         {
-            // The last point (the goal itself) is always kept, even if it is visible in a straight
-            // line (otherwise there would be nowhere to go past the anchor).
+            // The last point (the goal itself) is always kept, even if it is visible in a straight line
+            // (otherwise there would be nowhere to go past the anchor)
             smoothed.push_back(cellPath[i]);
             break;
         }
 
-        // As long as the anchor still has a straight line of sight to the next point, cellPath[i]
-        // is not anchored: visibility just keeps extending along the path. Once the line to
-        // cellPath[i+1] is blocked, cellPath[i] is the last point that was still visible: it
-        // becomes the new anchor.
+        // Extend the anchor's line of sight along the path; when it breaks, the last visible point becomes the next anchor
         if (!HasGridLineOfSight(mapW, mapH, map, cellPath[anchor], cellPath[i + 1]))
         {
             smoothed.push_back(cellPath[i]);

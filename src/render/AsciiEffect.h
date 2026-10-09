@@ -3,20 +3,29 @@
 #include <algorithm>
 #include <vector>
 #include <chrono>
+#include "AcerolaAscii.h"
 
 //   AsciiEffect fx;
 //   fx.begin();
-//     renderYourDungeonScene();
+//   renderYourDungeonScene();
 //   fx.end(windowWidth, windowHeight);
 class AsciiEffect {
 public:
+    // What the scene area shows;
+    // the HUD and UI are drawn on top in every mode
+    // Plain is the player-facing "shaders off" view;
+    // Scene and Edges are dev views (T)
+    enum class RenderView { Ascii = 0, Scene = 1, Edges = 2, Plain = 3 };
+    void setRenderView(RenderView view) { m_renderView = view; }
+
     bool init(int sceneWidth, int sceneHeight, int cellSize = 8);
     void shutdown();
 
     void begin();
     void end(int windowWidth, int windowHeight);
 
-    void resize(int sceneWidth, int sceneHeight);
+    int sceneWidth() const { return m_fboW; }
+    int sceneHeight() const { return m_fboH; }
 
     GLuint getUiFontTexture() const
     {
@@ -28,50 +37,29 @@ public:
         return m_uiGlyphCount;
     }
 
-    // Stamina bar at the bottom: fraction01 is the fill (0..1); enabled = false fades it out
-    // (m_staminaAlpha, on real elapsed time inside end()). Call every frame between begin() and
-    // end(); the value persists until the next call.
+    // fraction01 is the fill; enabled = false fades the bar out
     void setStamina(float fraction01, bool enabled = true);
 
-    // "Unreliable vision" glyph glitch: active = false disables it; uv is the 0..1 spot center,
-    // radiusCells its size in ASCII-grid cells (independent of cols/rows). Call every frame between
-    // begin() and end().
+    // Glitch spot: uv center, radius in ASCII cells. Call every frame
     void setWallGlitch(bool active, float u, float v, float radiusCells);
 
-    // Player health fraction (0..1), see DungeonScene::getHealthFraction(). Controls how much the
-    // stamina bar's frame drips: 1.0 = a clean frame, 0.0 = dripping all the way around. Call every
-    // frame together with setStamina().
+    // Health 0..1: how much the stamina frame and the screen bleed
     void setHealth(float fraction01);
 
-    // Cinematic mode for trailer shots (usually with noclip): cinematicCellSize is the cell size in
-    // this mode (DevTools.h::kCinematicCellSize). It regenerates both font atlases, so call it only
-    // on a mode change.
-    void setCinematicMode(bool enabled, int cinematicCellSize = 6);
-
-    // ASCII cell size in normal mode, the SHARPNESS setting. Smaller = finer cells, more glyphs, a
-    // crisper image; larger = bigger glyphs, a stronger ASCII effect. The range is picked by hand:
-    // the minimum is still legible, the maximum does not turn the grid into a few giant characters.
+    // SHARPNESS range: the minimum is still legible
     static constexpr int kMinCellSize = 6;
     static constexpr int kMaxCellSize = 20;
 
-    // While cinematic mode is active this is only remembered and takes effect when it turns off. It
-    // regenerates the atlases on an actual change: call it on slider release, not on every pixel of
-    // a drag.
+    // Rebuilds the atlases on a real change; call on slider release
     void setUserCellSize(int cellSize);
-    int getUserCellSize() const { return m_normalCellSize; }
+    int getUserCellSize() const { return m_cellSize; }
 
-    // UI text over everything (menu title, buttons): grid holds glyph indices per cell (0 =
-    // transparent, otherwise glyphIndex + 1), sized cols*rows; cols/rows must match the grid the
-    // shader samples (getMenuGridColsForWindow()/RowsForWindow() for menus) or the text drifts.
+    // UI text over everything:
+    // glyphIndex + 1 per cell (0 = transparent). cols/rows must match getMenuGridColsForWindow()/getMenuGridRowsForWindow()
     void setUIOverlay(bool enabled, const std::vector<unsigned char>& grid, int cols, int rows);
 
-    // The scene's ASCII grid comes from the real window size in the shader (screenResolution /
-    // cellSize), not from the FBO size.
-    //
-    // Menus use their own grid overlaid via UV, independent of SHARPNESS, so they always fit. The
-    // menu cell is kMenuReferenceCellSize (11 px) and shrinks on small windows so the grid keeps
-    // kMenuMinGridRows x kMenuMinGridCols (every menu screen needs 87 x 119); at 1280x720 it is 8
-    // px, the size of a glyph bitmap. Always use menuCellSizeForWindow(), not the constant.
+    // The scene grid follows the window size and the live cell size
+    // Menus use a separate grid, independent of SHARPNESS, so they always fit
     static constexpr int kMenuReferenceCellSize = 11;
     static constexpr int kMenuMinGridRows = 90;
     static constexpr int kMenuMinGridCols = 124;
@@ -92,17 +80,21 @@ public:
         return windowHeight / menuCellSizeForWindow(windowWidth, windowHeight);
     }
 
-    // Smooth full-screen fade (0 = none, 1 = fully black) for the transition between the start menu
-    // and gameplay, applied on top of everything (scene, UI, stamina) in the shader. Not
-    // smoothed here: the caller (Application) passes an already interpolated value.
+    // 0 = none
+    // 1 = black; the caller animates it
     void setFadeAlpha(float alpha01);
 
-    // Color mode of the ASCII render: only the glyph color changes, the scene is still drawn purely
-    // with glyphs. Off by default (black and white).
+    // Tints glyphs only; off by default
     void setColorEnabled(bool enabled) { m_colorEnabled = enabled; }
     bool isColorEnabled() const { return m_colorEnabled; }
 
+    // Must match this frame's projection
+    void setDepthRange(float nearPlane, float farPlane) { m_nearPlane = nearPlane; m_farPlane = farPlane; }
+
     void setLensEffectEnabled(bool enabled) { m_lensEffectEnabled = enabled; }
+
+    // Where end() draws the finished frame: 0 for the window, or an offscreen target (CRT)
+    void setWindowFramebuffer(GLuint fbo) { m_windowFramebuffer = fbo; }
 
     void setTime(float seconds) { m_time = seconds; }
 
@@ -110,7 +102,6 @@ private:
     GLuint m_fbo = 0;
     GLuint m_sceneTex = 0;
     GLuint m_depthTex = 0;
-    GLuint m_fontTex = 0;
     GLuint m_program = 0;
     GLuint m_quadVAO = 0, m_quadVBO = 0;
 
@@ -119,8 +110,6 @@ private:
 
     GLuint m_uiFontTex = 0;
     int m_uiGlyphCount = 0;
-
-    int m_rampLength = 0;
 
     float m_staminaFrac         = 1.0f;
     bool  m_staminaEnabledTarget = false;
@@ -133,8 +122,6 @@ private:
     std::chrono::steady_clock::time_point m_staminaFadeLastTime;
     float m_healthFrac    = 1.0f;
 
-    bool m_cinematicMode  = false;
-    int  m_normalCellSize = 8; // remembered in init() as the value to return to
 
     GLuint m_uiOverlayTex = 0;
     bool   m_uiOverlayEnabled = false;
@@ -143,25 +130,28 @@ private:
     float m_fadeAlpha = 0.0f;
 
     bool m_colorEnabled = false;
+    AcerolaAscii m_acerola;
+    float m_nearPlane = 0.05f, m_farPlane = 50.0f;
+    GLint m_uniAcerolaCellTex = -1;
+    GLint m_uniRenderView = -1;
+    GLint m_uniDebugSceneTex = -1;
+    GLint m_uniDebugEdgesTex = -1;
+    RenderView m_renderView = RenderView::Ascii;
+    GLint m_uniAcerolaGlyphTex = -1;
 
     bool m_lensEffectEnabled = false;
+    GLuint m_windowFramebuffer = 0;
     float m_time = 0.0f;
 
     void createFBO(int w, int h);
     void destroyFBO();
-    void generateFontAtlas();
     void generateUiFontAtlas();
     void createQuad();
-    GLint m_uniSceneTex = -1;
-    GLint m_uniFontTex = -1;
     GLint m_uniScreenResolution = -1;
     GLint m_uniCellSize = -1;
-    GLint m_uniRampLength = -1;
     GLint m_uniUiFontTex = -1;
     GLint m_uniUiGlyphCount = -1;
     GLint m_uniStaminaFrac = -1;
-    GLint m_uniGlitchActive = -1, m_uniGlitchUV = -1;
-    GLint m_uniGlitchRadiusCells = -1;
     GLint m_uniStaminaAlpha = -1;
     GLint m_uniHealthFrac = -1;
     GLint m_uniUiTex = -1;
@@ -174,9 +164,7 @@ private:
     GLint m_uniTime = -1;
     void cacheUniformLocations();
 
-    // The UI overlay texture is allocated once per size and then overwritten in place:
-    // setUIOverlay() runs every frame in menus (the title animation rebuilds the grid), but
-    // cols/rows rarely change.
+    // Allocated per size, then updated in place
     int m_uiOverlayTexW = 0;
     int m_uiOverlayTexH = 0;
 

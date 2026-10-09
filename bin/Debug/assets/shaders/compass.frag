@@ -13,14 +13,10 @@ uniform float minimapYawDeg;
 uniform sampler2D uiFontTex;
 uniform float uiGlyphCount;
 
-// Same toggle as AsciiEffect (color mode): the compass uses its own shader and does not go through
-// the ASCII post-process, so it applies the tint itself.
+// Color mode tint; the compass bypasses the ASCII post-process.
 uniform float colorEnabled;
-// enemyMinimapOffset[i]: enemy cell minus player cell on X, reversed on Z (computed on the CPU,
-// same system as off below). enemySpottedAlpha[i] fades from 1 to 0
-// (EnemyAI::spottedMarkerAlpha()); at 0 the marker is skipped. enemyCount = filled entries
-// (0..kMaxEnemies).
-const int kMaxEnemies = 7; // = DungeonScene::kEnemyCount — keep in sync if the enemy count changes
+// Per enemy: cell offset from the player (Z flipped) and marker alpha; alpha 0 skips the marker.
+const int kMaxEnemies = 7; // = DungeonScene::kEnemyCount: keep in sync if the enemy count changes
 uniform float enemySpottedAlpha[kMaxEnemies];
 uniform vec2 enemyMinimapOffset[kMaxEnemies];
 uniform int enemyCount;
@@ -50,13 +46,9 @@ void main()
 
         float glyphIdx = -1.0;
         float matchedEnemyAlpha = 0.0; // 0 if no enemy landed in this cell (see outColor below)
-        // Landmark torch cell (value 220/255 ~ 0.86, between a regular wall 170/255 ~ 0.667 and a
-        // torch 255/255 = 1.0): colored blue "*" instead of the usual orange. Stored here because
-        // glyph tinting is computed further down, outside v's scope.
+        // Guide torch cell (220/255): tinted blue.
         bool isGuideTorchCell = false;
-        // "Been here before" (value 200/255 ~ 0.78, between a regular wall and a landmark torch):
-        // the perimeter wall of a pocket whose diary has been read is colored purple (#AC5CCB)
-        // instead of the usual gray. Stored here for the same reason as isGuideTorchCell.
+        // Wall of a pocket whose diary was read (200/255): tinted purple.
         bool isDiaryReadWallCell = false;
 
         if (dist <= halfGrid) {
@@ -91,10 +83,8 @@ void main()
                 float gx = off.x + halfGrid;
                 float gy = halfGrid - off.y;
 
-                // Only the best-matching enemy's alpha is stored; the marker is blended after the
-                // cell glyph so it fades smoothly instead of swapping glyphs. The 0.5 tolerance
-                // covers interpolation error (offsets are integers). With two enemies in one cell
-                // the larger alpha wins.
+                // Alpha of the matching enemy; the marker is blended over the cell glyph so it
+                // fades smoothly. 0.5 tolerance for interpolated integer offsets.
                 for (int ei = 0; ei < kMaxEnemies; ei++) {
                     if (ei >= enemyCount)
                         break;
@@ -106,9 +96,7 @@ void main()
                 vec2 mapUV = (vec2(gx, gy) + 0.5) / MAP_N;
                 float v = texture(minimapTex, mapUV).r;
 
-                // A landmark torch is encoded as 220/255 ~ 0.8627, between a regular wall (170/255
-                // ~ 0.667) and a regular torch (1.0). It uses the same "*" glyph as a regular
-                // torch; the only difference is the tint below (blue instead of orange).
+                // Guide torch: same '*' as a regular torch, tinted blue below.
                 if (v > 0.95) {
                     glyphIdx = 3.0;      // * (regular torch)
                 } else if (v > 0.8) {
@@ -159,10 +147,7 @@ void main()
             outColor = mix(bwColor, bwColor * tint, colorEnabled);
         }
 
-        // Blended on top of the already computed outColor (fog/wall/floor/torch/empty) instead of
-        // swapping glyphIdx ahead of time, so the transition is smooth: at matchedEnemyAlpha = 1 it
-        // is fully the marker, at 0 fully what it would be without it, and any value in between is
-        // an honest mix of both colors.
+        // Blend the marker over the cell glyph by its alpha.
         if (matchedEnemyAlpha > 0.001) {
             vec2 glyphOrigin = vec2(26.0 / uiGlyphCount, 0.0);
             vec2 glyphUV = glyphOrigin + vec2(localUV.x / uiGlyphCount, localUV.y);

@@ -5,9 +5,10 @@
 #include <algorithm>
 #include <cmath>
 
+// He is a dummy. but really cool dummy
+
 namespace {
-// Shortest signed angle from current to target, in (-180, 180]: rotation takes the short way and
-// has no jump at ±180.
+// Shortest signed angle in (-180, 180]
 float ShortestAngleDeltaDeg(float currentDeg, float targetDeg)
 {
     float delta = std::fmod(targetDeg - currentDeg, 360.0f);
@@ -24,18 +25,14 @@ float NormalizeAngleDeg(float deg)
     return deg;
 }
 
-// Flee guessing: how far (in cells) to extrapolate along the player's last movement direction
-// before assuming a wall or dead end.
+// How far, in cells, to extrapolate the player's last direction when guessing where they fled
 constexpr int kFleeGuessMaxCells = 5;
-constexpr float kFleeGuessMeaningfulSpeed = 0.3f; // units/sec: below this it is jitter, not walking
-// sec: this much stillness does not yet count as standing still
+constexpr float kFleeGuessMeaningfulSpeed = 0.3f; // units/sec: below this it is jitter, not walking. Seconds of stillness that still count as moving.
 constexpr float kFleeGuessMovementMemory = 0.4f;
-// How deep to look into a side turn (1 cell is the turn itself; more covers a player who kept
-// running down that branch).
+// Depth of a side-turn guess; 1 cell is the turn itself
 constexpr int kFleeGuessBranchCells = 2;
 
-// Distance-based volume: full at nearRadius and closer, silent at farRadius and beyond, with an
-// ease-out squared falloff in between (closer to how sound fades than linear).
+// Full volume up to nearRadius, silent past farRadius, squared ease-out in between
 float DistanceVolume(float distance, float nearRadius, float farRadius)
 {
     if (distance <= nearRadius) return 1.0f;
@@ -44,8 +41,7 @@ float DistanceVolume(float distance, float nearRadius, float farRadius)
     return 1.0f - t * t;
 }
 
-// Audibility radii per sound type. The detection scream carries farther on purpose: it is a warning
-// that should be heard even away from the enemy.
+// The detection scream carries farther: it is a warning
 constexpr float kFootstepAudibleNear = 2.0f;
 constexpr float kFootstepAudibleFar = 14.0f;
 constexpr float kMoanAudibleNear = 2.0f;
@@ -83,8 +79,7 @@ void EnemyAI::init(
     m_patrolPaused = false;
     m_patrolPauseTimer = 0.0f;
 
-    // EnemyAI persists across playthroughs while init() runs for every new map, so the spotted flag
-    // must be reset here; otherwise the enemy shows up on the minimap before the first encounter.
+    // init() runs for every map; clear the flag or the enemy appears on the minimap before the first encounter
     m_hasBeenSpotted = false;
     m_timeSinceLastSpotted = 0.0f;
 }
@@ -104,8 +99,7 @@ glm::vec3 EnemyAI::pickRandomPatrolPoint()
     std::uniform_int_distribution<int> distX(0, m_mapW - 1);
     std::uniform_int_distribution<int> distZ(0, m_mapH - 1);
 
-    // A maze is mostly walls, so a random pick can miss. After a bounded number of tries stay in
-    // place; the next call tries again.
+    // Mostly walls, so a random pick can miss; give up after a few tries and retry next call
     for (int attempt = 0; attempt < 30; ++attempt)
     {
         const int x = distX(m_rng);
@@ -121,8 +115,7 @@ void EnemyAI::appendGuessedFleeWaypoints(const glm::vec3& lastSeenPos, const glm
     if (!headingWasFresh)
         return;
 
-    // A diagonal heading is almost always single-frame noise and corridors are axis-aligned, so
-    // guess along the one dominant axis.
+    // Corridors are axis-aligned and a diagonal heading is usually noise: guess along the dominant  axis
     const glm::vec2 heading2D(headingAtLoss.x, headingAtLoss.z);
     if (glm::length(heading2D) < 0.001f)
         return;
@@ -145,9 +138,7 @@ void EnemyAI::appendGuessedFleeWaypoints(const glm::vec3& lastSeenPos, const glm
             break;
         furthestStraight = next;
 
-        // Also check side branches (perpendicular to the running direction): corridors fork and the
-        // player may have turned at the nearest corner. The first one found is enough; this is not
-        // meant to be a full branch sweep.
+        // The player may have turned at the nearest fork: also try side branches. The first hit is enough
         if (!branchFound)
         {
             const glm::ivec2 perp = (primaryDir.x != 0) ? glm::ivec2(0, 1) : glm::ivec2(1, 0);
@@ -158,8 +149,7 @@ void EnemyAI::appendGuessedFleeWaypoints(const glm::vec3& lastSeenPos, const glm
                 {
                     branchFound = true;
                     branchCell = branch;
-                    // Look a couple of cells into the turn, otherwise the guessed point almost
-                    // coincides with the straight line.
+                    // A guess one cell into the turn would almost coincide with the straight line
                     for (int bstep = 2; bstep <= kFleeGuessBranchCells; ++bstep)
                     {
                         const glm::ivec2 deeper = next + perp * side * bstep;
@@ -180,6 +170,36 @@ void EnemyAI::appendGuessedFleeWaypoints(const glm::vec3& lastSeenPos, const glm
         outWaypoints.push_back(glm::vec3(branchCell.x + 0.5f, 0.0f, branchCell.y + 0.5f));
 }
 
+glm::ivec2 EnemyAI::nearestWalkableCell(const glm::vec3& pos) const
+{
+    const glm::ivec2 cell((int)std::floor(pos.x), (int)std::floor(pos.z));
+    if (isWalkableCell(cell.x, cell.y))
+        return cell;
+
+    // A column cell is blocked for pathfinding but only its center is solid for the collider, so
+    // a body (or the player) can stand in its corner. Path from the closest open neighbor instead
+    glm::ivec2 best = cell;
+    float bestDistSq = 1e9f;
+    for (int dz = -1; dz <= 1; ++dz)
+    {
+        for (int dx = -1; dx <= 1; ++dx)
+        {
+            const glm::ivec2 n = cell + glm::ivec2(dx, dz);
+            if ((dx == 0 && dz == 0) || !isWalkableCell(n.x, n.y))
+                continue;
+            const float ox = n.x + 0.5f - pos.x;
+            const float oz = n.y + 0.5f - pos.z;
+            const float distSq = ox * ox + oz * oz;
+            if (distSq < bestDistSq)
+            {
+                bestDistSq = distSq;
+                best = n;
+            }
+        }
+    }
+    return best;
+}
+
 bool EnemyAI::followPath(const glm::vec3& target, float speed, float deltaTime)
 {
     const float kPathRecomputeInterval = 0.4f;
@@ -189,17 +209,15 @@ bool EnemyAI::followPath(const glm::vec3& target, float speed, float deltaTime)
     {
         m_pathRecomputeTimer = 0.0f;
 
-        const glm::ivec2 startCell((int)std::floor(m_position.x), (int)std::floor(m_position.z));
-        const glm::ivec2 goalCell((int)std::floor(target.x), (int)std::floor(target.z));
+        const glm::ivec2 startCell = nearestWalkableCell(m_position);
+        const glm::ivec2 goalCell = nearestWalkableCell(target);
 
         std::vector<glm::ivec2> cellPath;
-        // Use m_pathfindingMap, not m_map: it also marks column cells as blocked, so paths do not
-        // route through columns.
+        // m_pathfindingMap also blocks column cells
         if (m_pathfindingMap && !m_pathfindingMap->empty())
             cellPath = GridPathfinding::FindPath(m_mapW, m_mapH, *m_pathfindingMap, startCell, goalCell);
 
-        // 4-directional BFS picks a "staircase" among many equal-length paths; SmoothPath()
-        // straightens it into diagonal segments where the line of sight allows.
+        // BFS picks a staircase among equal paths; SmoothPath() straightens it where line of sight allows
         if (m_pathfindingMap && !m_pathfindingMap->empty())
             cellPath = GridPathfinding::SmoothPath(m_mapW, m_mapH, *m_pathfindingMap, cellPath);
 
@@ -208,9 +226,8 @@ bool EnemyAI::followPath(const glm::vec3& target, float speed, float deltaTime)
             m_path.push_back(glm::vec2(c.x + 0.5f, c.y + 0.5f));
         m_pathWaypointIndex = 0;
 
-        // The first point of a fresh path is the current cell's center. If the enemy is not exactly
-        // there, that point can be slightly behind it, and reaching it means a small step backward
-        // on every recompute. Skip it when it is already close.
+        // The first point is the current cell's center and may lie slightly behind the enemy;
+        // skip it when close, or every recompute starts with a step back
         if (m_path.size() > 1)
         {
             const float distToFirst = glm::length(m_path[0] - glm::vec2(m_position.x, m_position.z));
@@ -219,58 +236,64 @@ bool EnemyAI::followPath(const glm::vec3& target, float speed, float deltaTime)
         }
     }
 
+    bool reached = false;
     if (m_pathWaypointIndex >= m_path.size())
-        return m_path.empty() ? false : true; // no path found: not "reached", just nowhere to go
-
-    const glm::vec2 targetXZ = m_path[m_pathWaypointIndex];
-    glm::vec3 toTarget(targetXZ.x - m_position.x, 0.0f, targetXZ.y - m_position.z);
-    float dist = glm::length(toTarget);
-
-    const float kWaypointReachedRadius = 0.25f;
-    if (dist < kWaypointReachedRadius)
     {
-        if (m_pathWaypointIndex + 1 < m_path.size())
+        // An empty path is "nowhere to go", not "reached"; the stuck check below still runs
+        reached = !m_path.empty();
+    }
+    else
+    {
+        glm::vec2 targetXZ = m_path[m_pathWaypointIndex];
+        glm::vec3 toTarget(targetXZ.x - m_position.x, 0.0f, targetXZ.y - m_position.z);
+        float dist = glm::length(toTarget);
+
+        const float kWaypointReachedRadius = 0.25f;
+        if (dist < kWaypointReachedRadius)
         {
-            m_pathWaypointIndex++;
-            const glm::vec2 nextXZ = m_path[m_pathWaypointIndex];
-            toTarget = glm::vec3(nextXZ.x - m_position.x, 0.0f, nextXZ.y - m_position.z);
-            dist = glm::length(toTarget);
+            if (m_pathWaypointIndex + 1 < m_path.size())
+            {
+                m_pathWaypointIndex++;
+                targetXZ = m_path[m_pathWaypointIndex];
+                toTarget = glm::vec3(targetXZ.x - m_position.x, 0.0f, targetXZ.y - m_position.z);
+                dist = glm::length(toTarget);
+            }
+            else
+            {
+                reached = true;
+            }
         }
-        else
+
+        if (!reached && dist > 0.01f)
         {
-            return true;
+            const glm::vec3 dir = toTarget / dist;
+            const float moveDist = std::min(dist, speed * deltaTime);
+            m_position += dir * moveDist;
+
+            // Assumes the model faces local -Z (Blender -> glTF)
+            // Add a fixed offset here if it faces the wrong way
+            const float desiredYawDegrees = glm::degrees(std::atan2(dir.x, dir.z));
+
+            // Capped turn rate: path recomputes can change the direction by tens of degrees in one frame
+            const float kTurnRateDegPerSec = 225.0f; // deg/sec (~0.8 s for a 180 deg turn)
+            const float maxTurnDelta = kTurnRateDegPerSec * deltaTime;
+            float turnDelta = ShortestAngleDeltaDeg(m_yawDegrees, desiredYawDegrees);
+            turnDelta = glm::clamp(turnDelta, -maxTurnDelta, maxTurnDelta);
+            m_yawDegrees = NormalizeAngleDeg(m_yawDegrees + turnDelta);
         }
     }
 
-    if (dist > 0.01f)
+    // Stuck safeguard: if the body barely moved over a check interval, nudge it aside and recompute the path
+    // A generic escape from geometric traps where the circular collider catches a neighboring cell
+    if (reached)
     {
-        const glm::vec3 dir = toTarget / dist;
-        const float moveDist = std::min(dist, speed * deltaTime);
-        m_position += dir * moveDist;
-
-        // Yaw is atan2(dir.x, dir.z). This assumes the model's forward axis is local -Z, as is
-        // usual for Blender -> glTF exports; the formula turns that axis toward dir. If the model
-        // ever faces the wrong way, fix it here with a fixed offset.
-        const float desiredYawDegrees = glm::degrees(std::atan2(dir.x, dir.z));
-
-        // Turn toward the desired yaw at a capped rate instead of snapping to it: on a path
-        // recompute or a waypoint change the direction can jump by tens of degrees in one frame,
-        // which looked like an algorithm rather than a creature turning.
-        const float kTurnRateDegPerSec = 225.0f; // deg/sec (~0.8 s for a 180° turn)
-        const float maxTurnDelta = kTurnRateDegPerSec * deltaTime;
-        float turnDelta = ShortestAngleDeltaDeg(m_yawDegrees, desiredYawDegrees);
-        turnDelta = glm::clamp(turnDelta, -maxTurnDelta, maxTurnDelta);
-        m_yawDegrees = NormalizeAngleDeg(m_yawDegrees + turnDelta);
+        m_stuckCheckRefInit = false;
+        m_stuckCheckTimer = 0.0f;
+        return true;
     }
-
-    // Stuck safeguard: if the body barely advanced over a check interval, nudge it aside and force
-    // a path recompute. It is a general escape from geometric traps (a path can legally hug a cell
-    // boundary while the circular collider clips neighboring cells) instead of chasing each case.
     {
         const float kStuckCheckInterval = 0.5f;
-        // Over one check interval the body covers ~0.275 units unimpeded; 0.15 leaves nearly 2x
-        // margin for normal slowdowns (waypoint pauses, path start) without mistaking them for
-        // being stuck.
+        // Unimpeded, the body covers ~0.275 per interval; 0.15 leaves room for normal slowdowns
         const float kStuckMinProgress = 0.15f;
 
         m_stuckCheckTimer += deltaTime;
@@ -284,8 +307,7 @@ bool EnemyAI::followPath(const glm::vec3& target, float speed, float deltaTime)
             const float progressed = glm::length(m_position - m_stuckCheckRefPos);
             if (progressed < kStuckMinProgress)
             {
-                // Random direction and a modest distance: just enough to escape a tight gap. The
-                // result goes through resolveWallCollision() so the nudge does not land in a wall.
+                // Random direction, short distance, collision-resolved
                 std::uniform_real_distribution<float> angleDist(0.0f, 6.2831853f);
                 const float angle = angleDist(m_rng);
                 const float kEscapeDistance = 0.3f;
@@ -306,21 +328,18 @@ bool EnemyAI::followPath(const glm::vec3& target, float speed, float deltaTime)
 
 void EnemyAI::update(float deltaTime, const glm::vec3& playerPos, bool playerIsRunning, bool playerIsMoving, bool playerInvisible, bool playerCanSeeThisEnemy, float playerLightLevel, EnemyCharacter& character)
 {
-    // Walk speed is tuned to the walk clip's stride length. The clip plays in real time, so a
-    // higher speed makes the legs skate. The full fix would be distance-based clip playback.
+    // Matched to the walk clip's stride; faster makes the legs skate
     const float kEnemyWalkSpeed = 0.55f;
     const float kEnemyRunSpeed = 2.0f;
     const float kDashSpeedMultiplier = 1.5f;
     const float kCatchRadius = 0.6f;
     const float kLoseTrackGrace = 5.0f; // sec without contact before the chase turns into a search
 
-    // Estimated player speed for the dash's lead prediction, same values as PlayerController's
-    // walk/run speed. Only positions are visible here, so this is an estimate.
+    // Player speed estimate for the dash lead, same as PlayerController's walk/run speeds
     const float kEstimatedPlayerSpeed = playerIsRunning ? 3.0f : 1.5f;
 
-    // Position snapshot before any movement this frame: footsteps are paced by the distance
-    // actually moved (like PlayerController::processInput()). Attack/WallSlam/Scream return
-    // earlier, so it is unused there.
+    // Footsteps are paced by the distance actually moved this frame
+    // Attack/WallSlam/Scream return before it is used
     const glm::vec3 footstepStartPos = m_position;
 
     if (m_lastPlayerPosInit)
@@ -331,9 +350,8 @@ void EnemyAI::update(float deltaTime, const glm::vec3& playerPos, bool playerIsR
         if (len > 0.001f)
             m_playerHeading = delta / len;
 
-        // Real speed is distance / deltaTime (m_playerHeading is always unit length). The stillness
-        // timer resets on real movement; kFleeGuessMovementMemory is a grace window so one still
-        // frame does not erase recent movement.
+        // The stillness timer resets on real movement;
+        // the grace window keeps one still frame from erasing it
         const float speed = (deltaTime > 0.0001f) ? (len / deltaTime) : 0.0f;
         if (speed >= kFleeGuessMeaningfulSpeed)
             m_timeSinceMeaningfulMovement = 0.0f;
@@ -343,9 +361,7 @@ void EnemyAI::update(float deltaTime, const glm::vec3& playerPos, bool playerIsR
     m_lastPlayerPos = playerPos;
     m_lastPlayerPosInit = true;
 
-    // Minimap visibility (whether the PLAYER has seen this enemy) is independent of AI perception.
-    // It is computed every frame from outside (DungeonScene::isEnemyVisibleToPlayer(): FOV + LOS
-    // from the player's camera), not on the AI's own perception tick.
+    // Minimap visibility is decided from the player's side (DungeonScene::isEnemyVisibleToPlayer()), independently of AI perception
     if (playerCanSeeThisEnemy)
     {
         m_hasBeenSpotted = true;
@@ -385,8 +401,8 @@ void EnemyAI::update(float deltaTime, const glm::vec3& playerPos, bool playerIsR
             m_path.clear();
         }
 
-        // Resolve collisions here too: Dash stops against a wall on the impact frame, and without
-        // this the enemy could stay embedded in geometry for the whole WallSlam duration.
+        // The dash stops at a wall on the impact frame;
+        // resolve so the enemy does not stay embedded during WallSlam.
         m_position = resolveWallCollision(m_position);
         character.setPosition(m_position);
         character.setYawDegrees(m_yawDegrees);
@@ -395,6 +411,7 @@ void EnemyAI::update(float deltaTime, const glm::vec3& playerPos, bool playerIsR
         return;
     }
 
+    // mewo-meow-meow
     if (m_state == AIState::Scream)
     {
         m_stateTimer -= deltaTime;
@@ -430,9 +447,8 @@ void EnemyAI::update(float deltaTime, const glm::vec3& playerPos, bool playerIsR
             const float kSightRadiusRun = 14.0f;
             const float baseSightRadius = playerIsRunning ? kSightRadiusRun : kSightRadiusWalk;
 
-            // Light affects sight: kMinSightMultiplier keeps a nonzero radius in full darkness, so
-            // darkness hides the player but does not guarantee stealth (only dev-tools
-            // playerInvisible does). lightLevel = 1 gives multiplier 1.0.
+            // Darkness shrinks the sight radius but never to zero:
+            // it hides the player without guaranteeing stealth
             const float kMinSightMultiplier = 0.35f;
             const float sightMultiplier = glm::mix(kMinSightMultiplier, 1.0f,
                                                     glm::clamp(playerLightLevel, 0.0f, 1.0f));
@@ -440,10 +456,8 @@ void EnemyAI::update(float deltaTime, const glm::vec3& playerPos, bool playerIsR
 
             bool canSee = dist <= sightRadius;
 
-            // Field of view: a cone of ±kFOVHalfAngleDeg around the current yaw. Within
-            // kPeripheralRadius the player is noticed regardless, otherwise standing right beside
-            // the enemy would go unnoticed.
-            const float kFOVHalfAngleDeg = 55.0f; // ~110° full cone
+            // FOV cone around the current yaw; within kPeripheralRadius the player is noticed regardless
+            const float kFOVHalfAngleDeg = 55.0f; // ~110 deg full cone
             const float kPeripheralRadius = 1.2f;
             if (canSee && dist > kPeripheralRadius)
             {
@@ -463,9 +477,7 @@ void EnemyAI::update(float deltaTime, const glm::vec3& playerPos, bool playerIsR
                     *m_columnCentersXZ, m_columnRadius);
             }
 
-            // Dev tools (I key): applied after the real FOV/LOS/radius check, so every other system
-            // (m_hasBeenSpotted, memory window, timers) sees an ordinary loss of sight. Hearing is
-            // muted by the same flag below.
+            // Dev invisibility (I) is applied after the real checks, so everything else sees a normal loss of sight. It mutes hearing too
             if (playerInvisible)
                 canSee = false;
 
@@ -491,25 +503,20 @@ void EnemyAI::update(float deltaTime, const glm::vec3& playerPos, bool playerIsR
             }
             else
             {
-                // Cannot see the player right now: if it was chasing (Walk/Run), keep a memory
-                // window instead of resetting instantly.
+                // Lost sight during a chase: keep a memory window instead of dropping it instantly
                 if (m_state == AIState::Run || m_state == AIState::Walk)
                 {
                     m_lostTrackTimer += elapsed;
                     if (m_lostTrackTimer >= kLoseTrackGrace)
                     {
-                        // Goes to Search rather than straight to Idle: it heads to the last seen
-                        // position and looks around before returning to patrol, so it does not
-                        // abruptly "forget" the chase.
+                        // Search the last seen position before returning to patrol
                         m_state = AIState::Search;
                         m_lostTrackTimer = 0.0f;
                         m_searchPaused = false;
                         m_searchPauseTimer = 0.0f;
                         m_path.clear();
 
-                        // Flee guesses: first the last seen position, then, if the player's
-                        // direction was known, a guessed continuation of the route (plus a side
-                        // turn if one came up).
+                        // Waypoints: last seen position, then a guessed continuation of the player's route (and a side turn if found)
                         m_searchWaypoints.clear();
                         m_searchWaypoints.push_back(m_lastKnownPlayerPos);
                         const bool headingWasFresh = m_timeSinceMeaningfulMovement <= kFleeGuessMovementMemory;
@@ -517,13 +524,11 @@ void EnemyAI::update(float deltaTime, const glm::vec3& playerPos, bool playerIsR
                         m_searchWaypointIndex = 0;
                     }
                 }
-                // Deliberately no else branch: when the player is not seen, Idle is not chasing
-                // anyway and Search decides for itself when to end. An unconditional else { Idle }
-                // would overwrite Search on every perception tick.
+                // No else: Idle is not chasing and Search ends itself
+                // An else { Idle } would cancel Search on every tick
 
-                // Hearing: independent of vision and FOV (sound passes through walls), only while
-                // not chasing. It leads to Search, never straight to Run/Scream. playerInvisible
-                // mutes it too (full stealth).
+                // Hearing ignores walls and FOV and works only while not chasing
+                // It leads to Search, never straight to a chase
                 if (!playerInvisible &&
                     m_state == AIState::Idle && (playerIsMoving || playerIsRunning))
                 {
@@ -538,8 +543,7 @@ void EnemyAI::update(float deltaTime, const glm::vec3& playerPos, bool playerIsR
                         m_searchPauseTimer = 0.0f;
                         m_path.clear();
 
-                        // Same guess chain as after losing a chase: if the player was moving at the
-                        // time of the noise, also guess where they ran further.
+                        // Same guesses as after a lost chase if the player was moving
                         m_searchWaypoints.clear();
                         m_searchWaypoints.push_back(m_lastKnownPlayerPos);
                         const bool headingWasFresh = m_timeSinceMeaningfulMovement <= kFleeGuessMovementMemory;
@@ -558,9 +562,8 @@ void EnemyAI::update(float deltaTime, const glm::vec3& playerPos, bool playerIsR
         {
             m_dashRollTimer = 0.0f;
 
-            // The direction blends the player's heading (lead prediction from estimated speed) and
-            // their current position in one vector from predictedPlayerPos, so a player who stands
-            // still or turns sharply does not make the dash fly past.
+            // Aim at a point between the player's lead-predicted and current positions
+            // so a sudden stop or turn does not make the dash overshoot
             const float kLeadTime = 0.35f;
             const glm::vec3 predictedPlayerPos = playerPos + m_playerHeading * kEstimatedPlayerSpeed * kLeadTime;
             glm::vec3 toPredicted = predictedPlayerPos - m_position;
@@ -574,9 +577,8 @@ void EnemyAI::update(float deltaTime, const glm::vec3& playerPos, bool playerIsR
             toPlayerNow.y = 0.0f;
             const float distToPlayerNow = glm::length(toPlayerNow);
 
-            // Do not launch when there is a wall right along the chosen course: it would turn into
-            // Wall_slam on the first frame. The course is not recalculated mid-dash, so hitting a
-            // wall later remains a real risk; only an immediate miss is filtered out.
+            // Do not launch straight into a wall
+            // The course is fixed for the whole dash, so later wall hits stay possible
             bool hasRoomAhead = true;
             if (m_map)
             {
@@ -588,8 +590,7 @@ void EnemyAI::update(float deltaTime, const glm::vec3& playerPos, bool playerIsR
 
             if (hasRoomAhead)
             {
-                // The chance grows as the player gets closer: a close dash is tactically justified,
-                // a distant one is almost always wasted.
+                // More likely up close, where a dash pays off
                 const float kBaseChance = 0.10f;
                 const float kMaxChance = 0.25f;
                 const float kDashChanceRange = 8.0f; // distance beyond which it's the base chance
@@ -611,6 +612,7 @@ void EnemyAI::update(float deltaTime, const glm::vec3& playerPos, bool playerIsR
         m_dashRollTimer = 0.0f;
     }
 
+    // Why its a dummy:
     if (m_state == AIState::Dash)
     {
         m_dashElapsed += deltaTime;
@@ -618,19 +620,17 @@ void EnemyAI::update(float deltaTime, const glm::vec3& playerPos, bool playerIsR
         const float dashSpeed = kEnemyRunSpeed * kDashSpeedMultiplier;
         const glm::vec3 nextPos = m_position + m_dashDirection * dashSpeed * deltaTime;
 
-        // Hit detection goes through the collider: resolve nextPos and check whether it was pushed
-        // back against the dash direction. A "next cell is a wall" test would never fire, because
-        // the collider stops the enemy first and the dash would idle until its timeout. Sliding
-        // along a wall does not count as a head-on hit.
+        // A head-on hit shows up as the collider pushing nextPos back against the dash direction
+        // A "next cell is a wall" test would never fire because the collider stops the enemy first
+        // Sliding along a wall is not a hit
         const glm::vec3 resolvedNextPos = resolveWallCollision(nextPos);
         glm::vec3 pushback = resolvedNextPos - nextPos;
         pushback.y = 0.0f;
-        // slack so sliding along a wall does not trigger a slam
+        // Slack so sliding along a wall is not a slam
         const float kWallSlamPushbackThreshold = 0.02f;
         bool blocked = -glm::dot(pushback, m_dashDirection) > kWallSlamPushbackThreshold;
 
-        // The collider skips out-of-grid cells. The map is walled around its perimeter, so this
-        // should not happen; the explicit check is a safety net.
+        // Safety net: the map has a wall border, so this should not happen
         if (!blocked && m_map)
         {
             const glm::ivec2 nextCell((int)std::floor(nextPos.x), (int)std::floor(nextPos.z));
@@ -665,9 +665,7 @@ void EnemyAI::update(float deltaTime, const glm::vec3& playerPos, bool playerIsR
         else
         {
             m_position = nextPos;
-            // This snap is deliberate, unlike in followPath(): m_dashDirection is locked for the
-            // whole Dash, so it is one instant turn at launch, which reads as a sharp, aggressive
-            // lunge rather than a repeated pathfinding teleport.
+            // Snap once at launch: the direction is locked for the dash, and the instant turn reads as a lunge
             m_yawDegrees = glm::degrees(std::atan2(m_dashDirection.x, m_dashDirection.z));
         }
     }
@@ -676,8 +674,8 @@ void EnemyAI::update(float deltaTime, const glm::vec3& playerPos, bool playerIsR
         if (m_attackCooldownTimer > 0.0f)
             m_attackCooldownTimer -= deltaTime;
 
-        // Catching is checked against the player's real position, not the last known one, so memory
-        // alone cannot catch anyone. The attack cooldown prevents instant re-hits.
+        // Catching uses the real position, so memory alone cannot catch the player
+        // The attack cooldown prevents instant re-hits
         glm::vec3 toPlayerReal = playerPos - m_position;
         toPlayerReal.y = 0.0f;
 
@@ -690,18 +688,15 @@ void EnemyAI::update(float deltaTime, const glm::vec3& playerPos, bool playerIsR
         }
         else
         {
-            // Heads for the last known position: it equals the live one while the player is visible
-            // (updated on every successful canSee) and stays frozen at the last sighting through
-            // the memory window.
+            // The last known position tracks the player while visible and freezes at the last sighting during the memory window
             const float speed = (m_state == AIState::Run) ? kEnemyRunSpeed : kEnemyWalkSpeed;
             followPath(m_lastKnownPlayerPos, speed, deltaTime);
         }
     }
     else if (m_state == AIState::Search)
     {
-        // Visit m_searchWaypoints in order ([0] is the noise source or last seen position, then 0-2
-        // flee guesses). An empty chain (never expected) returns to patrol instead of getting
-        // stuck.
+        // Waypoints in order:
+        // noise source or last sighting, then up to two guesses. An empty list returns to patrol
         if (m_searchWaypoints.empty())
         {
             m_state = AIState::Idle;
@@ -735,8 +730,7 @@ void EnemyAI::update(float deltaTime, const glm::vec3& playerPos, bool playerIsR
             {
                 m_searchPaused = true;
 
-                // The last point gets the longer look-around pause (the final check before giving
-                // up); intermediate guesses get a short glance, otherwise Search would drag on.
+                // The last point gets the long look-around; intermediate guesses only a glance
                 const bool isLastWaypoint = (m_searchWaypointIndex + 1 >= m_searchWaypoints.size());
                 std::uniform_real_distribution<float> pauseDist(
                     isLastWaypoint ? 1.5f : 0.7f,
@@ -775,16 +769,14 @@ void EnemyAI::update(float deltaTime, const glm::vec3& playerPos, bool playerIsR
         }
     }
 
-    // Collider: the single point every movement of Idle/Search/Walk/Run/Dash passes through before
-    // character.setPosition(). Attack/WallSlam/Scream resolve it in their own early returns.
+    // Every movement state passes through the collider here
+    // Attack/WallSlam/Scream resolve it in their own early returns
     m_position = resolveWallCollision(m_position);
     character.setPosition(m_position);
     character.setYawDegrees(m_yawDegrees);
     if (m_state == AIState::Idle || m_state == AIState::Search)
     {
-        // Moans only while the enemy searches or wanders on its own (Idle patrol or Search), not
-        // during a chase: chase states already play Scream at launch. Chase growling is
-        // deliberately not implemented.
+        // Moans only while patrolling or searching; a chase already starts with a scream
         m_moanTimer += deltaTime;
         if (m_moanTimer >= m_nextMoanInterval)
         {
@@ -801,8 +793,7 @@ void EnemyAI::update(float deltaTime, const glm::vec3& playerPos, bool playerIsR
     }
 
     EnemyCharacter::State animState = EnemyCharacter::State::Idle;
-    // Patrol (Idle while walking to a point) reuses the Walk clip: there is no dedicated calm-walk
-    // clip. Paused, it uses Idle.
+    // No calm-walk clip: patrol uses Walk, and Idle while paused
     if (m_state == AIState::Idle)
         animState = m_patrolPaused ? EnemyCharacter::State::Idle : EnemyCharacter::State::Walk;
     else if (m_state == AIState::Search)
@@ -818,9 +809,7 @@ void EnemyAI::update(float deltaTime, const glm::vec3& playerPos, bool playerIsR
     else if (m_state == AIState::Scream)
         animState = EnemyCharacter::State::Scream;
 
-    // Footsteps are paced by the distance actually travelled this frame (after path and collider),
-    // like the player's, and follow the animation shown (animState) rather than AIState: patrol and
-    // Search show the Walk clip and should step too.
+    // Steps follow the distance actually moved and the clip shown, not the AI state: patrol and search show Walk too
     const bool footstepIsRun = (animState == EnemyCharacter::State::Run);
     const bool footstepIsWalking = footstepIsRun || (animState == EnemyCharacter::State::Walk);
 
@@ -838,14 +827,11 @@ void EnemyAI::update(float deltaTime, const glm::vec3& playerPos, bool playerIsR
                 !m_footstepWasMoving ||
                 (footstepIsRun != m_footstepWasRunning);
 
-            // Volume is computed once per frame, not per step: the distance cannot change
-            // noticeably within a frame, even if several steps fire in a row (fast dash at low
-            // FPS).
+            // Once per frame: the distance does not change noticeably between steps
             const float distToPlayer = glm::length(glm::vec2(playerPos.x - m_position.x, playerPos.z - m_position.z));
             const float footstepVolume = DistanceVolume(distToPlayer, kFootstepAudibleNear, kFootstepAudibleFar);
 
-            // A fresh burst of movement or a Walk<->Run switch (chase launch, after Wall_slam):
-            // step immediately so the rhythm restarts there.
+            // Movement just started or switched gait: step now so the rhythm restarts
             if (modeChanged)
             {
                 m_footstepDistance = 0.0f;
@@ -859,8 +845,7 @@ void EnemyAI::update(float deltaTime, const glm::vec3& playerPos, bool playerIsR
             m_footstepWasRunning = footstepIsRun;
             m_footstepDistance += movedDistance;
 
-            // A longer, heavier stride than the player's: THE WRAPPED is bigger, so it steps less
-            // often.
+            // Longer stride than the player's: THE WRAPPED is bigger
             const float kEnemyWalkStepLength = 0.75f;
             const float kEnemyRunStepLength = 1.10f;
             const float stepLength = footstepIsRun ? kEnemyRunStepLength : kEnemyWalkStepLength;
@@ -875,9 +860,8 @@ void EnemyAI::update(float deltaTime, const glm::vec3& playerPos, bool playerIsR
         }
         else
         {
-            // Standing still while the animation still walks (patrol/Search pause): do not
-            // accumulate phantom distance, and do not treat it as a full stop for modeChanged, so
-            // the next step after a short pause does not sound like a fresh start.
+            // Standing while the clip still walks:
+            // accumulate nothing, but do not treat it as a full stop, or the next step sounds like a fresh start
         }
     }
     else
@@ -901,8 +885,7 @@ bool EnemyAI::consumeJustCaughtPlayer()
 
 void EnemyAI::notifyNoiseEvent(const glm::vec3& impactPos)
 {
-    // Idle only, like regular hearing in update(): Walk/Run/Search already have better information
-    // than a noise source.
+    // Idle only; other states already have better information than a noise
     if (m_state != AIState::Idle)
         return;
 
@@ -912,9 +895,7 @@ void EnemyAI::notifyNoiseEvent(const glm::vec3& impactPos)
     m_searchPauseTimer = 0.0f;
     m_path.clear();
 
-    // Unlike regular hearing, no flee guesses: a stone carries no player movement direction. Just
-    // the impact point: the enemy goes there, looks around (same pause as Search) and returns to
-    // patrol.
+    // A stone says nothing about where the player went: just check the impact point
     m_searchWaypoints.clear();
     m_searchWaypoints.push_back(impactPos);
     m_searchWaypointIndex = 0;
@@ -928,15 +909,12 @@ void EnemyAI::forceAggroFromImpact(const glm::vec3& playerPos)
     m_lostTrackTimer = 0.0f;
     m_lastKnownPlayerPos = playerPos;
 
-    // Same transition as an honest fresh detection in update(), without the FOV/LOS/distance/
-    // playerInvisible checks: a stone hit counts as unconditional contact. Already Run or Scream
-    // needs no change.
+    // A hit counts as contact regardless of vision; same transition as a fresh detection
     if (m_state != AIState::Run && m_state != AIState::Scream)
     {
         m_state = AIState::Scream;
         m_stateTimer = 1.25f;
-        // A direct hit, so full volume instead of a distance-based one (the distance at throw time
-        // says nothing about the impact).
+        // Full volume: the throw distance says nothing about where the hit happened
         m_audio.playDetected(1.0f);
     }
 }
@@ -946,14 +924,12 @@ glm::vec3 EnemyAI::resolveWallCollision(const glm::vec3& pos) const
     if (!m_map)
         return pos;
 
-    // Enemy body radius for collision (kCollisionRadius, shared with PlayerController). Walls are
-    // whole cells, ignoring chamfers. The radius balances visible wall clipping against leaving the
-    // player room to squeeze past in a dead end.
+    // Walls are whole cells, chamfers ignored
+    // The radius trades visible wall clipping against leaving the player room to slip past
 
     glm::vec3 result = pos;
 
-    // Several passes: pushing out of one wall can move the position into overlap with a neighboring
-    // one (typical at inner corners). Three are enough in practice.
+    // Pushing out of one wall can push into another at inner corners; three passes suffice
     for (int iter = 0; iter < 3; ++iter)
     {
         bool anyPush = false;
@@ -972,8 +948,7 @@ glm::vec3 EnemyAI::resolveWallCollision(const glm::vec3& pos) const
                 if ((*m_map)[(size_t)z * m_mapW + x] != 1)
                     continue;
 
-                // Closest point on the wall cell's square to the circle center (same circle-vs-AABB
-                // trick as SquareOverlapsCircle in PlayerController.cpp).
+                // Closest point of the cell square to the circle center
                 const float closestX = glm::clamp(result.x, (float)x, (float)x + 1.0f);
                 const float closestZ = glm::clamp(result.z, (float)z, (float)z + 1.0f);
                 const float dxp = result.x - closestX;
@@ -991,9 +966,7 @@ glm::vec3 EnemyAI::resolveWallCollision(const glm::vec3& pos) const
                 }
                 else
                 {
-                    // Circle center exactly on the cell boundary or inside it (dist == 0):
-                    // closest-point gives no direction, so push away from the wall cell's center.
-                    // Otherwise pushDir would be zero and the enemy would stay inside the wall.
+                    // Center exactly on or inside the cell: no direction from the closest point, so push away from the cell center
                     const glm::vec2 fromCellCenter(result.x - (x + 0.5f), result.z - (z + 0.5f));
                     const float fromCellCenterLen = glm::length(fromCellCenter);
                     pushDir = fromCellCenterLen > 1e-5f
@@ -1027,9 +1000,8 @@ glm::vec3 EnemyAI::resolveWallCollision(const glm::vec3& pos) const
             }
         }
 
-        // The player is also a circular obstacle: without pushing the enemy out, a chasing enemy
-        // standing on a player pinned against a wall left no free position. m_lastPlayerPos is
-        // updated at the start of update(), so it is current here.
+        // The player is an obstacle too;
+        // otherwise a player pinned against a wall leaves the enemy no free position. m_lastPlayerPos is current here.
         {
             const glm::vec2 playerXZ(m_lastPlayerPos.x, m_lastPlayerPos.z);
             const glm::vec2 d(result.x - playerXZ.x, result.z - playerXZ.y);

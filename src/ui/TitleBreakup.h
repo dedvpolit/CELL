@@ -3,9 +3,9 @@
 #include <string>
 #include "UiGlyphs.h"
 
-// Animation of the ASCII title "CELL" gradually breaking apart (clicks -> crumbling particles ->
-// tilt -> the whole word falling). The state (TitleBreakupState) is kept separate from the menu
-// layout, so buttons and their hover frames do not depend on the title animation.
+// Title breakup animation:
+// clicks shed pieces, then tilt, then the whole word falls
+// State is kept apart from the menu layout
 
 namespace MainMenu {
 

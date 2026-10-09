@@ -17,10 +17,8 @@ out vec3 vLocal;
 
 void main()
 {
-    // The compass is a screen-space (first-person) object: a small mesh pinned to a fixed spot on
-    // the screen, so it does not drift as the camera pitches or turns. Its geometry is built flat
-    // in the XZ plane (Y = thickness), so screen X/Y come from aPos.x/aPos.z, not aPos.x/aPos.y;
-    // otherwise the disk (Y almost constant) collapses to a thin sliver.
+    // Screen-space compass: pinned to a fixed spot on screen regardless of camera motion. Built
+    // flat in XZ, so X/Z map to screen X/Y.
     vec3 p = vec3(
         screenCenter.x + aPos.x * screenScale,
         screenCenter.y + aPos.z * screenScale,

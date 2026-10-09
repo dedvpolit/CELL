@@ -4,20 +4,15 @@
 #include <vector>
 #include "Zoning.h"
 
-// Debug panel (M key, beta testing): the whole maze without fog of war in a screen corner, with the
-// player's position and direction. Own shader (debug_map.{vert,frag}) after AsciiEffect::end(). It
-// owns no map data (render() takes it as parameters); visibility is DungeonScene input state.
-// Chamfers are in mapTex's G channel; columns and zones are not in mapTex, so they get separate
-// draw passes.
+// Debug panel (M): the unfogged maze with the player marker
+// Own shader after AsciiEffect::end(); owns no map data
 class DebugMapOverlay {
 public:
     void create();
     void destroy();
 
-    // No-op if visible == false. mapTexture is the full map. columnCentersXZ: column markers (a
-    // column cell in mapTex is plain floor). zoneGrid: a swatch at each region center colored by
-    // chamferProbability (blue low, red high). enemyPositions: red markers, distinct from the green
-    // of columns and the win button.
+    // No-op when hidden
+    // Draws the map, column and zone markers, enemies and props
     void render(int viewportWidth, int viewportHeight, bool visible,
                 GLuint mapTexture, int mapW, int mapH,
                 const glm::vec3& camPos, float yaw,

@@ -2,9 +2,7 @@
 #include <vector>
 #include <string>
 
-// Large block logo font: 5x7 dot-matrix letters used for the "CELL" title and the button text. Each
-// letter is drawn with an upscaled mask, where every "pixel" of the pattern is filled with its own
-// (seed-deterministic) dense glyph from UiGlyphs::kDenseFillGlyphs; see DrawBigGlyph() below.
+// 5x7 block font for the title and buttons, drawn with upscaled masks of dense glyphs
 
 namespace MainMenu {
 
@@ -39,6 +37,10 @@ const BigGlyph& BigQ();
 const BigGlyph& BigZ();
 
 const BigGlyph& BigUnderscore();
+const BigGlyph& BigPeriod();
+const BigGlyph& BigComma();
+const BigGlyph& BigQuestion();
+const BigGlyph& BigApostrophe();
 
 const BigGlyph& BigDigit(int d); // d: 0..9 (falls back to BigE() out of range)
 
@@ -49,9 +51,7 @@ const BigGlyph& GetBigGlyph(char c);
 constexpr int kMaskUpsample = 2;
 int ComputeFinalRes(float scale);
 
-// Draws one large logo glyph with an upscaled mask: each original "pixel" of the pattern expands
-// into finalRes x finalRes screen cells, each getting its own (seed-deterministic) dense glyph, so
-// neighboring cells are almost always different while the letter's silhouette stays unchanged.
+// Each mask pixel becomes finalRes x finalRes cells with varied seeded glyphs
 void DrawBigGlyph(std::vector<unsigned char>& grid, int cols, int rows,
                    const BigGlyph& glyph, int originCol, int originRow,
                    float scale, int seed);
